@@ -23,6 +23,9 @@ type Config struct {
 	CFBucket          string
 	CFPublicURL       string
 
+	// Firebase / FCM
+	FCMCredentialsFile string
+
 	// SMTP Email
 	SMTPHost       string
 	SMTPPort       string
@@ -54,7 +57,8 @@ func LoadConfig() *Config {
 		SMTPPort:          getEnv("SMTP_PORT", "587"),
 		SMTPEmail:         getEnv("SMTP_EMAIL", ""),
 		SMTPPassword:      getEnv("SMTP_PASSWORD", ""),
-		SMTPSenderName:    getEnv("SMTP_SENDER_NAME", "Enviroo"),
+		SMTPSenderName:     getEnv("SMTP_SENDER_NAME", "Enviroo"),
+		FCMCredentialsFile: getEnv("FCM_CREDENTIALS_FILE", ""),
 	}
 }
 

@@ -184,6 +184,193 @@ func (jc *JadwalController) GetJadwalBank(c *gin.Context) {
 	})
 }
 
+func (jc *JadwalController) GetAllJadwal(c *gin.Context) {
+	jenisParam := c.Query("type")
+	if jenisParam != string(models.JadwalPenimbangan) && jenisParam != string(models.JadwalPengangkutan) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Query param 'type' harus 'penimbangan' atau 'pengangkutan'"})
+		return
+	}
+	jenisJadwal := models.JadwalEnum(jenisParam)
+
+	type JadwalItem struct {
+		JadwalID          string          `json:"jadwal_id"`
+		Hari              models.HariEnum `json:"hari"`
+		MingguKe          int             `json:"minggu_ke"`
+		JamMulai          string          `json:"jam_mulai"`
+		JamSelesai        string          `json:"jam_selesai"`
+		IsActive          *bool           `json:"is_active"`
+		Tanggal           time.Time       `json:"tanggal,omitempty"`
+		NamaJadwalSpesial string          `json:"nama_jadwal_spesial,omitempty"`
+		CreatedAt         time.Time       `json:"created_at"`
+	}
+
+	type rawRow struct {
+		JadwalID          string           `gorm:"column:jadwal_id"`
+		BankID            string           `gorm:"column:bank_id"`
+		NamaBank          string           `gorm:"column:nama_bank"`
+		JenisBank         models.JenisBank `gorm:"column:jenis_bank"`
+		Hari              models.HariEnum  `gorm:"column:hari"`
+		MingguKe          int              `gorm:"column:minggu_ke"`
+		JamMulai          string           `gorm:"column:jam_mulai"`
+		JamSelesai        string           `gorm:"column:jam_selesai"`
+		IsActive          *bool            `gorm:"column:is_active"`
+		IsRutin           *bool            `gorm:"column:is_rutin"`
+		Tanggal           time.Time        `gorm:"column:tanggal"`
+		NamaJadwalSpesial string           `gorm:"column:nama_jadwal_spesial"`
+		TargetBankID      string           `gorm:"column:target_bank_id"`
+		TargetBankName    string           `gorm:"column:target_bank_name"`
+		CreatedAt         time.Time        `gorm:"column:created_at"`
+	}
+
+	var rows []rawRow
+	if err := jc.db.Table("jadwal").
+		Select(`jadwal.jadwal_id, jadwal.bank_id, b1.nama_bank, b1.jenis_bank,
+			jadwal.hari, jadwal.minggu_ke, jadwal.jam_mulai, jadwal.jam_selesai,
+			jadwal.is_active, jadwal.is_rutin, jadwal.tanggal, jadwal.nama_jadwal_spesial,
+			jadwal.target_bank_id, b2.nama_bank as target_bank_name, jadwal.created_at`).
+		Joins("JOIN bank_sampah b1 ON b1.bank_id = jadwal.bank_id").
+		Joins("LEFT JOIN bank_sampah b2 ON b2.bank_id = jadwal.target_bank_id").
+		Where("jadwal.jenis_jadwal = ?", jenisJadwal).
+		Order("b1.nama_bank, b2.nama_bank, jadwal.created_at").
+		Scan(&rows).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data jadwal: " + err.Error()})
+		return
+	}
+
+	toItem := func(row rawRow) JadwalItem {
+		return JadwalItem{
+			JadwalID:          row.JadwalID,
+			Hari:              row.Hari,
+			MingguKe:          row.MingguKe,
+			JamMulai:          row.JamMulai,
+			JamSelesai:        row.JamSelesai,
+			IsActive:          row.IsActive,
+			Tanggal:           row.Tanggal,
+			NamaJadwalSpesial: row.NamaJadwalSpesial,
+			CreatedAt:         row.CreatedAt,
+		}
+	}
+
+	if jenisJadwal == models.JadwalPenimbangan {
+		// Penimbangan: dikelompokkan per jenis bank (BSI/BSM/BSU) → per bank
+		type BankGroup struct {
+			BankID     string       `json:"bank_id"`
+			NamaBank   string       `json:"nama_bank"`
+			Rutin      []JadwalItem `json:"rutin"`
+			TidakRutin []JadwalItem `json:"tidak_rutin"`
+		}
+
+		grouped := map[models.JenisBank]map[string]*BankGroup{
+			models.BSI: {},
+			models.BSM: {},
+			models.BSU: {},
+		}
+
+		for _, row := range rows {
+			bankMap, ok := grouped[row.JenisBank]
+			if !ok {
+				continue
+			}
+			if _, exists := bankMap[row.BankID]; !exists {
+				bankMap[row.BankID] = &BankGroup{
+					BankID:     row.BankID,
+					NamaBank:   row.NamaBank,
+					Rutin:      make([]JadwalItem, 0),
+					TidakRutin: make([]JadwalItem, 0),
+				}
+			}
+			g := bankMap[row.BankID]
+			if row.IsRutin != nil && *row.IsRutin {
+				g.Rutin = append(g.Rutin, toItem(row))
+			} else {
+				g.TidakRutin = append(g.TidakRutin, toItem(row))
+			}
+		}
+
+		toSlice := func(m map[string]*BankGroup) []BankGroup {
+			result := make([]BankGroup, 0, len(m))
+			for _, v := range m {
+				result = append(result, *v)
+			}
+			return result
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"data": gin.H{
+				"bsi": toSlice(grouped[models.BSI]),
+				"bsm": toSlice(grouped[models.BSM]),
+				"bsu": toSlice(grouped[models.BSU]),
+			},
+		})
+		return
+	}
+
+	// Pengangkutan: dikelompokkan per BSI → per BSU tujuan
+	// bank_id = BSI (yang mengangkut), target_bank_id = BSU (tujuan)
+	type RuteBSU struct {
+		BSUID      string       `json:"bsu_id"`
+		NamaBSU    string       `json:"nama_bsu"`
+		Rutin      []JadwalItem `json:"rutin"`
+		TidakRutin []JadwalItem `json:"tidak_rutin"`
+	}
+
+	type RuteBSI struct {
+		BSIID      string    `json:"bsi_id"`
+		NamaBSI    string    `json:"nama_bsi"`
+		RuteBSU    []RuteBSU `json:"rute_bsu"`
+	}
+
+	// map[bsi_id]map[bsu_id]
+	bsiMap := map[string]map[string]*RuteBSU{}
+	bsiOrder := []string{}
+
+	for _, row := range rows {
+		if _, exists := bsiMap[row.BankID]; !exists {
+			bsiMap[row.BankID] = map[string]*RuteBSU{}
+			bsiOrder = append(bsiOrder, row.BankID)
+		}
+		bsuMap := bsiMap[row.BankID]
+		if _, exists := bsuMap[row.TargetBankID]; !exists {
+			bsuMap[row.TargetBankID] = &RuteBSU{
+				BSUID:      row.TargetBankID,
+				NamaBSU:    row.TargetBankName,
+				Rutin:      make([]JadwalItem, 0),
+				TidakRutin: make([]JadwalItem, 0),
+			}
+		}
+		rute := bsuMap[row.TargetBankID]
+		if row.IsRutin != nil && *row.IsRutin {
+			rute.Rutin = append(rute.Rutin, toItem(row))
+		} else {
+			rute.TidakRutin = append(rute.TidakRutin, toItem(row))
+		}
+	}
+
+	// Simpan nama BSI untuk setiap bsi_id
+	bsiNama := map[string]string{}
+	for _, row := range rows {
+		if _, exists := bsiNama[row.BankID]; !exists {
+			bsiNama[row.BankID] = row.NamaBank
+		}
+	}
+
+	result := make([]RuteBSI, 0, len(bsiOrder))
+	for _, bsiID := range bsiOrder {
+		bsuMap := bsiMap[bsiID]
+		rutes := make([]RuteBSU, 0, len(bsuMap))
+		for _, v := range bsuMap {
+			rutes = append(rutes, *v)
+		}
+		result = append(result, RuteBSI{
+			BSIID:   bsiID,
+			NamaBSI: bsiNama[bsiID],
+			RuteBSU: rutes,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
 func (jc *JadwalController) DeleteJadwal(c *gin.Context) {
 	jadwalID := c.Param("jadwal_id")
 	if jadwalID == "" {

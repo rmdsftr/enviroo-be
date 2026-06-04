@@ -31,7 +31,8 @@ type AddBSMRequest struct {
 	Deskripsi     string   `form:"deskripsi" binding:"required"`
 	Provinsi      string   `form:"provinsi" binding:"required"`
 	KabupatenKota string   `form:"kabupaten_kota" binding:"required"`
-	Kecamatan     string   `form:"kecamatan" binding:"required"`
+	IDKecamatan   int      `form:"id_kecamatan" binding:"required"`
+	IDKelurahan   int      `form:"id_kelurahan" binding:"required"`
 	AlamatLengkap string   `form:"alamat_lengkap" binding:"required"`
 	Latitude      float64  `form:"latitude"`
 	Longitude     float64  `form:"longitude"`
@@ -69,13 +70,22 @@ func (bc *BSMController) AddNewBSM(c *gin.Context) {
 		return
 	}
 
+	bankID, err := utils.GenerateBankID(tx, models.BSM, req.IDKecamatan, req.IDKelurahan)
+	if err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal generate Bank ID: " + err.Error()})
+		return
+	}
+
 	newBSM := models.BankSampah{
+		BankID:        bankID,
 		NamaBank:      req.NamaBSM,
 		Deskripsi:     req.Deskripsi,
 		PhotoURL:      fotoURL,
 		Provinsi:      req.Provinsi,
 		KabupatenKota: req.KabupatenKota,
-		Kecamatan:     req.Kecamatan,
+		IDKecamatan:   &req.IDKecamatan,
+		IDKelurahan:   &req.IDKelurahan,
 		Alamat:        req.AlamatLengkap,
 		Latitude:      req.Latitude,
 		Longitude:     req.Longitude,
@@ -89,6 +99,39 @@ func (bc *BSMController) AddNewBSM(c *gin.Context) {
 		return
 	}
 
+	// Pre-create saldo rekening bank nominal 0
+	var rewardUangBSM, rewardSembakoBSM models.Reward
+	if err := tx.Where("nama_reward = ?", models.RewardEnumUang).First(&rewardUangBSM).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Reward Uang tidak ditemukan: " + err.Error()})
+		return
+	}
+	if err := tx.Where("nama_reward = ?", models.RewardEnumSembako).First(&rewardSembakoBSM).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Reward Sembako tidak ditemukan: " + err.Error()})
+		return
+	}
+	for _, rw := range []models.Reward{rewardUangBSM, rewardSembakoBSM} {
+		rwCopy := rw
+		satuan := models.SatuanRewardEnumRp
+		if models.SatuanRewardEnum(rw.Satuan) == models.SatuanRewardEnumPoin {
+			satuan = models.SatuanRewardEnumPoin
+		}
+		rekening := models.SaldoRekening{
+			RekeningID:         utils.GenerateRekeningID(rwCopy.RewardID, bankID),
+			BankID:             &bankID,
+			RewardID:           &rwCopy.RewardID,
+			Entitas:            models.EntitasBankSampah,
+			NominalSaldo:       0,
+			SatuanNominalSaldo: satuan,
+		}
+		if err := tx.Create(&rekening).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat rekening bank: " + err.Error()})
+			return
+		}
+	}
+
 	// Create admins for this BSM
 	for _, userID := range req.UserIDs {
 		// Pengecekan nasabah (meskipun bank baru terbuat, ini ditambahkan sesuai instruksi)
@@ -99,15 +142,22 @@ func (bc *BSMController) AddNewBSM(c *gin.Context) {
 			return
 		}
 
-		admin := models.Admin{
-			AdminID:     utils.GenerateAdminID(),
-			BankID:      &newBSM.BankID,
+		adminID, err := utils.GenerateAdminID(tx, models.AdminBSM, newBSM.BankID)
+		if err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate admin ID: " + err.Error()})
+			return
+		}
+
+		newAdmin := models.Admin{
+			AdminID:     adminID,
 			UserID:      userID,
+			BankID:      &newBSM.BankID,
 			Role:        models.AdminBSM,
 			StatusAdmin: models.Pending,
 		}
 
-		if err := tx.Create(&admin).Error; err != nil {
+		if err := tx.Create(&newAdmin).Error; err != nil {
 			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add admin: " + err.Error()})
 			return
@@ -145,6 +195,7 @@ func (bc *BSMController) AddNewBSM(c *gin.Context) {
 			Token:       hashedOTP,
 			ExpiredAt:   now.Add(24 * time.Hour),
 			GeneratedBy: req.AdminID,
+			Tujuan:      models.TujuanAktivasi,
 		}
 
 		if err := tx.Create(&newAktivasiAkun).Error; err != nil {
@@ -199,15 +250,20 @@ func (bc *BSMController) AddNewBSM(c *gin.Context) {
 
 func (bc *BSMController) GetBSM(c *gin.Context) {
 	type BSMResponse struct {
-		models.BankSampah
-		JumlahNasabah int64 `json:"jumlah_nasabah" gorm:"column:jumlah_nasabah"`
+		BankID        string `json:"bank_id" gorm:"column:bank_id"`
+		NamaBSM       string `json:"nama_bsm" gorm:"column:nama_bank"`
+		PhotoURL      string `json:"photo_url" gorm:"column:photo_url"`
+		IsActive      bool   `json:"is_active" gorm:"column:is_active"`
+		JumlahNasabah int64  `json:"jumlah_nasabah" gorm:"column:jumlah_nasabah"`
+		JumlahStaff   int64  `json:"jumlah_staff" gorm:"column:jumlah_staff"`
 	}
 
 	var results []BSMResponse
 
-	// Query utama dengan subquery SELECT COUNT untuk menghitung jumlah nasabah di BSM ini
 	query := bc.DB.Model(&models.BankSampah{}).
-		Select("bank_sampah.*, (SELECT COUNT(user_id) FROM nasabah WHERE nasabah.bank_id = bank_sampah.bank_id) AS jumlah_nasabah").
+		Select("bank_sampah.bank_id, bank_sampah.nama_bank, bank_sampah.photo_url, bank_sampah.is_active, " +
+			"(SELECT COUNT(user_id) FROM nasabah WHERE nasabah.bank_id = bank_sampah.bank_id) AS jumlah_nasabah, " +
+			"(SELECT COUNT(user_id) FROM admin WHERE admin.bank_id = bank_sampah.bank_id) AS jumlah_staff").
 		Where("bank_sampah.jenis_bank = ?", models.BSM)
 
 	if err := query.Find(&results).Error; err != nil {

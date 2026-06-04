@@ -50,18 +50,21 @@ func (pc *PenimbanganController) CheckJadwalHariIni(c *gin.Context) {
 	}[now.Weekday()]
 	mingguKe := getWeekOfMonth(now)
 
-	var jadwal models.Jadwal
+	var jadwals []models.Jadwal
 	err := pc.db.Where("bank_id = ? AND jenis_jadwal = ? AND ("+
 		"(is_rutin = true AND hari = ? AND (minggu_ke = ? OR minggu_ke = 0)) OR "+
 		"(is_rutin = false AND DATE(tanggal) = ?))",
-		bankID, models.JadwalPenimbangan, todayHari, mingguKe, todayDate).First(&jadwal).Error
+		bankID, models.JadwalPenimbangan, todayHari, mingguKe, todayDate).Find(&jadwals).Error
 
 	jadwalTersedia := false
-	if err == nil {
-		var penimbanganCount int64
-		pc.db.Model(&models.Penimbangan{}).Where("jadwal_id = ? AND DATE(started_at) = ?", jadwal.JadwalID, todayDate).Count(&penimbanganCount)
-		if penimbanganCount == 0 {
-			jadwalTersedia = true
+	if err == nil && len(jadwals) > 0 {
+		for _, jadwal := range jadwals {
+			var penimbanganCount int64
+			pc.db.Model(&models.Penimbangan{}).Where("jadwal_id = ? AND DATE(started_at) = ?", jadwal.JadwalID, todayDate).Count(&penimbanganCount)
+			if penimbanganCount == 0 {
+				jadwalTersedia = true
+				break
+			}
 		}
 	}
 
@@ -74,6 +77,31 @@ func (pc *PenimbanganController) CheckJadwalHariIni(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"status": "scheduled",
+	})
+}
+
+func (pc *PenimbanganController) CheckJadwalActive(c *gin.Context) {
+	bankID := c.Param("bank_id")
+
+	// 1. Cek bank sampah
+	var bank models.BankSampah
+	if err := pc.db.Where("bank_id = ?", bankID).First(&bank).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Bank sampah tidak ditemukan"})
+		return
+	}
+
+	var activeJadwalCount int64
+	err := pc.db.Model(&models.Penimbangan{}).
+		Where("bank_id = ? AND status_penimbangan = ?", bankID, models.StatusAktif).
+		Count(&activeJadwalCount).Error
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengecek jadwal aktif: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"is_active": activeJadwalCount > 0,
 	})
 }
 
@@ -109,20 +137,25 @@ func (pc *PenimbanganController) AddNewPenimbangan(c *gin.Context) {
 	}[now.Weekday()]
 	mingguKe := getWeekOfMonth(now)
 
-	var jadwal models.Jadwal
+	var jadwals []models.Jadwal
 	
 	// Query cek apakah hari ini tercatat ada jadwal penimbangan secara formal
 	err := pc.db.Where("bank_id = ? AND jenis_jadwal = ? AND ("+
 		"(is_rutin = true AND hari = ? AND (minggu_ke = ? OR minggu_ke = 0)) OR "+
 		"(is_rutin = false AND DATE(tanggal) = ?))",
-		bankID, models.JadwalPenimbangan, todayHari, mingguKe, todayDate).First(&jadwal).Error
+		bankID, models.JadwalPenimbangan, todayHari, mingguKe, todayDate).Find(&jadwals).Error
 
 	jadwalTersedia := false
-	if err == nil {
-		var penimbanganCount int64
-		pc.db.Model(&models.Penimbangan{}).Where("jadwal_id = ? AND DATE(started_at) = ?", jadwal.JadwalID, todayDate).Count(&penimbanganCount)
-		if penimbanganCount == 0 {
-			jadwalTersedia = true
+	var selectedJadwal models.Jadwal
+	if err == nil && len(jadwals) > 0 {
+		for _, jdw := range jadwals {
+			var penimbanganCount int64
+			pc.db.Model(&models.Penimbangan{}).Where("jadwal_id = ? AND DATE(started_at) = ?", jdw.JadwalID, todayDate).Count(&penimbanganCount)
+			if penimbanganCount == 0 {
+				jadwalTersedia = true
+				selectedJadwal = jdw
+				break
+			}
 		}
 	}
 
@@ -148,7 +181,7 @@ func (pc *PenimbanganController) AddNewPenimbangan(c *gin.Context) {
 			jamSelesai = "23:59"
 		}
 
-		jadwal = models.Jadwal{
+		selectedJadwal = models.Jadwal{
 			JadwalID:          uuid.New(),
 			BankID:            bankID,
 			Hari:              todayHari,
@@ -162,7 +195,7 @@ func (pc *PenimbanganController) AddNewPenimbangan(c *gin.Context) {
 			NamaJadwalSpesial: "Penimbangan Dadakan",
 			CreatedBy:         adminID,
 		}
-		if err := tx.Create(&jadwal).Error; err != nil {
+		if err := tx.Create(&selectedJadwal).Error; err != nil {
 			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat jadwal dadakan"})
 			return
@@ -173,7 +206,7 @@ func (pc *PenimbanganController) AddNewPenimbangan(c *gin.Context) {
 	nowTime := time.Now()
 	newPenimbangan := models.Penimbangan{
 		PenimbanganID:     generatePenimbanganID(),
-		JadwalID:          &jadwal.JadwalID,
+		JadwalID:          &selectedJadwal.JadwalID,
 		BankID:            &bankID,
 		StartedBy:         &adminID,
 		StartedAt:         &nowTime,
@@ -273,16 +306,49 @@ func (pc *PenimbanganController) ListSetoranPenimbangan(c *gin.Context) {
 	type ListSetoranResponse struct {
 		SetoranID          string               `json:"setoran_id" gorm:"column:setoran_id"`
 		NamaPetugas        string               `json:"nama_petugas" gorm:"column:nama_petugas"`
+		NasabahID          string               `json:"nasabah_id" gorm:"column:nasabah_id"`
 		NamaNasabah        string               `json:"nama_nasabah" gorm:"column:nama_nasabah"`
 		TransaksiTimestamp time.Time            `json:"transaksi_timestamp" gorm:"column:transaksi_timestamp"`
 		TotalItem          int                  `json:"total_item" gorm:"column:total_item"`
-		TotalPoin          int                  `json:"total_poin" gorm:"column:total_poin"`
+		TotalPoin          float64              `json:"total_poin" gorm:"column:total_poin"`
 		StatusSetoran      models.StatusSetoran `json:"status_setoran" gorm:"column:status_setoran"`
 	}
 
+	type PenimbanganHeaderResponse struct {
+		PenimbanganID     string               `json:"penimbangan_id" gorm:"column:penimbangan_id"`
+		StartedAt         *time.Time           `json:"started_at" gorm:"column:started_at"`
+		EndedAt           *time.Time           `json:"ended_at" gorm:"column:ended_at"`
+		StartedBy         string               `json:"started_by" gorm:"column:started_by"`
+		EndedBy           string               `json:"ended_by" gorm:"column:ended_by"`
+		StatusPenimbangan string               `json:"status_penimbangan" gorm:"column:status_penimbangan"`
+		ListSetoran       []ListSetoranResponse `json:"list_setoran" gorm:"-"`
+	}
+
+	// 1. Query header penimbangan (nama petugas langsung dari users)
+	var header PenimbanganHeaderResponse
+	err := pc.db.Table("penimbangan").
+		Select(`
+			penimbangan.penimbangan_id,
+			penimbangan.started_at,
+			penimbangan.ended_at,
+			penimbangan.status_penimbangan,
+			u_started.nama as started_by,
+			COALESCE(u_ended.nama, '') as ended_by
+		`).
+		Joins("LEFT JOIN users u_started ON u_started.user_id = penimbangan.started_by").
+		Joins("LEFT JOIN users u_ended ON u_ended.user_id = penimbangan.ended_by").
+		Where("penimbangan.penimbangan_id = ?", penimbanganID).
+		First(&header).Error
+
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Penimbangan tidak ditemukan"})
+		return
+	}
+
+	// 2. Query list setoran
 	var listSetoran []ListSetoranResponse
 	if err := pc.db.Table("setoran_nasabah").
-		Select("setoran_nasabah.setoran_id, u_petugas.nama as nama_petugas, u_nasabah.nama as nama_nasabah, setoran_nasabah.created_at as transaksi_timestamp, setoran_nasabah.total_item, setoran_nasabah.total_poin, setoran_nasabah.status_setoran").
+		Select("setoran_nasabah.setoran_id, u_petugas.nama as nama_petugas, nasabah.nasabah_id, u_nasabah.nama as nama_nasabah, setoran_nasabah.created_at as transaksi_timestamp, setoran_nasabah.total_item, setoran_nasabah.status_setoran").
 		Joins("LEFT JOIN admin ON admin.admin_id = setoran_nasabah.admin_id").
 		Joins("LEFT JOIN users u_petugas ON u_petugas.user_id = admin.user_id").
 		Joins("LEFT JOIN nasabah ON nasabah.nasabah_id = setoran_nasabah.nasabah_id").
@@ -294,8 +360,67 @@ func (pc *PenimbanganController) ListSetoranPenimbangan(c *gin.Context) {
 		return
 	}
 
+	if listSetoran == nil {
+		listSetoran = []ListSetoranResponse{}
+	}
+	header.ListSetoran = listSetoran
+
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Berhasil mengambil data setoran",
-		"data":    listSetoran,
+		"data":    header,
+	})
+}
+
+func (pc *PenimbanganController) GetPenimbanganSesiAktif(c *gin.Context) {
+	penimbanganID := c.Param("penimbangan_id")
+
+	type ListSetoran struct {
+		SetoranID   string    `json:"setoran_id" gorm:"column:setoran_id"`
+		NasabahID   string    `json:"nasabah_id" gorm:"column:nasabah_id"`
+		NamaNasabah string    `json:"nama_nasabah" gorm:"column:nama_nasabah"`
+		CreatedAt   time.Time `json:"created_at" gorm:"column:created_at"`
+	}
+
+	type response struct {
+		PenimbanganID string        `json:"penimbangan_id" gorm:"column:penimbangan_id"`
+		NamaBank      string        `json:"nama_bank" gorm:"column:nama_bank"`
+		StartedAt     *time.Time    `json:"started_at" gorm:"column:started_at"`
+		StartedBy     string        `json:"started_by" gorm:"column:started_by"`
+		ListSetoran   []ListSetoran `json:"list_setoran" gorm:"-"`
+	}
+
+	var res response
+	err := pc.db.Table("penimbangan").
+		Select("penimbangan.penimbangan_id, bank_sampah.nama_bank, penimbangan.started_at, u_admin.nama as started_by").
+		Joins("LEFT JOIN bank_sampah ON bank_sampah.bank_id = penimbangan.bank_id").
+		Joins("LEFT JOIN users u_admin ON u_admin.user_id = penimbangan.started_by").
+		Where("penimbangan.penimbangan_id = ?", penimbanganID).
+		First(&res).Error
+
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Penimbangan tidak ditemukan"})
+		return
+	}
+
+	var listSetoran []ListSetoran
+	if err := pc.db.Table("setoran_nasabah").
+		Select("setoran_nasabah.setoran_id, setoran_nasabah.nasabah_id, u_nasabah.nama as nama_nasabah, setoran_nasabah.created_at").
+		Joins("LEFT JOIN nasabah ON nasabah.nasabah_id = setoran_nasabah.nasabah_id").
+		Joins("LEFT JOIN users u_nasabah ON u_nasabah.user_id = nasabah.user_id").
+		Where("setoran_nasabah.penimbangan_id = ?", penimbanganID).
+		Order("setoran_nasabah.created_at desc").
+		Find(&listSetoran).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data setoran"})
+		return
+	}
+
+	if listSetoran == nil {
+		listSetoran = []ListSetoran{}
+	}
+	res.ListSetoran = listSetoran
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Berhasil mengambil data penimbangan",
+		"data":    res,
 	})
 }

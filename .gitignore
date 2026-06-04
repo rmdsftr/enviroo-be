@@ -39,3 +39,21 @@ scratch/
 # Application specific
 logs/
 tmp/
+
+# Build output
+/bin/
+/build/
+enviroo-be
+enviroo-be.exe
+
+# Firebase / GCP credentials
+*.json
+internal/config/*.json
+
+# Docker
+.dockerignore
+
+# SSL/TLS certificates
+*.pem
+*.key
+*.crt

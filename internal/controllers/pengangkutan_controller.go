@@ -1,10 +1,12 @@
 package controllers
 
 import (
+	"context"
+	"encoding/json"
 	"enviroo-be/internal/models"
+	"enviroo-be/internal/services"
 	"enviroo-be/pkg/storage"
 	"enviroo-be/pkg/utils"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -17,10 +19,11 @@ import (
 type PengangkutanController struct {
 	db        *gorm.DB
 	cfStorage *storage.CloudflareStorage
+	notifSvc  services.NotifikasiService
 }
 
-func NewPengangkutanController(db *gorm.DB, cfStorage *storage.CloudflareStorage) *PengangkutanController {
-	return &PengangkutanController{db: db, cfStorage: cfStorage}
+func NewPengangkutanController(db *gorm.DB, cfStorage *storage.CloudflareStorage, notifSvc services.NotifikasiService) *PengangkutanController {
+	return &PengangkutanController{db: db, cfStorage: cfStorage, notifSvc: notifSvc}
 }
 
 func (p *PengangkutanController) CheckJadwalPengangkutan(c *gin.Context) {
@@ -47,7 +50,7 @@ func (p *PengangkutanController) CheckJadwalPengangkutan(c *gin.Context) {
 	var jadwal models.Jadwal
 	err := p.db.Where("bank_id = ? AND target_bank_id = ? AND jenis_jadwal = ? AND ("+
 		"(is_rutin = true AND hari = ? AND (minggu_ke = ? OR minggu_ke = 0)) OR "+
-		"(is_rutin = false AND DATE(tanggal) = ?))",
+		"(is_rutin = false AND tanggal = ?))",
 		bsiID, bsuID, models.JadwalPengangkutan, todayHari, mingguKe, todayDate).First(&jadwal).Error
 
 	if err != nil {
@@ -100,7 +103,7 @@ func (p *PengangkutanController) StartSesiPengangkutan(c *gin.Context) {
 	var jadwal models.Jadwal
 	err := p.db.Where("bank_id = ? AND target_bank_id = ? AND jenis_jadwal = ? AND ("+
 		"(is_rutin = true AND hari = ? AND (minggu_ke = ? OR minggu_ke = 0)) OR "+
-		"(is_rutin = false AND DATE(tanggal) = ?))",
+		"(is_rutin = false AND tanggal = ?))",
 		req.BSIID, req.BSUID, models.JadwalPengangkutan, todayHari, mingguKe, todayDate).First(&jadwal).Error
 
 	jadwalTersedia := (err == nil)
@@ -195,17 +198,17 @@ func (p *PengangkutanController) GetAllPengangkutan(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
 	type response struct {
-		PengangkutanID string `json:"pengangkutan_id" gorm:"column:pengangkutan_id"`
-		BSIID          string `json:"bsi_id" gorm:"column:bsi_id"`
-		BSUId          string `json:"bsu_id" gorm:"column:bsu_id"`
+		PengangkutanID string  `json:"pengangkutan_id" gorm:"column:pengangkutan_id"`
+		BSIID          string  `json:"bsi_id" gorm:"column:bsi_id"`
+		BSUId          string  `json:"bsu_id" gorm:"column:bsu_id"`
 		AdminBSIID     *string `json:"admin_bsi_id" gorm:"column:admin_bsi_id"`
 		AdminBSUId     *string `json:"admin_bsu_id" gorm:"column:admin_bsu_id"`
 		JadwalID       string  `json:"jadwal_id" gorm:"column:jadwal_id"`
 
-		NamaBSI        string  `json:"nama_bsi" gorm:"column:nama_bsi"`
-		NamaBSU        string  `json:"nama_bsu" gorm:"column:nama_bsu"`
-		NamaAdminBSI   *string `json:"nama_admin_bsi" gorm:"column:nama_admin_bsi"`
-		NamaAdminBSU   *string `json:"nama_admin_bsu" gorm:"column:nama_admin_bsu"`
+		NamaBSI      string  `json:"nama_bsi" gorm:"column:nama_bsi"`
+		NamaBSU      string  `json:"nama_bsu" gorm:"column:nama_bsu"`
+		NamaAdminBSI *string `json:"nama_admin_bsi" gorm:"column:nama_admin_bsi"`
+		NamaAdminBSU *string `json:"nama_admin_bsu" gorm:"column:nama_admin_bsu"`
 
 		StatusPengangkutan string    `json:"status_pengangkutan" gorm:"column:status_pengangkutan"`
 		ChangedAt          time.Time `json:"changed_at" gorm:"column:changed_at"`
@@ -326,6 +329,10 @@ func (p *PengangkutanController) UpdatePengangkutanByBSI(c *gin.Context) {
 			valid = true
 		}
 	case models.StatusOTW:
+		if req.NewStatus == models.StatusArrived || req.NewStatus == models.StatusCanceled {
+			valid = true
+		}
+	case models.StatusArrived:
 		if req.NewStatus == models.StatusCompleted || req.NewStatus == models.StatusCanceled {
 			valid = true
 		}
@@ -359,7 +366,7 @@ func (p *PengangkutanController) UpdatePengangkutanByBSI(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": fmt.Sprintf("Status pengangkutan berhasil diperbarui ke %s", req.NewStatus),
+		"message": "Status pengangkutan berhasil diperbarui",
 		"data":    newRiwayat,
 	})
 }
@@ -408,27 +415,7 @@ func (p *PengangkutanController) RequestPengangkutanByBSU(c *gin.Context) {
 		return
 	}
 
-	// 3. Cek apakah jadwal sudah ada di tanggal tersebut
-	reqDateStr := reqDate.Format("2006-01-02")
-	reqHari := []models.HariEnum{
-		models.Minggu, models.Senin, models.Selasa, models.Rabu, models.Kamis, models.Jumat, models.Sabtu,
-	}[reqDate.Weekday()]
-	mingguKe := getWeekOfMonth(reqDate)
-
-	var jadwal models.Jadwal
-	err = p.db.Where("bank_id = ? AND target_bank_id = ? AND jenis_jadwal = ? AND is_active = ? AND ("+
-		"(is_rutin = true AND hari = ? AND (minggu_ke = ? OR minggu_ke = 0)) OR "+
-		"(is_rutin = false AND DATE(tanggal) = ?))",
-		bsiID, bsuID, models.JadwalPengangkutan, true, reqHari, mingguKe, reqDateStr).First(&jadwal).Error
-
-	if err == nil {
-		c.JSON(http.StatusConflict, gin.H{
-			"error": "Permintaan ditolak. Sudah ada jadwal pengangkutan pada tanggal tersebut.",
-		})
-		return
-	}
-
-	// 4. Kalkulasi Jam Selesai (tambah 2 jam, cegah error beda hari)
+	// 3. Kalkulasi Jam Selesai (tambah 2 jam, cegah error beda hari)
 	startTime, errParse := time.Parse("15:04", req.JamMulai)
 	if errParse != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Format jam_mulai tidak valid (harap gunakan HH:mm)"})
@@ -438,6 +425,27 @@ func (p *PengangkutanController) RequestPengangkutanByBSU(c *gin.Context) {
 	jamSelesai := endTime.Format("15:04")
 	if endTime.Day() != startTime.Day() {
 		jamSelesai = "23:59"
+	}
+
+	// 4. Cek apakah ada jadwal yang bertabrakan (tanggal sama + slot waktu overlap)
+	reqDateStr := reqDate.Format("2006-01-02")
+	reqHari := []models.HariEnum{
+		models.Minggu, models.Senin, models.Selasa, models.Rabu, models.Kamis, models.Jumat, models.Sabtu,
+	}[reqDate.Weekday()]
+	mingguKe := getWeekOfMonth(reqDate)
+
+	var jadwal models.Jadwal
+	err = p.db.Where("bank_id = ? AND target_bank_id = ? AND jenis_jadwal = ? AND is_active = ? AND ("+
+		"(is_rutin = true AND hari = ? AND (minggu_ke = ? OR minggu_ke = 0)) OR "+
+		"(is_rutin = false AND tanggal = ?)"+
+		") AND jam_mulai < ? AND jam_selesai > ?",
+		bsiID, bsuID, models.JadwalPengangkutan, true, reqHari, mingguKe, reqDateStr, jamSelesai, req.JamMulai).First(&jadwal).Error
+
+	if err == nil {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "Permintaan ditolak. Jadwal pengangkutan pada waktu tersebut bertabrakan dengan jadwal yang sudah ada.",
+		})
+		return
 	}
 
 	tx := p.db.Begin()
@@ -474,7 +482,7 @@ func (p *PengangkutanController) RequestPengangkutanByBSU(c *gin.Context) {
 		PengangkutanID: pengangkutanID,
 		BSIID:          bsiID,
 		BSUId:          bsuID,
-		AdminBSIID:     nil,          // Kosong karena belum di-handle oleh BSI
+		AdminBSIID:     nil,         // Kosong karena belum di-handle oleh BSI
 		AdminBSUId:     &adminBSUId, // Set Admin BSU yang request
 		JadwalID:       newJadwal.JadwalID,
 	}
@@ -506,16 +514,155 @@ func (p *PengangkutanController) RequestPengangkutanByBSU(c *gin.Context) {
 		return
 	}
 
+	go func() {
+		namaBSU := bsu.NamaBank
+		pgkID := pengangkutanID
+		type AdminUser struct {
+			UserID   string
+			FCMToken string
+		}
+		var adminsBSI []AdminUser
+		if err := p.db.Table("admin").
+			Select("users.user_id, users.fcm_token").
+			Joins("JOIN users ON users.user_id = admin.user_id").
+			Where("admin.bank_id = ?", bsiID).
+			Scan(&adminsBSI).Error; err != nil {
+			return
+		}
+		for _, adm := range adminsBSI {
+			p.notifSvc.NotifRequestPengangkutan(context.Background(), adm.UserID, adm.FCMToken, namaBSU, pgkID)
+		}
+	}()
+
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Permintaan pengangkutan berhasil diajukan",
 		"data":    newPengangkutan,
 	})
 }
 
+func (p *PengangkutanController) PreviewPengangkutanSampah(c *gin.Context) {
+	pengangkutanID := c.Param("pengangkutan_id")
+
+	// ── 1. Parse form ─────────────────────────────────────────────────────────
+	itemsStr := c.PostForm("items")
+	if itemsStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Data items tidak boleh kosong"})
+		return
+	}
+
+	type ItemRequest struct {
+		SampahID string  `json:"sampah_id"`
+		Qty      float64 `json:"qty"`
+	}
+	var items []ItemRequest
+	if err := json.Unmarshal([]byte(itemsStr), &items); err != nil || len(items) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Format data items tidak valid atau kosong"})
+		return
+	}
+
+	// ── 2. Ambil data pengangkutan → BSU & BSI ────────────────────────────────
+	var pengangkutan models.PengangkutanSampah
+	if err := p.db.Where("pengangkutan_id = ?", pengangkutanID).First(&pengangkutan).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Sesi pengangkutan tidak ditemukan"})
+		return
+	}
+	bsiID := pengangkutan.BSIID
+	bsuID := pengangkutan.BSUId
+
+	// ── 3. Preview per item ───────────────────────────────────────────────────
+	type ItemPreview struct {
+		SampahID        string  `json:"sampah_id"`
+		NamaSampah      string  `json:"nama_sampah"`
+		NamaReward      string  `json:"nama_reward"`
+		Qty             float64 `json:"qty"`
+		StokBSUSebelum  float64 `json:"stok_bsu_sebelum"`
+		StokBSUSetelah  float64 `json:"stok_bsu_setelah"`
+		StokBSISebelum  float64 `json:"stok_bsi_sebelum"`
+		StokBSISetelah  float64 `json:"stok_bsi_setelah"`
+		CukupUntukKirim bool    `json:"cukup_untuk_kirim"`
+	}
+
+	var itemPreviews []ItemPreview
+	adaStokKurang := false
+
+	for _, item := range items {
+		if item.Qty <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Qty harus lebih dari 0"})
+			return
+		}
+
+		// Ambil nama sampah
+		var sampah models.KatalogSampah
+		if err := p.db.Preload("Reward").Where("sampah_id = ?", item.SampahID).First(&sampah).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Sampah tidak ditemukan: " + item.SampahID})
+			return
+		}
+
+		// Ambil stok BSU saat ini
+		var stokBSU models.StokSampah
+		stokBSUSaatIni := 0.0
+		if err := p.db.Where("bank_id = ? AND sampah_id = ?", bsuID, item.SampahID).
+			First(&stokBSU).Error; err == nil {
+			stokBSUSaatIni = stokBSU.Stok
+		}
+
+		// Ambil stok BSI saat ini
+		var stokBSI models.StokSampah
+		stokBSISaatIni := 0.0
+		if err := p.db.Where("bank_id = ? AND sampah_id = ?", bsiID, item.SampahID).
+			First(&stokBSI).Error; err == nil {
+			stokBSISaatIni = stokBSI.Stok
+		}
+
+		cukup := stokBSUSaatIni >= item.Qty
+		if !cukup {
+			adaStokKurang = true
+		}
+
+		itemPreviews = append(itemPreviews, ItemPreview{
+			SampahID:        item.SampahID,
+			NamaSampah:      sampah.NamaSampah,
+			NamaReward:      string(sampah.Reward.NamaReward),
+			Qty:             item.Qty,
+			StokBSUSebelum:  stokBSUSaatIni,
+			StokBSUSetelah:  stokBSUSaatIni - item.Qty,
+			StokBSISebelum:  stokBSISaatIni,
+			StokBSISetelah:  stokBSISaatIni + item.Qty,
+			CukupUntukKirim: cukup,
+		})
+	}
+
+	var bankBSU models.BankSampah
+	if err := p.db.Where("bank_id = ?", bsuID).First(&bankBSU).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data bank BSU: " + err.Error()})
+		return
+	}
+
+	var bankBSI models.BankSampah
+	if err := p.db.Where("bank_id = ?", bsiID).First(&bankBSI).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data bank BSI: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Preview pengangkutan berhasil dihitung",
+		"data": gin.H{
+			"pengangkutan_id": pengangkutanID,
+			"bsi_id":          bsiID,
+			"nama_bsi":        bankBSI.NamaBank,
+			"bsu_id":          bsuID,
+			"nama_bsu":        bankBSU.NamaBank,
+			"total_item":      len(items),
+			"ada_stok_kurang": adaStokKurang,
+			"items":           itemPreviews,
+		},
+	})
+}
+
 // ─── InputSampahPengangkutan ──────────────────────────────────────────────────
 // POST /pengangkutan/input/:pengangkutan_id/:admin_bsi_id/:admin_bsu_id
 // Mencatat detail sampah yang diangkut dari BSU ke BSI.
-// Dalam satu transaksi DB: kurangi stok BSU, tambah stok BSI, update saldo kedua bank.
+// Dalam satu transaksi DB: kurangi stok BSU, tambah stok BSI, update tabungan BSU.
 func (p *PengangkutanController) InputSampahPengangkutan(c *gin.Context) {
 	pengangkutanID := c.Param("pengangkutan_id")
 	adminBSIID := c.Param("admin_bsi_id")
@@ -533,10 +680,11 @@ func (p *PengangkutanController) InputSampahPengangkutan(c *gin.Context) {
 		return
 	}
 
+	// Di arsitektur baru, harga/poin tidak diinput saat pengangkutan.
+	// Yang dicatat hanya qty fisik. Harga akan dihitung saat penjualan (bagi hasil).
 	type ItemRequest struct {
-		SampahID  string  `json:"sampah_id" binding:"required"`
-		Qty       float64 `json:"qty" binding:"required"`
-		NilaiPoin float64 `json:"nilai_poin" binding:"required"`
+		SampahID string  `json:"sampah_id" binding:"required"`
+		Qty      float64 `json:"qty" binding:"required"`
 	}
 	var items []ItemRequest
 
@@ -544,12 +692,6 @@ func (p *PengangkutanController) InputSampahPengangkutan(c *gin.Context) {
 	if importJSON != nil || len(items) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Format data items tidak valid atau kosong"})
 		return
-	}
-
-	// Hitung total poin dari semua item
-	totalPoin := float64(0)
-	for _, item := range items {
-		totalPoin += item.Qty * item.NilaiPoin
 	}
 
 	var buktiFotoURL *string
@@ -598,7 +740,6 @@ func (p *PengangkutanController) InputSampahPengangkutan(c *gin.Context) {
 			AdminBSIID:     adminBSIID,
 			AdminBSUId:     adminBSUId,
 			TotalItem:      len(items),
-			TotalPoin:      totalPoin,
 			CreatedAt:      now,
 			StatusSetoran:  models.StatusBerhasil,
 		}
@@ -606,14 +747,12 @@ func (p *PengangkutanController) InputSampahPengangkutan(c *gin.Context) {
 			return fmt.Errorf("gagal membuat paket setoran: %w", err)
 		}
 
-		// 3. Simpan setiap item + transfer stok BSU -> BSI
+		// 3. Simpan setiap item + transfer stok BSU -> BSI + insert tabungan_sampah (FIFO)
 		for _, item := range items {
 			detail := models.DetailPaket{
-				PaketID:      paketID,
-				SampahID:     item.SampahID,
-				Qty:          item.Qty,
-				NilaiPoin:    item.NilaiPoin,
-				SubtotalPoin: item.Qty * item.NilaiPoin,
+				PaketID:  paketID,
+				SampahID: item.SampahID,
+				Qty:      item.Qty,
 			}
 			if err := tx.Create(&detail).Error; err != nil {
 				return fmt.Errorf("gagal menyimpan detail item (sampah_id=%s): %w", item.SampahID, err)
@@ -650,46 +789,32 @@ func (p *PengangkutanController) InputSampahPengangkutan(c *gin.Context) {
 			}
 		}
 
-		// 4. Update saldo BSU (bertambah sebagai poin tabungan)
-		var saldoBSU models.SaldoBank
-		resSaldoBSU := tx.Where("bank_id = ?", bsuID).First(&saldoBSU)
-		if resSaldoBSU.Error == gorm.ErrRecordNotFound {
-			saldoBSU = models.SaldoBank{
-				SaldoBankID:   utils.GenerateID("SLB"),
-				BankID:        bsuID,
-				TotalPoin:     0,
-				LastUpdatedAt: now,
-				LastUpdatedBy: adminBSIID,
+		// 4. Insert tabungan_sampah per item untuk BSU (FIFO inventory bagi hasil)
+		// Khusus sampah dengan reward "Sembako": skip insert tabungan_sampah,
+		// karena BSU tidak mendapat bagian poin saat bagi hasil bernilai sembako.
+		for _, item := range items {
+			var sampahInfo models.KatalogSampah
+			if err := tx.Preload("Reward").Where("sampah_id = ?", item.SampahID).First(&sampahInfo).Error; err != nil {
+				return fmt.Errorf("gagal mengambil info sampah %s: %w", item.SampahID, err)
 			}
-			if err := tx.Create(&saldoBSU).Error; err != nil {
-				return fmt.Errorf("gagal membuat saldo BSU: %w", err)
+			if sampahInfo.Reward.NamaReward == models.RewardEnumSembako {
+				// Reward sembako: BSU tidak dapat poin dari bagi hasil, lewati tabungan
+				continue
 			}
-		} else if resSaldoBSU.Error != nil {
-			return resSaldoBSU.Error
-		}
 
-		saldoBSUBefore := saldoBSU.TotalPoin
-		saldoBSUAfter := saldoBSUBefore + totalPoin
-
-		if err := tx.Model(&saldoBSU).Updates(map[string]interface{}{
-			"total_poin":      saldoBSUAfter,
-			"last_updated_at": now,
-			"last_updated_by": adminBSIID,
-		}).Error; err != nil {
-			return fmt.Errorf("gagal update saldo BSU: %w", err)
-		}
-
-		trxBSU := models.TransaksiSaldoBank{
-			TransaksiBankID: utils.GenerateID("TBK"),
-			SaldoBankID:     saldoBSU.SaldoBankID,
-			JenisTransaksi:  models.TransaksiPengangkutan,
-			Jumlah:          totalPoin,
-			SaldoSebelum:    saldoBSUBefore,
-			SaldoSesudah:    saldoBSUAfter,
-			UpdatedAt:       now,
-		}
-		if err := tx.Create(&trxBSU).Error; err != nil {
-			return fmt.Errorf("gagal mencatat transaksi saldo BSU: %w", err)
+			tabungan := models.TabunganSampah{
+				TabunganID: utils.GenerateID("TBG"),
+				BankID:     &bsuID,
+				SampahID:   item.SampahID,
+				Entitas:    models.EntitasBankSampah,
+				Qty:        item.Qty,
+				SisaQty:    item.Qty,
+				CreatedAt:  now,
+				SourceID:   &paketID,
+			}
+			if err := tx.Create(&tabungan).Error; err != nil {
+				return fmt.Errorf("gagal membuat tabungan sampah BSU: %w", err)
+			}
 		}
 
 		// 5. Update status_pengangkutan menjadi completed
@@ -712,9 +837,48 @@ func (p *PengangkutanController) InputSampahPengangkutan(c *gin.Context) {
 		return
 	}
 
+	// ── Kirim notifikasi ke semua admin/petugas BSU (fire-and-forget) ────────────
+	go func() {
+		// Ambil bsiID dari pengangkutan untuk mendapatkan nama BSI
+		var pengangkutanData models.PengangkutanSampah
+		if err := p.db.Where("pengangkutan_id = ?", pengangkutanID).First(&pengangkutanData).Error; err != nil {
+			return
+		}
+		var bankBSI models.BankSampah
+		if err := p.db.Where("bank_id = ?", pengangkutanData.BSIID).First(&bankBSI).Error; err != nil {
+			return
+		}
+
+		// Ambil semua admin BSU beserta user_id dan fcm_token
+		type AdminUser struct {
+			UserID   string
+			FCMToken string
+		}
+		var adminUsers []AdminUser
+		if err := p.db.Table("admin").
+			Select("users.user_id, users.fcm_token").
+			Joins("JOIN users ON users.user_id = admin.user_id").
+			Where("admin.bank_id = ? AND admin.status_admin = ?", pengangkutanData.BSUId, models.Aktif).
+			Scan(&adminUsers).Error; err != nil {
+			return
+		}
+
+		for _, au := range adminUsers {
+			if err := p.notifSvc.NotifPengangkutanBerhasil(
+				context.Background(),
+				au.UserID,
+				au.FCMToken,
+				len(items),
+				bankBSI.NamaBank,
+				pengangkutanID,
+			); err != nil {
+				fmt.Printf("[Notif] Gagal kirim notif pengangkutan ke user %s: %v\n", au.UserID, err)
+			}
+		}
+	}()
+
 	c.JSON(http.StatusCreated, gin.H{
 		"message":    "Sampah berhasil diinput ke sesi pengangkutan",
-		"total_poin": totalPoin,
 		"total_item": len(items),
 	})
 }
@@ -725,33 +889,32 @@ func (p *PengangkutanController) DetailSampahPengangkutan(c *gin.Context) {
 	pengangkutanID := c.Param("pengangkutan_id")
 
 	type ItemDetail struct {
-		SampahID     string  `json:"sampah_id" gorm:"column:sampah_id"`
-		NamaSampah   string  `json:"nama_sampah" gorm:"column:nama_sampah"`
-		Satuan       string  `json:"satuan" gorm:"column:satuan"`
-		Qty          float64 `json:"qty" gorm:"column:qty"`
-		NilaiPoin    float64 `json:"nilai_poin" gorm:"column:nilai_poin"`
-		SubtotalPoin float64 `json:"subtotal_poin" gorm:"column:subtotal_poin"`
+		SampahID   string  `json:"sampah_id" gorm:"column:sampah_id"`
+		NamaSampah string  `json:"nama_sampah" gorm:"column:nama_sampah"`
+		Satuan     string  `json:"satuan" gorm:"column:satuan"`
+		Qty        float64 `json:"qty" gorm:"column:qty"`
 	}
 
 	type HeaderDetail struct {
-		PaketID            string    `json:"paket_id" gorm:"column:paket_id"`
-		PengangkutanID     string    `json:"pengangkutan_id" gorm:"column:pengangkutan_id"`
-		NamaBSI            string    `json:"nama_bsi" gorm:"column:nama_bsi"`
-		NamaBSU            string    `json:"nama_bsu" gorm:"column:nama_bsu"`
-		NamaAdminBSI       string    `json:"nama_admin_bsi" gorm:"column:nama_admin_bsi"`
-		TotalItem          int       `json:"total_item" gorm:"column:total_item"`
-		TotalPoin          float64   `json:"total_poin" gorm:"column:total_poin"`
-		StatusSetoran      string    `json:"status_setoran" gorm:"column:status_setoran"`
-		CreatedAt          time.Time `json:"created_at" gorm:"column:created_at"`
+		PaketID        string    `json:"paket_id" gorm:"column:paket_id"`
+		PengangkutanID string    `json:"pengangkutan_id" gorm:"column:pengangkutan_id"`
+		NamaBSI        string    `json:"nama_bsi" gorm:"column:nama_bsi"`
+		NamaBSU        string    `json:"nama_bsu" gorm:"column:nama_bsu"`
+		NamaAdminBSI   string    `json:"nama_admin_bsi" gorm:"column:nama_admin_bsi"`
+		TotalItem      int       `json:"total_item" gorm:"column:total_item"`
+		StatusSetoran  string    `json:"status_setoran" gorm:"column:status_setoran"`
+		CreatedAt      time.Time `json:"created_at" gorm:"column:created_at"`
+		BuktiFoto      string    `json:"bukti_foto" gorm:"column:bukti_foto"`
 	}
 
 	var header HeaderDetail
 	if err := p.db.Table("paket_setoran_bank psb").
-		Select(`psb.paket_id, psb.pengangkutan_id,
+		Select(`psb.paket_id, psb.pengangkutan_id, ps.bukti_foto,
 			bsi.nama_bank AS nama_bsi,
 			bsu.nama_bank AS nama_bsu,
 			u_bsi.nama AS nama_admin_bsi,
-			psb.total_item, psb.total_poin, psb.status_setoran, psb.created_at`).
+			psb.total_item, psb.status_setoran, psb.created_at`).
+		Joins("LEFT JOIN pengangkutan_sampah ps ON ps.pengangkutan_id = psb.pengangkutan_id").
 		Joins("LEFT JOIN bank_sampah bsi ON bsi.bank_id = psb.bsi_id").
 		Joins("LEFT JOIN bank_sampah bsu ON bsu.bank_id = psb.bsu_id").
 		Joins("LEFT JOIN admin a_bsi ON a_bsi.admin_id = psb.admin_bsi_id").
@@ -764,7 +927,7 @@ func (p *PengangkutanController) DetailSampahPengangkutan(c *gin.Context) {
 
 	var items []ItemDetail
 	if err := p.db.Table("detail_paket dp").
-		Select("dp.sampah_id, ks.nama_sampah, ks.satuan, dp.qty, dp.nilai_poin, dp.subtotal_poin").
+		Select("dp.sampah_id, ks.nama_sampah, ks.satuan, dp.qty").
 		Joins("LEFT JOIN katalog_sampah ks ON ks.sampah_id = dp.sampah_id").
 		Where("dp.paket_id = ?", header.PaketID).
 		Find(&items).Error; err != nil {
@@ -788,17 +951,18 @@ func (p *PengangkutanController) ListSampahPengangkutan(c *gin.Context) {
 	type SampahList struct {
 		SampahID   string  `json:"sampah_id" gorm:"column:sampah_id"`
 		NamaSampah string  `json:"nama_sampah" gorm:"column:nama_sampah"`
+		FotoSampah string  `json:"foto_sampah" gorm:"column:foto_sampah"`
 		Satuan     string  `json:"satuan" gorm:"column:satuan"`
-		NilaiPoin  float64 `json:"nilai_poin" gorm:"column:poin_harga"`
+		NamaReward string  `json:"nama_reward" gorm:"column:nama_reward"`
 		Stok       float64 `json:"stok" gorm:"column:stok"`
 	}
 
 	var sampah []SampahList
 	if err := p.db.Table("katalog_sampah ks").
-		Select("ks.sampah_id, ks.nama_sampah, ks.satuan, sh.poin_harga, COALESCE(ss.stok, 0) AS stok").
-		Joins("INNER JOIN schema_harga_sampah sh ON sh.sampah_id = ks.sampah_id").
+		Select("ks.sampah_id, ks.nama_sampah, ks.photo_url, ks.satuan, r.nama_reward, COALESCE(ss.stok, 0) AS stok").
 		Joins("LEFT JOIN stok_sampah ss ON ss.sampah_id = ks.sampah_id AND ss.bank_id = ?", bsuID).
-		Where("ks.bank_id = ? AND sh.level_user = ?", bsiID, models.LevelBSU).
+		Joins("LEFT JOIN reward r ON r.reward_id = ks.reward_id").
+		Where("ks.bank_id = ?", bsiID).
 		Find(&sampah).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data sampah: " + err.Error()})
 		return
@@ -807,5 +971,259 @@ func (p *PengangkutanController) ListSampahPengangkutan(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "List sampah berhasil diambil",
 		"data":    sampah,
+	})
+}
+
+func (p *PengangkutanController) CheckSesiActivePengangkutan(c *gin.Context) {
+	bsuID := c.Param("bsu_id")
+
+	// 1. Validasi BSU
+	var bank models.BankSampah
+	if err := p.db.Where("bank_id = ?", bsuID).First(&bank).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Bank tidak ditemukan"})
+		return
+	}
+	if bank.JenisBank != models.BSU {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Bank bukan BSU"})
+		return
+	}
+
+	bsiID := bank.ParentBankID
+	if bsiID == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "BSU tidak memiliki BSI induk"})
+		return
+	}
+
+	// 2. Ambil nama BSI
+	var bsi models.BankSampah
+	namaBSI := ""
+	if err := p.db.Where("bank_id = ?", *bsiID).First(&bsi).Error; err == nil {
+		namaBSI = bsi.NamaBank
+	}
+
+	// 3. Cari sesi pengangkutan terbaru milik BSU ini
+	var pengangkutan models.PengangkutanSampah
+	if err := p.db.
+		Where("bsu_id = ? AND bsi_id = ?", bsuID, *bsiID).
+		Order("pengangkutan_id DESC").
+		First(&pengangkutan).Error; err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"is_active": false,
+			"bsi_id":    *bsiID,
+			"nama_bsi":  namaBSI,
+		})
+		return
+	}
+
+	// 4. Ambil riwayat terbaru (status terkini)
+	var riwayatTerbaru models.RiwayatPengangkutan
+	if err := p.db.
+		Where("pengangkutan_id = ?", pengangkutan.PengangkutanID).
+		Order("changed_at DESC").
+		First(&riwayatTerbaru).Error; err != nil {
+		// Tidak ada riwayat berarti sesi baru saja dibuat, masih aktif
+		c.JSON(http.StatusOK, gin.H{
+			"is_active":       true,
+			"pengangkutan_id": pengangkutan.PengangkutanID,
+			"bsi_id":          *bsiID,
+			"nama_bsi":        namaBSI,
+			"status_terkini":  "",
+		})
+		return
+	}
+
+	// 5. Cek apakah status terkini merupakan status terminal (selesai)
+	statusTerminal := riwayatTerbaru.StatusPengangkutan == models.StatusCompleted ||
+		riwayatTerbaru.StatusPengangkutan == models.StatusRejected ||
+		riwayatTerbaru.StatusPengangkutan == models.StatusCanceled
+
+	c.JSON(http.StatusOK, gin.H{
+		"is_active":       !statusTerminal,
+		"pengangkutan_id": pengangkutan.PengangkutanID,
+		"bsi_id":          *bsiID,
+		"nama_bsi":        namaBSI,
+		"status_terkini":  riwayatTerbaru.StatusPengangkutan,
+	})
+}
+
+func (p *PengangkutanController) DetailSesiActivePengangkutan(c *gin.Context) {
+	pengangkutanID := c.Param("pengangkutan_id")
+
+	// 1. Ambil data pengangkutan beserta BSI
+	var pengangkutan models.PengangkutanSampah
+	if err := p.db.Where("pengangkutan_id = ?", pengangkutanID).First(&pengangkutan).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Sesi pengangkutan tidak ditemukan"})
+		return
+	}
+
+	// 2. Ambil nama BSI
+	var bsi models.BankSampah
+	namaBSI := ""
+	if err := p.db.Where("bank_id = ?", pengangkutan.BSIID).First(&bsi).Error; err == nil {
+		namaBSI = bsi.NamaBank
+	}
+
+	// 4. Ambil nama BSU
+	var bsu models.BankSampah
+	namaBSU := ""
+	if err := p.db.Where("bank_id = ?", pengangkutan.BSUId).First(&bsu).Error; err == nil {
+		namaBSU = bsu.NamaBank
+	}
+
+	// 3. Ambil seluruh riwayat diurutkan terbaru di atas beserta nama petugas
+	type RiwayatDenganNama struct {
+		models.RiwayatPengangkutan
+		NamaPetugas string `gorm:"column:nama"`
+	}
+	var riwayat []RiwayatDenganNama
+	if err := p.db.Table("riwayat_pengangkutan").
+		Select("riwayat_pengangkutan.*, users.nama").
+		Joins("LEFT JOIN admin ON admin.admin_id = riwayat_pengangkutan.changed_by").
+		Joins("LEFT JOIN users ON users.user_id = admin.user_id").
+		Where("riwayat_pengangkutan.pengangkutan_id = ?", pengangkutanID).
+		Order("riwayat_pengangkutan.changed_at DESC").
+		Find(&riwayat).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil riwayat: " + err.Error()})
+		return
+	}
+
+	type RiwayatResp struct {
+		Status    models.StatusPengangkutan `json:"status"`
+		ChangedAt time.Time                 `json:"changed_at"`
+		ChangedBy string                    `json:"changed_by"`
+		Catatan   string                    `json:"catatan"`
+	}
+
+	var riwayatResp []RiwayatResp
+	var statusTerkini models.StatusPengangkutan
+	for i, r := range riwayat {
+		if i == 0 {
+			statusTerkini = r.StatusPengangkutan
+		}
+
+		nama := r.NamaPetugas
+		if nama == "" {
+			nama = r.ChangedBy // fallback ke ID jika tidak ditemukan (atau jika by system)
+		}
+
+		riwayatResp = append(riwayatResp, RiwayatResp{
+			Status:    r.StatusPengangkutan,
+			ChangedAt: r.ChangedAt,
+			ChangedBy: nama,
+			Catatan:   r.Notes,
+		})
+	}
+	if riwayatResp == nil {
+		riwayatResp = []RiwayatResp{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"pengangkutan_id": pengangkutan.PengangkutanID,
+		"bsi_id":          pengangkutan.BSIID,
+		"nama_bsi":        namaBSI,
+		"bsu_id":          pengangkutan.BSUId,
+		"nama_bsu":        namaBSU,
+		"bukti_foto":      pengangkutan.BuktiFoto,
+		"status_terkini":  statusTerkini,
+		"riwayat":         riwayatResp,
+	})
+}
+
+func (p *PengangkutanController) GetAllActivePengangkutan(c *gin.Context) {
+	bsiID := c.Param("bsi_id")
+	adminID := c.Param("admin_id")
+
+	// 1. Validasi BSI
+	var bsi models.BankSampah
+	if err := p.db.Where("bank_id = ?", bsiID).First(&bsi).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "BSI tidak ditemukan"})
+		return
+	}
+	if bsi.JenisBank != models.BSI {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Bank bukan BSI"})
+		return
+	}
+
+	// 2. Ambil semua BSU di bawah BSI ini
+	var daftarBSU []models.BankSampah
+	if err := p.db.Where("parent_bank_id = ? AND jenis_bank = ?", bsiID, models.BSU).Find(&daftarBSU).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data BSU: " + err.Error()})
+		return
+	}
+
+	type PengangkutanAktif struct {
+		PengangkutanID  string                    `json:"pengangkutan_id"`
+		BsuID           string                    `json:"bsu_id"`
+		NamaBsu         string                    `json:"nama_bsu"`
+		StatusTerkini   models.StatusPengangkutan `json:"status_terkini"`
+		IsActionAllowed bool                      `json:"is_action_allowed"`
+		Tanggal         string                    `json:"tanggal,omitempty"`
+		JamMulai        string                    `json:"jam_mulai,omitempty"`
+		JamSelesai      string                    `json:"jam_selesai,omitempty"`
+	}
+
+	var result []PengangkutanAktif
+
+	for _, b := range daftarBSU {
+		// 3. Cari pengangkutan terbaru untuk BSU ini
+		var pgk models.PengangkutanSampah
+		if err := p.db.
+			Where("bsu_id = ? AND bsi_id = ?", b.BankID, bsiID).
+			Order("pengangkutan_id DESC").
+			First(&pgk).Error; err != nil {
+			// Tidak ada pengangkutan untuk BSU ini, skip
+			continue
+		}
+
+		// 4. Cek status terkini dari riwayat
+		var riwayatTerbaru models.RiwayatPengangkutan
+		if err := p.db.
+			Where("pengangkutan_id = ?", pgk.PengangkutanID).
+			Order("changed_at DESC").
+			First(&riwayatTerbaru).Error; err != nil {
+			// Tidak ada riwayat berarti sesi baru dan belum ada perubahan status
+			continue
+		}
+
+		// 5. Lewati jika sudah di status terminal (selesai)
+		statusTerminal := riwayatTerbaru.StatusPengangkutan == models.StatusCompleted ||
+			riwayatTerbaru.StatusPengangkutan == models.StatusRejected ||
+			riwayatTerbaru.StatusPengangkutan == models.StatusCanceled
+		if statusTerminal {
+			continue
+		}
+
+		// 6. is_action_allowed = apakah admin ini yang menangani pengangkutan ini
+		// Jika belum ada admin yang menangani (AdminBSIID == nil), maka aksi diizinkan
+		isActionAllowed := pgk.AdminBSIID == nil || *pgk.AdminBSIID == adminID
+
+		// 7. Ambil detail Jadwal
+		var jadwal models.Jadwal
+		p.db.Where("jadwal_id = ?", pgk.JadwalID).First(&jadwal)
+		tanggalStr := ""
+		if !jadwal.Tanggal.IsZero() {
+			tanggalStr = jadwal.Tanggal.Format("2006-01-02")
+		}
+
+		result = append(result, PengangkutanAktif{
+			PengangkutanID:  pgk.PengangkutanID,
+			BsuID:           b.BankID,
+			NamaBsu:         b.NamaBank,
+			StatusTerkini:   riwayatTerbaru.StatusPengangkutan,
+			IsActionAllowed: isActionAllowed,
+			Tanggal:         tanggalStr,
+			JamMulai:        jadwal.JamMulai,
+			JamSelesai:      jadwal.JamSelesai,
+		})
+	}
+
+	if result == nil {
+		result = []PengangkutanAktif{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"bsi_id":   bsiID,
+		"nama_bsi": bsi.NamaBank,
+		"data":     result,
 	})
 }

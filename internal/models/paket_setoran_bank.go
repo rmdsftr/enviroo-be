@@ -14,7 +14,6 @@ type PaketSetoranBank struct {
 	AdminBSUId string `gorm:"column:admin_bsu_id;size:100"`
 
 	TotalItem int `gorm:"column:total_item"`
-	TotalPoin float64 `gorm:"column:total_poin;type:decimal(20,4)"`
 
 	CreatedAt time.Time `gorm:"column:created_at"`
 

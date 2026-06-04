@@ -11,6 +11,7 @@ const (
 	StatusOTW       StatusPengangkutan = "otw"
 	StatusCanceled  StatusPengangkutan = "canceled"
 	StatusCompleted StatusPengangkutan = "completed"
+	StatusArrived   StatusPengangkutan = "arrived"
 )
 
 type RiwayatPengangkutan struct {

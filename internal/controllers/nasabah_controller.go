@@ -27,12 +27,15 @@ func NewNasabahController(db *gorm.DB, cfStorage *storage.CloudflareStorage, mai
 }
 
 type AddNasabahRequest struct {
-	UserID string `json:"user_id" binding:"required"`
-	Nama string `json:"nama" binding:"required"`
-	Email string `json:"email" binding:"required,email"`
-	NoWhatsapp string `json:"no_whatsapp" binding:"required"`
-	BankID string `json:"bank_id" binding:"required"`
-	AdminID string `json:"admin_id" binding:"required"`
+	UserID      string  `json:"user_id" binding:"required"`
+	Nama        string  `json:"nama" binding:"required"`
+	Email       string  `json:"email" binding:"required,email"`
+	NoWhatsapp  string  `json:"no_whatsapp" binding:"required"`
+	BankID      string  `json:"bank_id" binding:"required"`
+	AdminID     string  `json:"admin_id" binding:"required"`
+	NoRekening  string  `json:"no_rekening"`
+	SaldoRupiah float64 `json:"saldo_rupiah"`
+	SaldoPoin   float64 `json:"saldo_poin"`
 }
 
 func (nc *NasabahController) AddNewNasabah(c *gin.Context) {
@@ -42,15 +45,11 @@ func (nc *NasabahController) AddNewNasabah(c *gin.Context) {
 		return
 	}
 
-	var adminCount int64
-	nc.DB.Model(&models.Admin{}).Where("user_id = ? AND bank_id = ?", req.UserID, req.BankID).Count(&adminCount)
-	if adminCount > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "Admin bank sampah tidak boleh menjadi nasabah di bank sampah yang sama"})
+	var userCount int64
+	if err := nc.DB.Model(&models.User{}).Where("user_id = ?", req.UserID).Count(&userCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memvalidasi data user"})
 		return
 	}
-
-	var userCount int64
-	nc.DB.Model(&models.User{}).Where("user_id = ?", req.UserID).Count(&userCount)
 	if userCount > 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "User dengan NIK/ID ini sudah terdaftar. Gunakan menu pilih akun lama."})
 		return
@@ -61,12 +60,6 @@ func (nc *NasabahController) AddNewNasabah(c *gin.Context) {
 	if err := nc.DB.Where("bank_id = ?", req.BankID).First(&bank).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Bank tidak ditemukan"})
 		return
-	}
-
-	// Untuk NasabahID, tentukan reference bank (jika BSU ambil ParentBankID dari BSI, jika bukan tetap ID sendirinya)
-	referenceBankID := bank.BankID
-	if bank.JenisBank == models.BSU && bank.ParentBankID != nil {
-		referenceBankID = *bank.ParentBankID
 	}
 
 	tx := nc.DB.Begin()
@@ -88,16 +81,102 @@ func (nc *NasabahController) AddNewNasabah(c *gin.Context) {
 		return
 	}
 
+	nasabahID, err := utils.GenerateNasabahID(tx, req.BankID)
+	if err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate nasabah ID: " + err.Error()})
+		return
+	}
+
+	nomorRekening := req.NoRekening
+	if nomorRekening == "" {
+		nomorRekening = nasabahID
+	}
+
 	newNasabah := models.Nasabah{
-		NasabahID:     utils.GenerateNasabahID(bank.JenisBank, referenceBankID), // Generate ID/No Rekening
+		NasabahID:     nasabahID,
 		UserID:        req.UserID,
 		BankID:        req.BankID,
+		NomorRekening: nomorRekening,
 		StatusNasabah: models.Pending,
 	}
 
 	if err := tx.Create(&newNasabah).Error; err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create nasabah: " + err.Error()})
+		return
+	}
+
+	// Ambil reward_id secara dinamis
+	var rewardUang, rewardSembako models.Reward
+	if err := tx.Where("nama_reward = ?", models.RewardEnumUang).First(&rewardUang).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Reward Uang tidak ditemukan: " + err.Error()})
+		return
+	}
+	if err := tx.Where("nama_reward = ?", models.RewardEnumSembako).First(&rewardSembako).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Reward Sembako tidak ditemukan: " + err.Error()})
+		return
+	}
+
+	// Insert saldo awal Rupiah
+	saldoRupiah := models.SaldoRekening{
+		RekeningID:         utils.GenerateRekeningID(rewardUang.RewardID, newNasabah.NasabahID),
+		NasabahID:          &newNasabah.NasabahID,
+		RewardID:           &rewardUang.RewardID,
+		Entitas:            models.EntitasNasabah,
+		NominalSaldo:       req.SaldoRupiah,
+		SatuanNominalSaldo: models.SatuanRewardEnumRp,
+		LastUpdatedBy:      &req.AdminID,
+	}
+	if err := tx.Create(&saldoRupiah).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create saldo rupiah: " + err.Error()})
+		return
+	}
+
+	riwayatRupiah := models.RiwayatArusSaldo{
+		RiwayatSaldoID: utils.GenerateID("RWY"),
+		RekeningID:     &saldoRupiah.RekeningID,
+		NominalSebelum: 0,
+		NominalSesudah: req.SaldoRupiah,
+		CreatedBy:      &req.AdminID,
+		Keterangan:     "Saldo awal nasabah",
+	}
+	if err := tx.Create(&riwayatRupiah).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create riwayat saldo rupiah: " + err.Error()})
+		return
+	}
+
+	// Insert saldo awal Poin (sembako)
+	saldoPoin := models.SaldoRekening{
+		RekeningID:         utils.GenerateRekeningID(rewardSembako.RewardID, newNasabah.NasabahID),
+		NasabahID:          &newNasabah.NasabahID,
+		RewardID:           &rewardSembako.RewardID,
+		Entitas:            models.EntitasNasabah,
+		NominalSaldo:       req.SaldoPoin,
+		SatuanNominalSaldo: models.SatuanRewardEnumPoin,
+		LastUpdatedBy:      &req.AdminID,
+	}
+	if err := tx.Create(&saldoPoin).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create saldo poin: " + err.Error()})
+		return
+	}
+
+	riwayatPoin := models.RiwayatArusSaldo{
+		RiwayatSaldoID: utils.GenerateID("RWY"),
+		RekeningID:     &saldoPoin.RekeningID,
+		NominalSebelum: 0,
+		NominalSesudah: req.SaldoPoin,
+		CreatedBy:      &req.AdminID,
+		Keterangan:     "Saldo awal nasabah",
+	}
+	if err := tx.Create(&riwayatPoin).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create riwayat saldo poin: " + err.Error()})
 		return
 	}
 
@@ -125,6 +204,7 @@ func (nc *NasabahController) AddNewNasabah(c *gin.Context) {
 		Token:       hashedOTP,
 		ExpiredAt:   now.Add(24 * time.Hour),
 		GeneratedBy: req.AdminID,
+		Tujuan:      models.TujuanAktivasi,
 	}
 
 	if err := tx.Create(&newAktivasiAkun).Error; err != nil {
@@ -221,9 +301,12 @@ func (nc *NasabahController) GetNasabah(c *gin.Context) {
 }
 
 type AddNasabahOldUserRequest struct {
-	UserID  string `json:"user_id" binding:"required"`
-	BankID  string `json:"bank_id" binding:"required"`
-	AdminID string `json:"admin_id" binding:"required"`
+	UserID      string  `json:"user_id" binding:"required"`
+	BankID      string  `json:"bank_id" binding:"required"`
+	AdminID     string  `json:"admin_id" binding:"required"`
+	NoRekening  string  `json:"no_rekening"`
+	SaldoRupiah float64 `json:"saldo_rupiah"`
+	SaldoPoin   float64 `json:"saldo_poin"`
 }
 
 func (nc *NasabahController) AddNewNasabahOldUser(c *gin.Context) {
@@ -233,23 +316,39 @@ func (nc *NasabahController) AddNewNasabahOldUser(c *gin.Context) {
 		return
 	}
 
-	var adminCount int64
-	nc.DB.Model(&models.Admin{}).Where("user_id = ? AND bank_id = ?", req.UserID, req.BankID).Count(&adminCount)
-	if adminCount > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "Admin bank sampah tidak boleh menjadi nasabah di bank sampah yang sama"})
-		return
-	}
-
 	var existingUser models.User
 	if err := nc.DB.Where("user_id = ?", req.UserID).First(&existingUser).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User dengan ID ini tidak ditemukan"})
 		return
 	}
 
-	var nasabahCount int64
-	nc.DB.Model(&models.Nasabah{}).Where("user_id = ? AND bank_id = ?", req.UserID, req.BankID).Count(&nasabahCount)
-	if nasabahCount > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "User sudah terdaftar sebagai nasabah di bank sampah ini"})
+	var activeNasabahCount int64
+	if err := nc.DB.Model(&models.Nasabah{}).Where("user_id = ? AND status_nasabah = ?", req.UserID, models.Aktif).Count(&activeNasabahCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memvalidasi data nasabah"})
+		return
+	}
+	if activeNasabahCount > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "User sudah memiliki akun nasabah aktif. Nonaktifkan akun nasabah yang ada terlebih dahulu."})
+		return
+	}
+
+	var pendingNasabahElsewhere int64
+	if err := nc.DB.Model(&models.Nasabah{}).Where("user_id = ? AND status_nasabah = ? AND bank_id != ?", req.UserID, models.Pending, req.BankID).Count(&pendingNasabahElsewhere).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memvalidasi data nasabah"})
+		return
+	}
+	if pendingNasabahElsewhere > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "User masih dalam proses pendaftaran di bank sampah lain. Selesaikan atau batalkan pendaftaran tersebut terlebih dahulu."})
+		return
+	}
+
+	var existingNasabah models.Nasabah
+	if err := nc.DB.Where("user_id = ? AND bank_id = ?", req.UserID, req.BankID).First(&existingNasabah).Error; err == nil {
+		if existingNasabah.StatusNasabah == models.Nonaktif {
+			c.JSON(http.StatusConflict, gin.H{"error": "User pernah terdaftar di bank sampah ini. Gunakan fitur aktivasi untuk mengaktifkan kembali."})
+		} else {
+			c.JSON(http.StatusConflict, gin.H{"error": "User sudah terdaftar sebagai nasabah di bank sampah ini."})
+		}
 		return
 	}
 
@@ -260,28 +359,108 @@ func (nc *NasabahController) AddNewNasabahOldUser(c *gin.Context) {
 		return
 	}
 
-	// Untuk NasabahID, tentukan reference bank (jika BSU ambil ParentBankID dari BSI, jika bukan tetap ID sendirinya)
-	referenceBankID := bank.BankID
-	if bank.JenisBank == models.BSU && bank.ParentBankID != nil {
-		referenceBankID = *bank.ParentBankID
-	}
-
 	tx := nc.DB.Begin()
 	if tx.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memulai transaksi database"})
 		return
 	}
 
+	nasabahID, err := utils.GenerateNasabahID(tx, req.BankID)
+	if err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate nasabah ID: " + err.Error()})
+		return
+	}
+
+	nomorRekening2 := req.NoRekening
+	if nomorRekening2 == "" {
+		nomorRekening2 = nasabahID
+	}
+
 	newNasabah := models.Nasabah{
-		NasabahID:     utils.GenerateNasabahID(bank.JenisBank, referenceBankID), // Generate ID/No Rekening
+		NasabahID:     nasabahID,
 		UserID:        req.UserID,
 		BankID:        req.BankID,
+		NomorRekening: nomorRekening2,
 		StatusNasabah: models.Pending,
 	}
 
 	if err := tx.Create(&newNasabah).Error; err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create nasabah: " + err.Error()})
+		return
+	}
+
+	// Ambil reward_id secara dinamis
+	var rewardUang2, rewardSembako2 models.Reward
+	if err := tx.Where("nama_reward = ?", models.RewardEnumUang).First(&rewardUang2).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Reward Uang tidak ditemukan: " + err.Error()})
+		return
+	}
+	if err := tx.Where("nama_reward = ?", models.RewardEnumSembako).First(&rewardSembako2).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Reward Sembako tidak ditemukan: " + err.Error()})
+		return
+	}
+
+	// Insert saldo awal Rupiah
+	saldoRupiah := models.SaldoRekening{
+		RekeningID:         utils.GenerateRekeningID(rewardUang2.RewardID, newNasabah.NasabahID),
+		NasabahID:          &newNasabah.NasabahID,
+		RewardID:           &rewardUang2.RewardID,
+		Entitas:            models.EntitasNasabah,
+		NominalSaldo:       req.SaldoRupiah,
+		SatuanNominalSaldo: models.SatuanRewardEnumRp,
+		LastUpdatedBy:      &req.AdminID,
+	}
+	if err := tx.Create(&saldoRupiah).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create saldo rupiah: " + err.Error()})
+		return
+	}
+
+	riwayatRupiah := models.RiwayatArusSaldo{
+		RiwayatSaldoID: utils.GenerateID("RWY"),
+		RekeningID:     &saldoRupiah.RekeningID,
+		NominalSebelum: 0,
+		NominalSesudah: req.SaldoRupiah,
+		CreatedBy:      &req.AdminID,
+		Keterangan:     "Saldo awal nasabah",
+	}
+	if err := tx.Create(&riwayatRupiah).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create riwayat saldo rupiah: " + err.Error()})
+		return
+	}
+
+	// Insert saldo awal Poin (sembako)
+	saldoPoin := models.SaldoRekening{
+		RekeningID:         utils.GenerateRekeningID(rewardSembako2.RewardID, newNasabah.NasabahID),
+		NasabahID:          &newNasabah.NasabahID,
+		RewardID:           &rewardSembako2.RewardID,
+		Entitas:            models.EntitasNasabah,
+		NominalSaldo:       req.SaldoPoin,
+		SatuanNominalSaldo: models.SatuanRewardEnumPoin,
+		LastUpdatedBy:      &req.AdminID,
+	}
+	if err := tx.Create(&saldoPoin).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create saldo poin: " + err.Error()})
+		return
+	}
+
+	riwayatPoin := models.RiwayatArusSaldo{
+		RiwayatSaldoID: utils.GenerateID("RWY"),
+		RekeningID:     &saldoPoin.RekeningID,
+		NominalSebelum: 0,
+		NominalSesudah: req.SaldoPoin,
+		CreatedBy:      &req.AdminID,
+		Keterangan:     "Saldo awal nasabah",
+	}
+	if err := tx.Create(&riwayatPoin).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create riwayat saldo poin: " + err.Error()})
 		return
 	}
 
@@ -299,6 +478,13 @@ func (nc *NasabahController) AddNewNasabahOldUser(c *gin.Context) {
 		return
 	}
 
+	if err := tx.Where("user_id = ? AND as_role = ? AND tujuan = ? AND is_used = ?", req.UserID, models.RoleUserNasabah, models.TujuanAktivasi, false).
+		Delete(&models.AktivasiAkun{}).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to clean up old activation: " + err.Error()})
+		return
+	}
+
 	now := time.Now()
 	aktivasiID := utils.GenerateAktivasiID(req.UserID)
 
@@ -309,6 +495,7 @@ func (nc *NasabahController) AddNewNasabahOldUser(c *gin.Context) {
 		Token:       hashedOTP,
 		ExpiredAt:   now.Add(24 * time.Hour),
 		GeneratedBy: req.AdminID,
+		Tujuan:      models.TujuanAktivasi,
 	}
 
 	if err := tx.Create(&newAktivasiAkun).Error; err != nil {
@@ -364,23 +551,19 @@ func (nc *NasabahController) NasabahBankSampah(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
 	type NasabahBankSampahResponse struct {
-		NasabahID       string `json:"nasabah_id" gorm:"column:nasabah_id"`
-		NamaNasabah     string `json:"nama_nasabah" gorm:"column:nama_nasabah"`
-		Foto            string `json:"foto" gorm:"column:foto"`
-		BankSampahPusat string `json:"bank_sampah_pusat" gorm:"column:bank_sampah_pusat"`
-		BankSampahUnit  string `json:"bank_sampah_unit" gorm:"column:bank_sampah_unit"`
-		StatusNasabah   string `json:"status_nasabah" gorm:"column:status_nasabah"`
+		NasabahID     string `json:"nasabah_id" gorm:"column:nasabah_id"`
+		NamaNasabah   string `json:"nama_nasabah" gorm:"column:nama_nasabah"`
+		Foto          string `json:"foto" gorm:"column:foto"`
+		NIK           string `json:"nik" gorm:"column:nik"`
+		Email         string `json:"email" gorm:"column:email"`
+		StatusNasabah string `json:"status_nasabah" gorm:"column:status_nasabah"`
 	}
 
 	var results []NasabahBankSampahResponse
 
 	query := nc.DB.Table("nasabah").
-		Select("nasabah.nasabah_id, u.nama AS nama_nasabah, u.photo_url AS foto, nasabah.status_nasabah, " +
-			"CASE WHEN b.jenis_bank = 'bsu' THEN p.nama_bank ELSE b.nama_bank END AS bank_sampah_pusat, " +
-			"CASE WHEN b.jenis_bank = 'bsu' THEN b.nama_bank ELSE '' END AS bank_sampah_unit").
+		Select("nasabah.nasabah_id, u.nama AS nama_nasabah, u.photo_url AS foto, nasabah.status_nasabah, u.user_id AS nik, u.email").
 		Joins("LEFT JOIN users u ON nasabah.user_id = u.user_id").
-		Joins("LEFT JOIN bank_sampah b ON nasabah.bank_id = b.bank_id").
-		Joins("LEFT JOIN bank_sampah p ON b.parent_bank_id = p.bank_id").
 		Where("nasabah.bank_id = ?", bankID)
 
 	if err := query.Find(&results).Error; err != nil {

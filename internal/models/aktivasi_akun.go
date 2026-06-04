@@ -8,6 +8,14 @@ type RoleUserEnum string
 const (
 	RoleUserNasabah RoleUserEnum = "nasabah"
 	RoleUserAdmin   RoleUserEnum = "admin"
+	RoleUserGlobal  RoleUserEnum = "global"
+)
+
+type TujuanEnum string
+
+const (
+	TujuanAktivasi      TujuanEnum = "aktivasi"
+	TujuanResetPassword TujuanEnum = "reset_password"
 )
 
 // MODEL
@@ -25,6 +33,7 @@ type AktivasiAkun struct {
 	CreatedAt  time.Time     `gorm:"column:created_at;autoCreateTime"`
 
 	GeneratedBy string       `gorm:"column:generated_by;size:100"`
+	Tujuan      TujuanEnum   `gorm:"column:tujuan;type:tujuan_enum"`
 
 	// Relasi (optional)
 	User        *User        `gorm:"foreignKey:UserID;references:UserID;constraint:OnDelete:CASCADE"`

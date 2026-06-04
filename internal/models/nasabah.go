@@ -10,7 +10,7 @@ type Nasabah struct {
 	NomorRekening string     `gorm:"column:nomor_rekening;type:varchar(100)"`
 	StatusNasabah StatusAkun `gorm:"column:status_nasabah;type:status_akun_enum"`
 
-	Bank BankSampah `gorm:"foreignKey:BankID;constraint:OnDelete:CASCADE"`
+	Bank BankSampah `gorm:"foreignKey:BankID;references:BankID;constraint:OnDelete:CASCADE"`
 	User User       `gorm:"foreignKey:UserID;references:UserID;constraint:OnDelete:CASCADE"`
 }
 

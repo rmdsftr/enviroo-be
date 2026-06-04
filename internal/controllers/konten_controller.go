@@ -35,7 +35,7 @@ type BodyBlock struct {
 	Index    int    `json:"index,omitempty"`     // Indeks blok gambar dari frontend
 }
 
-// POST /konten/add-konten/:bank_id/:admin_id
+// POST /konten/add-konten/:admin_id
 //
 // Form fields:
 //
@@ -46,25 +46,14 @@ type BodyBlock struct {
 //	thumbnail     file   (optional)
 //	image_<idx>   file   (optional, satu per blok gambar; idx sesuai BodyBlock.Index)
 func (kc *KontenController) AddNewKonten(c *gin.Context) {
-	bankID := c.Param("bank_id")
 	adminID := c.Param("admin_id")
 
-	// ── 1. Validasi bank sampah ──────────────────────────────────────────────────
-	var bank models.BankSampah
-	if err := kc.DB.Where("bank_id = ?", bankID).First(&bank).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Bank sampah tidak ditemukan"})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data bank: " + err.Error()})
-		}
-		return
-	}
-
-	// ── 2. Validasi admin ────────────────────────────────────────────────────────
+	// ── 1. Validasi admin ────────────────────────────────────────────────────────
+	// bank_id diambil dari data admin; superadmin memiliki bank_id = NULL
 	var admin models.Admin
-	if err := kc.DB.Where("admin_id = ? AND bank_id = ?", adminID, bankID).First(&admin).Error; err != nil {
+	if err := kc.DB.Where("admin_id = ?", adminID).First(&admin).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Admin tidak ditemukan atau bukan milik bank ini"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Admin tidak ditemukan"})
 		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data admin: " + err.Error()})
 		}
@@ -166,7 +155,7 @@ func (kc *KontenController) AddNewKonten(c *gin.Context) {
 		Body:       string(finalBodyBytes),
 		Thumbnail:  thumbnailURL,
 		IsUploaded: isPublished,
-		BankID:     bankID,
+		BankID:     admin.BankID, // NULL untuk superadmin
 		AdminID:    adminID,
 	}
 
@@ -218,10 +207,10 @@ func (kc *KontenController) AddNewKonten(c *gin.Context) {
 //	published=true  → hanya yang published
 //	published=false → hanya draft
 //	(kosong)        → semua konten
+//	page            → nomor halaman (default: 1), 9 konten per halaman
 func (kc *KontenController) GetAllKonten(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
-	// Cek bank ada
 	var bank models.BankSampah
 	if err := kc.DB.Where("bank_id = ?", bankID).First(&bank).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -232,50 +221,87 @@ func (kc *KontenController) GetAllKonten(c *gin.Context) {
 		return
 	}
 
+	publishedParam := c.Query("published")
+
+	var query *gorm.DB
 	if bank.JenisBank == models.BSU {
-		bankID = *bank.ParentBankID
-	}
-
-	query := kc.DB.Where("konten.bank_id = ?", bankID)
-
-	// Filter by published status jika query param dikirim
-	if publishedParam := c.Query("published"); publishedParam != "" {
+		parentID := *bank.ParentBankID
 		switch publishedParam {
 		case "true":
-			query = query.Where("konten.is_uploaded = ?", true)
+			query = kc.DB.Where(
+				"((konten.bank_id = ? OR konten.bank_id = ?) AND konten.is_uploaded = ?) OR (konten.bank_id IS NULL AND konten.is_uploaded = ?)",
+				parentID, bankID, true, true,
+			)
 		case "false":
-			query = query.Where("konten.is_uploaded = ?", false)
+			query = kc.DB.Where("konten.bank_id = ? AND konten.is_uploaded = ?", bankID, false)
+		default:
+			query = kc.DB.Where(
+				"(konten.bank_id = ? AND konten.is_uploaded = ?) OR konten.bank_id = ? OR (konten.bank_id IS NULL AND konten.is_uploaded = ?)",
+				parentID, true, bankID, true,
+			)
+		}
+	} else {
+		switch publishedParam {
+		case "true":
+			query = kc.DB.Where(
+				"(konten.bank_id = ? AND konten.is_uploaded = ?) OR (konten.bank_id IS NULL AND konten.is_uploaded = ?)",
+				bankID, true, true,
+			)
+		case "false":
+			query = kc.DB.Where("konten.bank_id = ? AND konten.is_uploaded = ?", bankID, false)
+		default:
+			query = kc.DB.Where(
+				"konten.bank_id = ? OR (konten.bank_id IS NULL AND konten.is_uploaded = ?)",
+				bankID, true,
+			)
 		}
 	}
 
-	type KontenResponse struct {
-		KontenID   string    `json:"KontenID" gorm:"column:konten_id"`
-		Judul      string    `json:"Judul" gorm:"column:judul"`
-		Deskripsi  string    `json:"Deskripsi" gorm:"column:deskripsi"`
-		Body       string    `json:"Body" gorm:"column:body"`
-		Thumbnail  string    `json:"Thumbnail" gorm:"column:thumbnail"`
-		IsUploaded bool      `json:"IsUploaded" gorm:"column:is_uploaded"`
-		BankID     string    `json:"BankID" gorm:"column:bank_id"`
-		AdminID    string    `json:"AdminID" gorm:"column:admin_id"`
-		CreatedAt  time.Time `json:"CreatedAt" gorm:"column:created_at"`
-		UpdatedAt  time.Time `json:"UpdatedAt" gorm:"column:updated_at"`
-		NamaAdmin  string    `json:"nama_admin" gorm:"column:nama_admin"`
+	type KontenListItem struct {
+		KontenID     string `json:"konten_id" gorm:"column:konten_id"`
+		Judul        string `json:"judul" gorm:"column:judul"`
+		Deskripsi    string `json:"deskripsi" gorm:"column:deskripsi"`
+		Thumbnail    string `json:"thumbnail" gorm:"column:thumbnail"`
+		NamaInstansi string `json:"nama_instansi" gorm:"column:nama_instansi"`
 	}
 
-	var kontenList []KontenResponse
-	if err := query.Table("konten").
-		Select("konten.*, users.nama as nama_admin").
-		Joins("left join admin on konten.admin_id = admin.admin_id").
-		Joins("left join users on admin.user_id = users.user_id").
-		Order("konten.created_at DESC").
-		Find(&kontenList).Error; err != nil {
+	baseQuery := query.Table("konten").
+		Select("konten.konten_id, konten.judul, konten.deskripsi, konten.thumbnail, "+
+			"COALESCE(bank_sampah.nama_bank, 'Dinas Lingkungan Hidup Kota Padang') as nama_instansi").
+		Joins("left join bank_sampah on bank_sampah.bank_id = konten.bank_id").
+		Order("konten.created_at DESC")
+
+	const perPage = 8
+	page := 1
+	if p := c.Query("page"); p != "" {
+		if _, err := fmt.Sscanf(p, "%d", &page); err != nil || page < 1 {
+			page = 1
+		}
+	}
+
+	var total int64
+	if err := baseQuery.Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghitung data konten: " + err.Error()})
+		return
+	}
+
+	var kontenList []KontenListItem
+	if err := baseQuery.Offset((page - 1) * perPage).Limit(perPage).Find(&kontenList).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data konten: " + err.Error()})
 		return
 	}
 
+	totalPages := int((total + perPage - 1) / perPage)
+
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Konten berhasil diambil",
 		"data":    kontenList,
+		"pagination": gin.H{
+			"page":        page,
+			"per_page":    perPage,
+			"total":       total,
+			"total_pages": totalPages,
+		},
 	})
 }
 
@@ -290,18 +316,20 @@ func (kc *KontenController) GetKontenByID(c *gin.Context) {
 		Body       string    `json:"Body" gorm:"column:body"`
 		Thumbnail  string    `json:"Thumbnail" gorm:"column:thumbnail"`
 		IsUploaded bool      `json:"IsUploaded" gorm:"column:is_uploaded"`
-		BankID     string    `json:"BankID" gorm:"column:bank_id"`
+		BankID     *string   `json:"BankID" gorm:"column:bank_id"`
 		AdminID    string    `json:"AdminID" gorm:"column:admin_id"`
 		CreatedAt  time.Time `json:"CreatedAt" gorm:"column:created_at"`
 		UpdatedAt  time.Time `json:"UpdatedAt" gorm:"column:updated_at"`
 		NamaAdmin  string    `json:"nama_admin" gorm:"column:nama_admin"`
+		NamaInstansi string `json:"nama_instansi"`
 	}
 
 	var konten KontenResponse
 	if err := kc.DB.Table("konten").
-		Select("konten.*, users.nama as nama_admin").
+		Select("konten.*, users.nama as nama_admin, bank_sampah.nama_bank as nama_instansi").
 		Joins("left join admin on konten.admin_id = admin.admin_id").
 		Joins("left join users on admin.user_id = users.user_id").
+		Joins("left join bank_sampah on bank_sampah.bank_id = konten.bank_id").
 		Where("konten.konten_id = ?", kontenID).
 		First(&konten).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -310,6 +338,10 @@ func (kc *KontenController) GetKontenByID(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data konten: " + err.Error()})
 		}
 		return
+	}
+
+	if konten.BankID == nil{
+		konten.NamaInstansi = "Dinas Lingkungan Hidup Kota Padang"
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -526,6 +558,73 @@ func (kc *KontenController) EditKonten(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Konten berhasil diperbarui",
 		"data":    oldKonten,
+	})
+}
+
+// GET /konten/all-konten
+// Khusus superadmin: menarik SEMUA konten lintas bank.
+//
+// Query params (optional):
+//
+//	published=true  → hanya yang published
+//	published=false → hanya draft
+//	(kosong)        → semua konten
+//	page            → nomor halaman (default: 1), 9 konten per halaman
+func (kc *KontenController) GetAllKontenSuperadmin(c *gin.Context) {
+	publishedParam := c.Query("published")
+
+	type KontenListItem struct {
+		KontenID     string `json:"konten_id" gorm:"column:konten_id"`
+		Judul        string `json:"judul" gorm:"column:judul"`
+		Deskripsi    string `json:"deskripsi" gorm:"column:deskripsi"`
+		Thumbnail    string `json:"thumbnail" gorm:"column:thumbnail"`
+		NamaInstansi string `json:"nama_instansi" gorm:"column:nama_instansi"`
+	}
+
+	baseQuery := kc.DB.Table("konten").
+		Select("konten.konten_id, konten.judul, konten.deskripsi, konten.thumbnail, " +
+			"COALESCE(bank_sampah.nama_bank, 'Dinas Lingkungan Hidup Kota Padang') as nama_instansi").
+		Joins("left join bank_sampah on bank_sampah.bank_id = konten.bank_id").
+		Order("konten.created_at DESC")
+
+	switch publishedParam {
+	case "true":
+		baseQuery = baseQuery.Where("konten.is_uploaded = ?", true)
+	case "false":
+		baseQuery = baseQuery.Where("konten.is_uploaded = ?", false)
+	}
+
+	const perPage = 8
+	page := 1
+	if p := c.Query("page"); p != "" {
+		if _, err := fmt.Sscanf(p, "%d", &page); err != nil || page < 1 {
+			page = 1
+		}
+	}
+
+	var total int64
+	if err := baseQuery.Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghitung data konten: " + err.Error()})
+		return
+	}
+
+	var kontenList []KontenListItem
+	if err := baseQuery.Offset((page - 1) * perPage).Limit(perPage).Find(&kontenList).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data konten: " + err.Error()})
+		return
+	}
+
+	totalPages := int((total + perPage - 1) / perPage)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Konten berhasil diambil",
+		"data":    kontenList,
+		"pagination": gin.H{
+			"page":        page,
+			"per_page":    perPage,
+			"total":       total,
+			"total_pages": totalPages,
+		},
 	})
 }
 

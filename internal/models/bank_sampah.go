@@ -24,9 +24,10 @@ type BankSampah struct {
 	Alamat            string            `gorm:"column:alamat;type:varchar(255)"`
 	Provinsi          string            `gorm:"column:provinsi;type:varchar(100)"`
 	KabupatenKota     string            `gorm:"column:kabupaten_kota;type:varchar(100)"`
-	Kecamatan         string            `gorm:"column:kecamatan;type:varchar(100)"`
 	Longitude         float64           `gorm:"column:longitude;type:decimal(9,6)"`
 	Latitude          float64           `gorm:"column:latitude;type:decimal(9,6)"`
+	IDKecamatan       *int              `gorm:"column:id_kecamatan"`
+	IDKelurahan       *int              `gorm:"column:id_kelurahan"`
 	Deskripsi         string            `gorm:"column:deskripsi;type:text"`
 	IsActive          bool              `gorm:"column:is_active"`
 	CreatedAt         time.Time         `gorm:"column:created_at;autoCreateTime"`
@@ -35,27 +36,32 @@ type BankSampah struct {
 	ParentBank *BankSampah  `gorm:"foreignKey:ParentBankID;constraint:OnDelete:SET NULL"`
 	Children   []BankSampah `gorm:"foreignKey:ParentBankID"`
 
+	Kecamatan *Kecamatan `gorm:"foreignKey:IDKecamatan;references:IDKecamatan"`
+	Kelurahan *Kelurahan `gorm:"foreignKey:IDKelurahan;references:IDKelurahan"`
+
 	Nasabahs []Nasabah `gorm:"foreignKey:BankID"`
 	Admins   []Admin   `gorm:"foreignKey:BankID"`
+	Jadwals  []Jadwal  `gorm:"foreignKey:BankID"`
 }
 
 func (BankSampah) TableName() string {
 	return "bank_sampah"
 }
 
+// BeforeCreate membuat BankID otomatis menggunakan format smart ID:
+// [kode_bank 1 digit] + [kode_kecamatan 2 digit] + [kode_kelurahan 3 digit] + [sequence 3 digit]
+// IDKecamatan dan IDKelurahan harus sudah diisi sebelum Create dipanggil.
 func (b *BankSampah) BeforeCreate(tx *gorm.DB) (err error) {
-	
 	if b.BankID != "" {
 		return nil
 	}
 
-	var nextVal int64
-
-	if err := tx.Raw(`SELECT nextval('bank_id_seq')`).Scan(&nextVal).Error; err != nil {
-		return err
+	if b.IDKecamatan == nil || b.IDKelurahan == nil {
+		return fmt.Errorf("IDKecamatan dan IDKelurahan harus diisi untuk generate BankID")
 	}
 
-	b.BankID = fmt.Sprintf("%05d", nextVal)
-
-	return nil
-}
+	// Import utils di sini tidak bisa (circular import), jadi logika generate dipanggil lewat callback
+	// yang diset dari controller menggunakan field BankID secara eksplisit sebelum Create.
+	// BeforeCreate ini hanya sebagai safety net.
+	return fmt.Errorf("BankID belum di-generate: panggil utils.GenerateBankID sebelum Create")
+}
