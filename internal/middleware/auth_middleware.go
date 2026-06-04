@@ -6,13 +6,14 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 const ClaimsKey = "claims"
 
-// RequireAuth memvalidasi access_token dari cookie.
-// Jika valid, claims diinjeksikan ke context dengan key "claims".
-func RequireAuth() gin.HandlerFunc {
+// RequireAuth memvalidasi access_token lalu memverifikasi status akun ke database.
+// Jika akun nonaktif/pending, request ditolak dengan 403 dan code ACCOUNT_INACTIVE.
+func RequireAuth(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 1. Coba ambil dari cookie (untuk Web)
 		tokenStr, err := c.Cookie(utils.AccessTokenCookieName)
@@ -38,6 +39,33 @@ func RequireAuth() gin.HandlerFunc {
 				"error": "Sesi tidak valid atau sudah berakhir. Silakan login kembali.",
 			})
 			return
+		}
+
+		// 3. Cek status akun di database
+		if claims.Role == models.RoleNasabah {
+			var count int64
+			db.Model(&models.Nasabah{}).
+				Where("user_id = ? AND status_nasabah = ?", claims.UserID, models.Aktif).
+				Count(&count)
+			if count == 0 {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+					"error": "Akun Anda tidak aktif. Silakan hubungi administrator.",
+					"code":  "ACCOUNT_INACTIVE",
+				})
+				return
+			}
+		} else {
+			var count int64
+			db.Model(&models.Admin{}).
+				Where("user_id = ? AND role = ? AND status_admin = ?", claims.UserID, claims.Role, models.Aktif).
+				Count(&count)
+			if count == 0 {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+					"error": "Akun Anda tidak aktif. Silakan hubungi administrator.",
+					"code":  "ACCOUNT_INACTIVE",
+				})
+				return
+			}
 		}
 
 		c.Set(ClaimsKey, claims)

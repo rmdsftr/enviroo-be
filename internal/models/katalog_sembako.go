@@ -3,16 +3,25 @@ package models
 import "time"
 
 type KatalogSembako struct {
-    SembakoID   string    `gorm:"column:sembako_id;primaryKey;size:100"`
-    BankID      string    `gorm:"column:bank_id;size:100"`
-    NamaSembako string    `gorm:"column:nama_sembako;size:255"`
-    PhotoURL    string    `gorm:"column:photo_url;size:255"`
+	SembakoID string `gorm:"column:sembako_id;type:varchar(100);primaryKey" json:"sembako_id"`
 
-    CreatedAt   time.Time `gorm:"column:created_at;autoCreateTime"`
-    UpdatedAt   time.Time `gorm:"column:updated_at;autoUpdateTime"`
+	BankID *string `gorm:"column:bank_id;type:varchar(100)" json:"bank_id"`
 
-    // Relasi ke history
-    HistoryPoin []HistoryPoinSembako `gorm:"foreignKey:SembakoID"`
+	NamaSembako string `gorm:"column:nama_sembako;type:varchar(255)" json:"nama_sembako"`
+
+	PhotoURL *string `gorm:"column:photo_url;type:varchar(255)" json:"photo_url"`
+
+	NilaiPoin float64 `gorm:"column:nilai_poin;type:decimal(20,4)" json:"nilai_poin"`
+
+	Stok float64 `gorm:"column:stok;type:decimal(20,4)" json:"stok"`
+
+	CreatedAt time.Time `gorm:"column:created_at;default:CURRENT_TIMESTAMP" json:"created_at"`
+	CreatedBy *string   `gorm:"column:created_by;type:varchar(100)" json:"created_by"`
+
+	UpdatedAt time.Time `gorm:"column:updated_at;default:CURRENT_TIMESTAMP" json:"updated_at"`
+	UpdatedBy *string   `gorm:"column:updated_by;type:varchar(100)" json:"updated_by"`
+
+	Bank *BankSampah `gorm:"foreignKey:BankID;references:BankID"`
 }
 
 func (KatalogSembako) TableName() string {

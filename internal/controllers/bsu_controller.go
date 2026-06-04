@@ -33,7 +33,8 @@ type AddBSURequest struct {
 	Deskripsi     string   `form:"deskripsi" binding:"required"`
 	Provinsi      string   `form:"provinsi" binding:"required"`
 	KabupatenKota string   `form:"kabupaten_kota" binding:"required"`
-	Kecamatan     string   `form:"kecamatan" binding:"required"`
+	IDKecamatan   int      `form:"id_kecamatan" binding:"required"`
+	IDKelurahan   int      `form:"id_kelurahan" binding:"required"`
 	AlamatLengkap string   `form:"alamat_lengkap" binding:"required"`
 	Latitude      float64  `form:"latitude"`
 	Longitude     float64  `form:"longitude"`
@@ -71,14 +72,23 @@ func (bc *BSUController) AddNewBSU(c *gin.Context) {
 		return
 	}
 
+	bankID, err := utils.GenerateBankID(tx, models.BSU, req.IDKecamatan, req.IDKelurahan)
+	if err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal generate Bank ID: " + err.Error()})
+		return
+	}
+
 	newBSU := models.BankSampah{
+		BankID:        bankID,
 		NamaBank:      req.NamaBSU,
 		Deskripsi:     req.Deskripsi,
 		ParentBankID:  &req.ParentBankID,
 		PhotoURL:      fotoURL,
 		Provinsi:      req.Provinsi,
 		KabupatenKota: req.KabupatenKota,
-		Kecamatan:     req.Kecamatan,
+		IDKecamatan:   &req.IDKecamatan,
+		IDKelurahan:   &req.IDKelurahan,
 		Alamat:        req.AlamatLengkap,
 		Latitude:      req.Latitude,
 		Longitude:     req.Longitude,
@@ -92,6 +102,27 @@ func (bc *BSUController) AddNewBSU(c *gin.Context) {
 		return
 	}
 
+	// Pre-create saldo rekening Uang nominal 0 (BSU hanya menerima distribusi Uang)
+	var rewardUangBSU models.Reward
+	if err := tx.Where("nama_reward = ?", models.RewardEnumUang).First(&rewardUangBSU).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Reward Uang tidak ditemukan: " + err.Error()})
+		return
+	}
+	rekeningBSU := models.SaldoRekening{
+		RekeningID:         utils.GenerateRekeningID(rewardUangBSU.RewardID, bankID),
+		BankID:             &bankID,
+		RewardID:           &rewardUangBSU.RewardID,
+		Entitas:            models.EntitasBankSampah,
+		NominalSaldo:       0,
+		SatuanNominalSaldo: models.SatuanRewardEnumRp,
+	}
+	if err := tx.Create(&rekeningBSU).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat rekening bank: " + err.Error()})
+		return
+	}
+
 	// Create admins for this BSU
 	for _, userID := range req.UserIDs {
 		// Pengecekan nasabah (meskipun bank baru terbuat, ini ditambahkan sesuai instruksi)
@@ -102,15 +133,22 @@ func (bc *BSUController) AddNewBSU(c *gin.Context) {
 			return
 		}
 
-		admin := models.Admin{
-			AdminID:     utils.GenerateAdminID(),
-			BankID:      &newBSU.BankID,
+		adminID, err := utils.GenerateAdminID(tx, models.AdminBSU, newBSU.BankID)
+		if err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate admin ID: " + err.Error()})
+			return
+		}
+
+		newAdmin := models.Admin{
+			AdminID:     adminID,
 			UserID:      userID,
+			BankID:      &newBSU.BankID,
 			Role:        models.AdminBSU,
 			StatusAdmin: models.Pending,
 		}
 
-		if err := tx.Create(&admin).Error; err != nil {
+		if err := tx.Create(&newAdmin).Error; err != nil {
 			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add admin: " + err.Error()})
 			return
@@ -148,6 +186,7 @@ func (bc *BSUController) AddNewBSU(c *gin.Context) {
 			Token:       hashedOTP,
 			ExpiredAt:   now.Add(24 * time.Hour),
 			GeneratedBy: req.AdminID,
+			Tujuan:      models.TujuanAktivasi,
 		}
 
 		if err := tx.Create(&newAktivasiAkun).Error; err != nil {
@@ -202,16 +241,22 @@ func (bc *BSUController) AddNewBSU(c *gin.Context) {
 
 func (bc *BSUController) GetBSU(c *gin.Context) {
 	type BSUResponse struct {
-		models.BankSampah
+		BankID        string `json:"bank_id" gorm:"column:bank_id"`
+		NamaBSU       string `json:"nama_bsu" gorm:"column:nama_bank"`
+		PhotoURL      string `json:"photo_url" gorm:"column:photo_url"`
+		IsActive      bool   `json:"is_active" gorm:"column:is_active"`
+		NamaBankInduk string `json:"nama_bank_induk" gorm:"column:nama_bank_induk"`
 		JumlahNasabah int64  `json:"jumlah_nasabah" gorm:"column:jumlah_nasabah"`
-		NamaBSI       string `json:"nama_bsi" gorm:"column:nama_bsi"`
+		JumlahStaff   int64  `json:"jumlah_staff" gorm:"column:jumlah_staff"`
 	}
 
 	var results []BSUResponse
 
-	// Query utama dengan subquery SELECT COUNT nasabah dan SELECT nama parent bank (BSI)
 	query := bc.DB.Model(&models.BankSampah{}).
-		Select("bank_sampah.*, (SELECT COUNT(user_id) FROM nasabah WHERE nasabah.bank_id = bank_sampah.bank_id) AS jumlah_nasabah, (SELECT nama_bank FROM bank_sampah bsi WHERE bsi.bank_id = bank_sampah.parent_bank_id) AS nama_bsi").
+		Select("bank_sampah.bank_id, bank_sampah.nama_bank, bank_sampah.photo_url, bank_sampah.is_active, " +
+			"(SELECT nama_bank FROM bank_sampah bsi WHERE bsi.bank_id = bank_sampah.parent_bank_id) AS nama_bank_induk, " +
+			"(SELECT COUNT(user_id) FROM nasabah WHERE nasabah.bank_id = bank_sampah.bank_id) AS jumlah_nasabah, " +
+			"(SELECT COUNT(user_id) FROM admin WHERE admin.bank_id = bank_sampah.bank_id) AS jumlah_staff").
 		Where("bank_sampah.jenis_bank = ?", models.BSU)
 
 	if err := query.Find(&results).Error; err != nil {
@@ -232,13 +277,16 @@ func (bc *BSUController) GetBSUbyBankID(c *gin.Context) {
 		BankID        string `json:"bank_id" gorm:"column:bank_id"`
 		NamaBSU       string `json:"nama_bsu" gorm:"column:nama_bank"`
 		JumlahNasabah int64  `json:"jumlah_nasabah" gorm:"column:jumlah_nasabah"`
+		JumlahStaff   int64  `json:"jumlah_staff" gorm:"column:jumlah_staff"`
 		IsActive      bool   `json:"is_active" gorm:"column:is_active"`
 	}
 
 	var results []BSUResponse
 
 	query := bc.DB.Model(&models.BankSampah{}).
-		Select("bank_sampah.bank_id, bank_sampah.nama_bank, bank_sampah.is_active, (SELECT COUNT(user_id) FROM nasabah WHERE nasabah.bank_id = bank_sampah.bank_id) AS jumlah_nasabah").
+		Select("bank_sampah.bank_id, bank_sampah.nama_bank, bank_sampah.is_active, " +
+			"(SELECT COUNT(user_id) FROM nasabah WHERE nasabah.bank_id = bank_sampah.bank_id) AS jumlah_nasabah, " +
+			"(SELECT COUNT(user_id) FROM admin WHERE admin.bank_id = bank_sampah.bank_id) AS jumlah_staff").
 		Where("bank_sampah.jenis_bank = ? AND bank_sampah.parent_bank_id = ?", models.BSU, bankID)
 
 	if err := query.Find(&results).Error; err != nil {

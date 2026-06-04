@@ -5,8 +5,6 @@ type DetailSetoranNasabah struct {
 	SetoranID     string `gorm:"column:setoran_id;type:varchar(100);primaryKey"`
 
 	Qty           float64     `gorm:"column:qty;type:decimal(20,4);not null"`
-	NilaiPoin     float64 `gorm:"column:nilai_poin;type:decimal(20,4);not null"`
-	SubtotalPoin  float64 `gorm:"column:subtotal_poin;type:decimal(20,4);not null"`
 
 	Sampah        KatalogSampah `gorm:"foreignKey:SampahID;references:SampahID"`
 	Setoran       SetoranNasabah `gorm:"foreignKey:SetoranID;references:SetoranID"`

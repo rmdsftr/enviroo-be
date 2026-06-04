@@ -57,9 +57,9 @@ func (ac *AdminController) GetAdminBankSampah(c *gin.Context) {
 
 func (ac *AdminController) AddAdminBankSampah(c *gin.Context) {
 	type AddAdminBankSampahRequest struct {
-		UserID string `json:"user_id" binding:"required"`
-		BankID string `json:"bank_id" binding:"required"`
-		Role   string `json:"role" binding:"required"`
+		UserID  string `json:"user_id" binding:"required"`
+		BankID  string `json:"bank_id" binding:"required"`
+		Role    string `json:"role" binding:"required"`
 		AdminID string `json:"admin_id" binding:"required"`
 	}
 
@@ -85,6 +85,38 @@ func (ac *AdminController) AddAdminBankSampah(c *gin.Context) {
 		return
 	}
 
+	var existingUser models.User
+	if err := ac.DB.Where("user_id = ?", req.UserID).First(&existingUser).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User tidak ditemukan"})
+		return
+	}
+
+	var bank models.BankSampah
+	if err := ac.DB.Where("bank_id = ?", req.BankID).First(&bank).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Bank tidak ditemukan"})
+		return
+	}
+
+	var activeAdminCount int64
+	if err := ac.DB.Model(&models.Admin{}).Where("user_id = ? AND status_admin = ?", req.UserID, models.Aktif).Count(&activeAdminCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memvalidasi data admin"})
+		return
+	}
+	if activeAdminCount > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "User sudah memiliki akun admin aktif. Nonaktifkan akun admin yang ada terlebih dahulu."})
+		return
+	}
+
+	var existingAdmin models.Admin
+	if err := ac.DB.Where("user_id = ? AND bank_id = ?", req.UserID, req.BankID).First(&existingAdmin).Error; err == nil {
+		if existingAdmin.StatusAdmin == models.Nonaktif {
+			c.JSON(http.StatusConflict, gin.H{"error": "User pernah terdaftar sebagai admin di bank sampah ini. Gunakan fitur aktivasi untuk mengaktifkan kembali."})
+		} else {
+			c.JSON(http.StatusConflict, gin.H{"error": "User sudah terdaftar sebagai admin di bank sampah ini."})
+		}
+		return
+	}
+
 	tx := ac.DB.Begin()
 	defer func() {
 		if r := recover(); r != nil {
@@ -92,24 +124,15 @@ func (ac *AdminController) AddAdminBankSampah(c *gin.Context) {
 		}
 	}()
 
-	// Cek apakah user sudah menjadi admin di bank ini
-	var existingAdmin models.Admin
-	if err := tx.Where("user_id = ? AND bank_id = ?", req.UserID, req.BankID).First(&existingAdmin).Error; err == nil {
+	adminID, err := utils.GenerateAdminID(tx, role, req.BankID)
+	if err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusConflict, gin.H{"error": "User sudah terdaftar sebagai admin di bank sampah ini"})
-		return
-	}
-
-	// Cek apakah user sudah menjadi nasabah di bank ini
-	var countNasabah int64
-	if err := tx.Model(&models.Nasabah{}).Where("user_id = ? AND bank_id = ?", req.UserID, req.BankID).Count(&countNasabah).Error; err == nil && countNasabah > 0 {
-		tx.Rollback()
-		c.JSON(http.StatusConflict, gin.H{"error": "User tidak boleh terdaftar sebagai admin di bank sampah tempat ia terdaftar sebagai nasabah"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate admin ID: " + err.Error()})
 		return
 	}
 
 	newAdmin := models.Admin{
-		AdminID:     utils.GenerateAdminID(),
+		AdminID:     adminID,
 		UserID:      req.UserID,
 		BankID:      &req.BankID,
 		Role:        role,
@@ -122,18 +145,10 @@ func (ac *AdminController) AddAdminBankSampah(c *gin.Context) {
 		return
 	}
 
-	// LOGIK AKTIVASI AKUN ADMIN
-	var existingUser models.User
-	if err := tx.Where("user_id = ?", req.UserID).First(&existingUser).Error; err != nil {
+	if err := tx.Where("user_id = ? AND as_role = ? AND tujuan = ? AND is_used = ?", req.UserID, models.RoleUserAdmin, models.TujuanAktivasi, false).
+		Delete(&models.AktivasiAkun{}).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user data for activation"})
-		return
-	}
-
-	var bank models.BankSampah
-	if err := tx.Where("bank_id = ?", req.BankID).First(&bank).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get bank data for activation"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to clean up old activation: " + err.Error()})
 		return
 	}
 
@@ -161,6 +176,7 @@ func (ac *AdminController) AddAdminBankSampah(c *gin.Context) {
 		Token:       hashedOTP,
 		ExpiredAt:   now.Add(24 * time.Hour),
 		GeneratedBy: req.AdminID,
+		Tujuan:      models.TujuanAktivasi,
 	}
 
 	if err := tx.Create(&newAktivasiAkun).Error; err != nil {
@@ -331,22 +347,30 @@ func (ac *AdminController) DeleteStaffBankSampah(c *gin.Context) {
 		}
 	}()
 
-	// 6. Cleanup Activation tokens
+	// 6. Cleanup Activation tokens (hanya untuk pending — akan di-hard delete)
 	if admin.StatusAdmin == models.Pending {
 		tx.Where("user_id = ? AND as_role = ? AND is_used = false", admin.UserID, models.RoleUserAdmin).
 			Delete(&models.AktivasiAkun{})
 	}
 
 	// 7. Create audit history
-	// Note: We avoid setting AdminID property in the struct to prevent FK constraint issues
-	// if the DB doesn't support SET NULL correctly on the existing record.
-	// We store the ID in the OldValue and Information strings instead.
+	action := "DEACTIVATE"
+	if admin.StatusAdmin == models.Pending {
+		action = "DELETE"
+	}
+
+	staffRole := ""
+	if admin.Role == models.AdminBSI || admin.Role == models.AdminBSM || admin.Role == models.AdminBSU{
+		staffRole = "Admin"
+	} else if admin.Role == models.PetugasBSI || admin.Role == models.PetugasBSM || admin.Role == models.AdminBSU{
+		staffRole = "Petugas"
+	}
 	newBankAkunHistory := models.HistoryAkunBank{
 		BankID:     *admin.BankID,
-		Action:     "DELETE",
+		Action:     action,
 		OldValue:   adminData,
-		Informasi:  fmt.Sprintf("Staff %s (%s) dihapus dari %s", staffName, admin.Role, bankName),
-		Keterangan: fmt.Sprintf("%s menghapus %s (%s) dari %s", actorName, staffName, admin.Role, bankName),
+		Informasi:  fmt.Sprintf("Staff %s (%s) dihapus dari %s", staffName, staffRole, bankName),
+		Keterangan: fmt.Sprintf("%s menghapus %s (%s) dari %s", actorName, staffName, staffRole, bankName),
 		CreatedBy:  req.DeletedBy,
 	}
 
@@ -356,17 +380,56 @@ func (ac *AdminController) DeleteStaffBankSampah(c *gin.Context) {
 		return
 	}
 
-	// 8. Delete the admin record
-	if err := tx.Where("admin_id = ?", adminID).Delete(&models.Admin{}).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete staff: " + err.Error()})
-		return
+	// 8. Hard delete untuk pending, soft delete untuk aktif/nonaktif
+	if admin.StatusAdmin == models.Pending {
+		if err := tx.Where("admin_id = ?", adminID).Delete(&models.Admin{}).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete staff: " + err.Error()})
+			return
+		}
+	} else {
+		if err := tx.Model(&models.Admin{}).Where("admin_id = ?", adminID).Update("status_admin", models.Nonaktif).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to deactivate staff: " + err.Error()})
+			return
+		}
 	}
 
 	if err := tx.Commit().Error; err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction: " + err.Error()})
 		return
+	}
+
+	// Kirim notifikasi ke staff yang dinonaktifkan (hanya untuk soft delete)
+	if admin.StatusAdmin != models.Pending {
+		staffEmail := admin.User.Email
+		if staffEmail == "" {
+			var u models.User
+			if ac.DB.Select("email").Where("user_id = ?", admin.UserID).First(&u).Error == nil {
+				staffEmail = u.Email
+			}
+		}
+		if staffEmail != "" {
+			emailBody := fmt.Sprintf(`
+				<div style="font-family: Arial, sans-serif; background-color: #f4fdf4; padding: 30px; border-radius: 10px;">
+					<h2 style="color: #4ea771; margin-top: 0;">Halo, %s!</h2>
+					<p style="font-size: 14px; color: #333; line-height: 1.5;">
+						Akun <b>%s</b> Anda di Bank Sampah <b>%s</b> telah dinonaktifkan oleh administrator.
+						Jika Anda merasa ini adalah kesalahan, silakan hubungi administrator terkait.
+					</p>
+					<hr style="border: 0; height: 1px; background: #ddd; margin: 25px 0;">
+					<p style="font-size: 12px; color: #999; text-align: center; margin: 0;">&copy; Enviroo APP</p>
+				</div>
+			`, staffName, admin.Role, bankName)
+			go func() {
+				_ = ac.Mailer.SendEmail(utils.EmailParams{
+					To:      staffEmail,
+					Subject: "Notifikasi Penonaktifan Akun Staff Enviroo",
+					Body:    emailBody,
+				})
+			}()
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{

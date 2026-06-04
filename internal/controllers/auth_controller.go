@@ -11,7 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 type AuthController struct {
@@ -26,90 +25,6 @@ func NewAuthController(db *gorm.DB, mailer *utils.Mailer) *AuthController {
 	}
 }
 
-type AddSuperadminRequest struct {
-	UserID     string `json:"user_id" binding:"required"`
-	Nama       string `json:"nama" binding:"required"`
-	Email      string `json:"email" binding:"required,email"`
-	NoWhatsapp string `json:"no_whatsapp" binding:"required"`
-	Password   string `json:"password" binding:"required,min=8"`
-}
-
-
-
-func (ac *AuthController) AddSuperadmin(c *gin.Context) {
-	var req AddSuperadminRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Check if user already exists
-	var existingUser models.User
-	if err := ac.DB.Where("user_id = ?", req.UserID).First(&existingUser).Error; err == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "User dengan NIK tersebut sudah terdaftar"})
-		return
-	}
-
-	// Check if email already used
-	if err := ac.DB.Where("email = ?", req.Email).First(&existingUser).Error; err == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "Email sudah digunakan"})
-		return
-	}
-
-	// Hash password with bcrypt cost 12
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), 12)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memproses password"})
-		return
-	}
-
-	// Begin transaction
-	tx := ac.DB.Begin()
-
-	// Create user
-	user := models.User{
-		UserID:     req.UserID,
-		Nama:       utils.ToTitleCase(req.Nama),
-		Email:      req.Email,
-		NoWhatsapp: req.NoWhatsapp,
-		Password:   string(hashedPassword),
-	}
-
-	if err := tx.Omit(clause.Associations).Create(&user).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat user: " + err.Error()})
-		return
-	}
-
-	// Create admin with superadmin role
-	admin := models.Admin{
-		AdminID:     utils.GenerateAdminID(),
-		UserID:      req.UserID,
-		BankID:      nil,
-		Role:        models.SuperAdmin,
-		StatusAdmin: models.Pending,
-	}
-
-	if err := tx.Omit(clause.Associations).Create(&admin).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat admin: " + err.Error()})
-		return
-	}
-
-	tx.Commit()
-
-	c.JSON(http.StatusCreated, gin.H{
-		"message": "Superadmin berhasil ditambahkan",
-		"data": gin.H{
-			"user_id":  user.UserID,
-			"admin_id": admin.AdminID,
-			"nama":     user.Nama,
-			"email":    user.Email,
-			"role":     admin.Role,
-		},
-	})
-}
-
 // LoginWeb memvalidasi kredensial lalu menyimpan JWT sebagai HttpOnly cookie.
 func (ac *AuthController) Login(c *gin.Context) {
 	var req struct {
@@ -117,6 +32,7 @@ func (ac *AuthController) Login(c *gin.Context) {
 		Password string              `json:"password" binding:"required,min=8"`
 		Platform string              `json:"platform" binding:"required"` // "web" or "mobile"
 		Role     models.RoleUserEnum `json:"role" binding:"required"`     // "nasabah" or "admin"
+		FCMToken string              `json:"fcm_token"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -136,6 +52,14 @@ func (ac *AuthController) Login(c *gin.Context) {
 		return
 	}
 
+	// 2b. Update FCM Token jika dikirimkan (biasanya dari mobile)
+	if req.FCMToken != "" {
+		if err := ac.DB.Model(&user).Update("fcm_token", req.FCMToken).Error; err != nil {
+			// Log saja, jangan gagalkan login jika update token gagal
+			fmt.Printf("Warning: Gagal update FCM token untuk user %s: %v\n", user.UserID, err)
+		}
+	}
+
 	var finalRole models.RoleAdmin
 	var identityID string
 	var bankID *string
@@ -150,17 +74,14 @@ func (ac *AuthController) Login(c *gin.Context) {
 		}
 
 		var nasabah models.Nasabah
-		if err := ac.DB.Where("user_id = ?", user.UserID).First(&nasabah).Error; err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Akun Anda tidak terdaftar sebagai nasabah"})
+		if err := ac.DB.Where("user_id = ? AND status_nasabah = ?", user.UserID, models.Aktif).First(&nasabah).Error; err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Tidak ada akun nasabah aktif untuk akun Anda"})
 			return
 		}
 
-		if nasabah.StatusNasabah != models.Aktif {
-			var msg string = "Akun nasabah Anda belum aktif"
-			if nasabah.StatusNasabah == models.Nonaktif {
-				msg = "Akun nasabah Anda dinonaktifkan. Silakan hubungi admin bank sampah."
-			}
-			c.JSON(http.StatusUnauthorized, gin.H{"error": msg})
+		var bankNasabah models.BankSampah
+		if err := ac.DB.Select("is_active").Where("bank_id = ?", nasabah.BankID).First(&bankNasabah).Error; err == nil && !bankNasabah.IsActive {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Operasional bank sampah sedang berhenti sementara"})
 			return
 		}
 
@@ -171,18 +92,17 @@ func (ac *AuthController) Login(c *gin.Context) {
 	case models.RoleUserAdmin:
 		// --- ADMIN/STAFF BLOCK ---
 		var admin models.Admin
-		if err := ac.DB.Where("user_id = ?", user.UserID).First(&admin).Error; err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Akun Anda tidak terdaftar sebagai pengurus atau admin"})
+		if err := ac.DB.Where("user_id = ? AND status_admin = ?", user.UserID, models.Aktif).First(&admin).Error; err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Tidak ada akun aktif untuk akun Anda"})
 			return
 		}
 
-		if admin.StatusAdmin != models.Aktif {
-			var msg string = "Akun pengurus Anda belum aktif"
-			if admin.StatusAdmin == models.Nonaktif {
-				msg = "Akun pengurus Anda dinonaktifkan"
+		if admin.BankID != nil {
+			var bankAdmin models.BankSampah
+			if err := ac.DB.Select("is_active").Where("bank_id = ?", *admin.BankID).First(&bankAdmin).Error; err == nil && !bankAdmin.IsActive {
+				c.JSON(http.StatusForbidden, gin.H{"error": "Operasional bank sampah sedang berhenti sementara"})
+				return
 			}
-			c.JSON(http.StatusUnauthorized, gin.H{"error": msg})
-			return
 		}
 
 		// Validasi Platform Dashboard Web
@@ -296,12 +216,32 @@ func (ac *AuthController) Me(c *gin.Context) {
 		return
 	}
 
-	var admin models.Admin
-	if err := ac.DB.Where("user_id = ?", claims.UserID).First(&admin).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Admin tidak ditemukan"})
+	if claims.Role == models.RoleNasabah {
+		var nasabah models.Nasabah
+		if err := ac.DB.Where("user_id = ? AND status_nasabah = ?", claims.UserID, models.Aktif).First(&nasabah).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Akun nasabah aktif tidak ditemukan"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"data": gin.H{
+				"user_id":    user.UserID,
+				"nama":       user.Nama,
+				"email":      user.Email,
+				"photo":      user.PhotoURL,
+				"role":       models.RoleNasabah,
+				"bank_id":    nasabah.BankID,
+				"nasabah_id": nasabah.NasabahID,
+				"status":     nasabah.StatusNasabah,
+			},
+		})
 		return
 	}
 
+	var admin models.Admin
+	if err := ac.DB.Where("user_id = ? AND status_admin = ?", claims.UserID, models.Aktif).First(&admin).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Akun admin aktif tidak ditemukan"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"data": gin.H{
 			"user_id":  user.UserID,
@@ -320,9 +260,9 @@ func (ac *AuthController) AktivasiAkun(c *gin.Context) {
 	var req struct {
 		UserID   string `json:"user_id" binding:"required"`
 		OTP      string `json:"otp" binding:"required"`
-		Password string `json:"password" binding:"required,min=8"`
+		Password string `json:"password"`
 	}
-	
+
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -360,33 +300,18 @@ func (ac *AuthController) AktivasiAkun(c *gin.Context) {
 	switch aktivasi.AsRole {
 	case models.RoleUserNasabah:
 		isNasabah = true
-		if err := ac.DB.Where("user_id = ?", req.UserID).First(&nasabah).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Identitas Nasabah tidak ditemukan, aktivasi gagal"})
-			return
-		}
-		if nasabah.StatusNasabah != models.Pending {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Akun Nasabah sudah aktif atau tidak berlaku"})
+		if err := ac.DB.Where("user_id = ? AND status_nasabah = ?", req.UserID, models.Pending).First(&nasabah).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Tidak ada akun nasabah pending untuk diaktivasi"})
 			return
 		}
 	case models.RoleUserAdmin:
 		isRoleAdmin = true
-		if err := ac.DB.Where("user_id = ?", req.UserID).First(&admin).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Identitas Admin/Petugas tidak ditemukan, aktivasi gagal"})
-			return
-		}
-		if admin.StatusAdmin != models.Pending {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Akun Admin/Petugas sudah aktif atau tidak berlaku"})
+		if err := ac.DB.Where("user_id = ? AND status_admin = ?", req.UserID, models.Pending).First(&admin).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Tidak ada akun admin/petugas pending untuk diaktivasi"})
 			return
 		}
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Tipe role aktivasi tidak diketahui"})
-		return
-	}
-
-	// 5. Generate Password
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), 12)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memproses password"})
 		return
 	}
 
@@ -397,15 +322,39 @@ func (ac *AuthController) AktivasiAkun(c *gin.Context) {
 		}
 	}()
 
-	// 6. Update password user
-	if err := tx.Model(&user).Update("password", string(hashedPassword)).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengupdate password user"})
-		return
+	// 5. Update password hanya jika belum pernah di-set (aktivasi pertama)
+	if user.Password == "" {
+		if len(req.Password) < 8 {
+			tx.Rollback()
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Password wajib diisi minimal 8 karakter untuk aktivasi pertama"})
+			return
+		}
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), 12)
+		if err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memproses password"})
+			return
+		}
+		if err := tx.Model(&user).Update("password", string(hashedPassword)).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengupdate password user"})
+			return
+		}
 	}
 
 	// 7. Update status Nasabah atau Admin
 	if isNasabah {
+		var otherActiveNasabah int64
+		if err := tx.Model(&models.Nasabah{}).Where("user_id = ? AND status_nasabah = ? AND nasabah_id != ?", req.UserID, models.Aktif, nasabah.NasabahID).Count(&otherActiveNasabah).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memvalidasi data nasabah"})
+			return
+		}
+		if otherActiveNasabah > 0 {
+			tx.Rollback()
+			c.JSON(http.StatusConflict, gin.H{"error": "User sudah memiliki akun nasabah aktif di bank lain. Nonaktifkan akun tersebut terlebih dahulu."})
+			return
+		}
 		if err := tx.Model(&nasabah).Update("status_nasabah", models.Aktif).Error; err != nil {
 			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengupdate status nasabah"})
@@ -482,10 +431,21 @@ func (ac *AuthController) GenerateReactivateAkun(c *gin.Context) {
 
 	switch req.Role {
 	case models.RoleUserNasabah:
-		// Cari di Nasabah
-		if err := tx.Where("user_id = ?", req.UserID).First(&nasabah).Error; err != nil {
+		var activeNasabahCount int64
+		if err := tx.Model(&models.Nasabah{}).Where("user_id = ? AND status_nasabah = ?", req.UserID, models.Aktif).Count(&activeNasabahCount).Error; err != nil {
 			tx.Rollback()
-			c.JSON(http.StatusNotFound, gin.H{"error": "Identitas nasabah tidak ditemukan"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memvalidasi data nasabah"})
+			return
+		}
+		if activeNasabahCount > 0 {
+			tx.Rollback()
+			c.JSON(http.StatusConflict, gin.H{"error": "User sudah memiliki akun nasabah aktif. Nonaktifkan akun tersebut terlebih dahulu sebelum mengaktifkan kembali akun lain."})
+			return
+		}
+		// Cari di Nasabah
+		if err := tx.Where("user_id = ? AND status_nasabah IN ?", req.UserID, []models.StatusAkun{models.Nonaktif, models.Pending}).First(&nasabah).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusNotFound, gin.H{"error": "Tidak ada akun nasabah nonaktif/pending yang dapat diaktifkan kembali"})
 			return
 		}
 		bankID = nasabah.BankID
@@ -497,16 +457,19 @@ func (ac *AuthController) GenerateReactivateAkun(c *gin.Context) {
 		}
 	case models.RoleUserAdmin:
 		// Cari di Admin
-		if err := tx.Where("user_id = ?", req.UserID).First(&admin).Error; err != nil {
+		if err := tx.Where("user_id = ? AND status_admin IN ?", req.UserID, []models.StatusAkun{models.Nonaktif, models.Pending}).First(&admin).Error; err != nil {
 			tx.Rollback()
-			c.JSON(http.StatusNotFound, gin.H{"error": "Identitas staff tidak ditemukan"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Tidak ada akun staff nonaktif/pending yang dapat diaktifkan kembali"})
 			return
 		}
 		if admin.BankID != nil {
 			bankID = *admin.BankID
 		}
 		successRoleName = "staff"
-		if err := tx.Model(&admin).Update("status_admin", models.Pending).Error; err != nil {
+		if err := tx.Model(&admin).Updates(map[string]interface{}{
+			"status_admin": models.Pending,
+			"joined_at":    time.Now(),
+		}).Error; err != nil {
 			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengupdate status admin"})
 			return
@@ -572,6 +535,7 @@ func (ac *AuthController) GenerateReactivateAkun(c *gin.Context) {
 			Token:       hashedOTP,
 			ExpiredAt:   now.Add(24 * time.Hour),
 			GeneratedBy: req.AdminID,
+			Tujuan:      models.TujuanAktivasi,
 		}
 
 		if err := tx.Create(&aktivasi).Error; err != nil {
@@ -581,7 +545,12 @@ func (ac *AuthController) GenerateReactivateAkun(c *gin.Context) {
 		}
 	}
 
-	// 6. Kirim Email (Asynchronous)
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyimpan perubahan ke database"})
+		return
+	}
+
+	// 6. Kirim Email setelah commit berhasil
 	emailBody := fmt.Sprintf(`
 		<div style="font-family: Arial, sans-serif; background-color: #f4fdf4; padding: 30px; border-radius: 10px;">
 			<h2 style="color: #4ea771; margin-top: 0;">Halo, %s!</h2>
@@ -607,11 +576,6 @@ func (ac *AuthController) GenerateReactivateAkun(c *gin.Context) {
 			Body:    emailBody,
 		})
 	}()
-
-	if err := tx.Commit().Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyimpan perubahan ke database"})
-		return
-	}
 
 	var response = map[string]interface{}{
 		"aktivasi_id": aktivasi.AktivasiID,
@@ -671,15 +635,21 @@ func (ac *AuthController) ReactivateAkun(c *gin.Context) {
 	switch aktivasi.AsRole {
 	case models.RoleUserNasabah:
 		var nasabah models.Nasabah
-		if err := tx.Where("user_id = ?", req.UserID).First(&nasabah).Error; err != nil {
+		if err := tx.Where("user_id = ? AND status_nasabah = ?", req.UserID, models.Pending).First(&nasabah).Error; err != nil {
 			tx.Rollback()
-			c.JSON(http.StatusNotFound, gin.H{"error": "Data nasabah tidak ditemukan"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Tidak ada akun nasabah pending untuk diaktifkan"})
 			return
 		}
 
-		if nasabah.StatusNasabah != models.Pending {
+		var otherActiveNasabah int64
+		if err := tx.Model(&models.Nasabah{}).Where("user_id = ? AND status_nasabah = ? AND nasabah_id != ?", req.UserID, models.Aktif, nasabah.NasabahID).Count(&otherActiveNasabah).Error; err != nil {
 			tx.Rollback()
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Nasabah sudah aktif atau tidak dalam status pending"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memvalidasi data nasabah"})
+			return
+		}
+		if otherActiveNasabah > 0 {
+			tx.Rollback()
+			c.JSON(http.StatusConflict, gin.H{"error": "User sudah memiliki akun nasabah aktif di bank lain. Nonaktifkan akun tersebut terlebih dahulu."})
 			return
 		}
 
@@ -690,15 +660,9 @@ func (ac *AuthController) ReactivateAkun(c *gin.Context) {
 		}
 	case models.RoleUserAdmin:
 		var admin models.Admin
-		if err := tx.Where("user_id = ?", req.UserID).First(&admin).Error; err != nil {
+		if err := tx.Where("user_id = ? AND status_admin = ?", req.UserID, models.Pending).First(&admin).Error; err != nil {
 			tx.Rollback()
-			c.JSON(http.StatusNotFound, gin.H{"error": "Data admin tidak ditemukan"})
-			return
-		}
-
-		if admin.StatusAdmin != models.Pending {
-			tx.Rollback()
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Admin sudah aktif atau tidak dalam status pending"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Tidak ada akun admin/petugas pending untuk diaktifkan"})
 			return
 		}
 
@@ -742,12 +706,43 @@ func (ac *AuthController) DeactivateAkun(c *gin.Context) {
 		return
 	}
 
+	var user models.User
+	if err := ac.DB.Where("user_id = ?", req.UserID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User tidak ditemukan"})
+		return
+	}
+
+	var namaBank string
+	var roleLabel string
 	var result *gorm.DB
+
 	switch req.Role {
 	case models.RoleUserNasabah:
-		result = ac.DB.Model(&models.Nasabah{}).Where("user_id = ?", req.UserID).Update("status_nasabah", models.Nonaktif)
+		var nasabah models.Nasabah
+		if err := ac.DB.Where("user_id = ? AND status_nasabah = ?", req.UserID, models.Aktif).First(&nasabah).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Data akun nasabah aktif tidak ditemukan"})
+			return
+		}
+		var bank models.BankSampah
+		if err := ac.DB.Where("bank_id = ?", nasabah.BankID).First(&bank).Error; err == nil {
+			namaBank = bank.NamaBank
+		}
+		roleLabel = "Nasabah"
+		result = ac.DB.Model(&nasabah).Update("status_nasabah", models.Nonaktif)
 	case models.RoleUserAdmin:
-		result = ac.DB.Model(&models.Admin{}).Where("user_id = ?", req.UserID).Update("status_admin", models.Nonaktif)
+		var admin models.Admin
+		if err := ac.DB.Where("user_id = ? AND status_admin = ?", req.UserID, models.Aktif).First(&admin).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Data akun admin aktif tidak ditemukan"})
+			return
+		}
+		if admin.BankID != nil {
+			var bank models.BankSampah
+			if err := ac.DB.Where("bank_id = ?", *admin.BankID).First(&bank).Error; err == nil {
+				namaBank = bank.NamaBank
+			}
+		}
+		roleLabel = "Staff/Admin"
+		result = ac.DB.Model(&admin).Update("status_admin", models.Nonaktif)
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Role tidak valid"})
 		return
@@ -762,6 +757,26 @@ func (ac *AuthController) DeactivateAkun(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Data akun tidak ditemukan"})
 		return
 	}
+
+	emailBody := fmt.Sprintf(`
+		<div style="font-family: Arial, sans-serif; background-color: #f4fdf4; padding: 30px; border-radius: 10px;">
+			<h2 style="color: #4ea771; margin-top: 0;">Halo, %s!</h2>
+			<p style="font-size: 14px; color: #333; line-height: 1.5;">
+				Akun <b>%s</b> Anda di Bank Sampah <b>%s</b> telah dinonaktifkan.
+				Jika Anda merasa ini adalah kesalahan, silakan hubungi administrator.
+			</p>
+			<hr style="border: 0; height: 1px; background: #ddd; margin: 25px 0;">
+			<p style="font-size: 12px; color: #999; text-align: center; margin: 0;">&copy; Enviroo APP</p>
+		</div>
+	`, user.Nama, roleLabel, namaBank)
+
+	go func() {
+		_ = ac.Mailer.SendEmail(utils.EmailParams{
+			To:      user.Email,
+			Subject: "Notifikasi Penonaktifan Akun Enviroo",
+			Body:    emailBody,
+		})
+	}()
 
 	c.JSON(http.StatusOK, gin.H{"message": "Akun berhasil dinonaktifkan."})
 }
@@ -786,6 +801,14 @@ func (ac *AuthController) CekUserMobile(c *gin.Context) {
 
 	// 2. Verifikasi Password
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
+		var pendingNasabah models.Nasabah
+		var pendingAdmin models.Admin
+		nasabahPending := ac.DB.Where("user_id = ? AND status_nasabah = ?", user.UserID, models.Pending).First(&pendingNasabah).Error == nil
+		adminPending := ac.DB.Where("user_id = ? AND status_admin = ?", user.UserID, models.Pending).First(&pendingAdmin).Error == nil
+		if nasabahPending || adminPending {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Mohon lakukan aktivasi akun terlebih dahulu"})
+			return
+		}
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Password yang Anda masukkan salah"})
 		return
 	}
@@ -821,5 +844,427 @@ func (ac *AuthController) CekUserMobile(c *gin.Context) {
 			"multiple_roles": len(validRoles) > 1,
 			"roles":          validRoles,
 		},
+	})
+}
+
+func (ac *AuthController) ChangePassword(c *gin.Context) {
+	claims, ok := middleware.GetClaims(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Tidak terautentikasi"})
+		return
+	}
+
+	var req struct {
+		PasswordLama           string `json:"password_lama" binding:"required"`
+		PasswordBaru           string `json:"password_baru" binding:"required"`
+		KonfirmasiPasswordBaru string `json:"konfirmasi_password_baru" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Format input tidak valid"})
+		return
+	}
+
+	if req.PasswordBaru != req.KonfirmasiPasswordBaru {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Konfirmasi password baru tidak cocok"})
+		return
+	}
+
+	var user models.User
+	if err := ac.DB.Where("user_id = ?", claims.UserID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User tidak ditemukan"})
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.PasswordLama)); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Password lama salah"})
+		return
+	}
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.PasswordBaru), 12)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengamankan password baru"})
+		return
+	}
+
+	if err := ac.DB.Model(&user).Update("password", string(hashedPassword)).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memperbarui password"})
+		return
+	}
+
+	emailBody := fmt.Sprintf(`
+		<div style="font-family: Arial, sans-serif; background-color: #f4fdf4; padding: 30px; border-radius: 10px;">
+			<h2 style="color: #4ea771; margin-top: 0;">Halo, %s!</h2>
+			<p style="font-size: 14px; color: #333; line-height: 1.5;">
+				Password akun Enviroo Anda baru saja berhasil diubah.
+				Jika Anda tidak melakukan perubahan ini, segera hubungi administrator.
+			</p>
+			<hr style="border: 0; height: 1px; background: #ddd; margin: 25px 0;">
+			<p style="font-size: 12px; color: #999; text-align: center; margin: 0;">&copy; Enviroo APP</p>
+		</div>
+	`, user.Nama)
+
+	go func() {
+		_ = ac.Mailer.SendEmail(utils.EmailParams{
+			To:      user.Email,
+			Subject: "Notifikasi Perubahan Password Enviroo",
+			Body:    emailBody,
+		})
+	}()
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Password berhasil diubah",
+	})
+}
+
+func (ac *AuthController) SendEmailForgetPassword(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required,email"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Cek apakah user ada
+	var user models.User
+	if err := ac.DB.Where("email = ?", req.Email).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Pengguna tidak ditemukan"})
+		return
+	}
+
+	// Generate OTP
+	OTP, err := utils.GenerateOTP()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal generate OTP"})
+		return
+	}
+
+	hashedOTP, err := utils.HashOTP(OTP)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal hash OTP"})
+		return
+	}
+
+	// Cek apakah sudah ada OTP yang belum digunakan
+	var aktivasi models.AktivasiAkun
+	errAktivasi := ac.DB.Where("user_id = ? AND is_used = ? AND expired_at > ? AND tujuan = ?",
+		user.UserID, false, time.Now(), models.TujuanResetPassword).
+		Order("created_at desc").
+		First(&aktivasi).Error
+
+	now := time.Now()
+	expiredAt := now.Add(10 * time.Minute) // OTP berlaku 10 menit
+
+	if errAktivasi == nil {
+		// Update yang sudah ada
+		if err := ac.DB.Model(&aktivasi).Where("aktivasi_id = ?", aktivasi.AktivasiID).Updates(map[string]interface{}{
+			"token":        hashedOTP,
+			"expired_at":   expiredAt,
+			"generated_by": user.UserID,
+		}).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengupdate record aktivasi"})
+			return
+		}
+		// update struct value for email template
+		aktivasi.ExpiredAt = expiredAt
+	} else {
+		// Buat baru
+		aktivasiID := utils.GenerateAktivasiID(user.UserID)
+
+		aktivasi = models.AktivasiAkun{
+			AktivasiID:  aktivasiID,
+			UserID:      user.UserID,
+			AsRole:      models.RoleUserGlobal,
+			IsUsed:      false,
+			Token:       hashedOTP,
+			ExpiredAt:   expiredAt,
+			GeneratedBy: user.UserID,
+			Tujuan:      models.TujuanResetPassword,
+		}
+
+		if err := ac.DB.Create(&aktivasi).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat record aktivasi baru"})
+			return
+		}
+	}
+
+	// Kirim Email
+	emailBody := fmt.Sprintf(`
+		<div style="font-family: Arial, sans-serif; background-color: #f4fdf4; padding: 30px; border-radius: 10px;">
+			<h2 style="color: #4ea771; margin-top: 0;">Halo, %s!</h2>
+			<p style="font-size: 14px; color: #333; line-height: 1.5;">
+				Kami menerima permintaan reset password untuk akun email <b>%s</b>.
+				Gunakan kode OTP berikut untuk melanjutkan:
+			</p>
+			<div style="background-color: #fff; border: 2px dashed #4ea771; padding: 15px; text-align: center; margin: 20px 0;">
+				<h1 style="color: #4ea771; font-size: 32px; font-weight: bold; margin: 0; letter-spacing: 5px;">%s</h1>
+			</div>
+			<p style="font-size: 13px; color: #666;">
+				Kode ini berlaku selama 10 menit hingga <b>%s</b>.
+				Jika Anda tidak meminta reset password, abaikan email ini.
+			</p>
+			<hr style="border: 0; height: 1px; background: #ddd; margin: 25px 0;">
+			<p style="font-size: 12px; color: #999; text-align: center; margin: 0;">&copy; Enviroo APP</p>
+		</div>
+	`, user.Nama, user.Email, OTP, aktivasi.ExpiredAt.Format("02 Jan 2006 15:04 WIB"))
+
+	go func() {
+		_ = ac.Mailer.SendEmail(utils.EmailParams{
+			To:      user.Email,
+			Subject: "Reset Password Enviroo APP",
+			Body:    emailBody,
+		})
+	}()
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Email OTP untuk reset password telah berhasil dikirimkan",
+		"data": map[string]interface{}{
+			"aktivasi_id": aktivasi.AktivasiID,
+			"expired_at":  aktivasi.ExpiredAt,
+		},
+	})
+}
+
+func (ac *AuthController) VerifikasiOTP(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required,email"`
+		OTP   string `json:"otp" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var user models.User
+	if err := ac.DB.Where("email = ?", req.Email).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Pengguna tidak ditemukan"})
+		return
+	}
+
+	var aktivasi models.AktivasiAkun
+	// Pencarian sudah memastikan is_used = false dan belum expired
+	errAktivasi := ac.DB.Where("user_id = ? AND is_used = ? AND expired_at > ? AND tujuan = ?",
+		user.UserID, false, time.Now(), models.TujuanResetPassword).
+		Order("created_at desc").
+		First(&aktivasi).Error
+
+	if errAktivasi != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Kode OTP tidak ditemukan atau sudah kadaluarsa"})
+		return
+	}
+
+	// Gunakan helper utils.VerifyOTP yang sudah digunakan di project
+	if !utils.VerifyOTP(req.OTP, aktivasi.Token) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Kode OTP salah"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Verifikasi OTP berhasil",
+		"data": map[string]interface{}{
+			"user_id":     user.UserID,
+			"aktivasi_id": aktivasi.AktivasiID,
+		},
+	})
+}
+
+func (ac *AuthController) SwitchRole(c *gin.Context) {
+	claims, ok := middleware.GetClaims(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Tidak terautentikasi"})
+		return
+	}
+
+	var req struct {
+		TargetRole models.RoleUserEnum `json:"target_role" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.TargetRole != models.RoleUserNasabah && req.TargetRole != models.RoleUserAdmin {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "target_role tidak valid, harus 'nasabah' atau 'admin'"})
+		return
+	}
+
+	// Tentukan kategori role saat ini
+	currentCategory := models.RoleUserAdmin
+	if claims.Role == models.RoleNasabah {
+		currentCategory = models.RoleUserNasabah
+	}
+	if req.TargetRole == currentCategory {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Sudah login sebagai role tersebut"})
+		return
+	}
+
+	var user models.User
+	if err := ac.DB.Where("user_id = ?", claims.UserID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User tidak ditemukan"})
+		return
+	}
+
+	var finalRole models.RoleAdmin
+	var identityID string
+	var bankID *string
+
+	switch req.TargetRole {
+	case models.RoleUserNasabah:
+		var nasabah models.Nasabah
+		if err := ac.DB.Where("user_id = ? AND status_nasabah = ?", claims.UserID, models.Aktif).First(&nasabah).Error; err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Tidak ada akun nasabah aktif untuk akun Anda"})
+			return
+		}
+		var bankNasabah models.BankSampah
+		if err := ac.DB.Select("is_active").Where("bank_id = ?", nasabah.BankID).First(&bankNasabah).Error; err == nil && !bankNasabah.IsActive {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Operasional bank sampah sedang berhenti sementara"})
+			return
+		}
+		finalRole = models.RoleNasabah
+		identityID = nasabah.NasabahID
+		bankID = &nasabah.BankID
+
+	case models.RoleUserAdmin:
+		var admin models.Admin
+		if err := ac.DB.Where("user_id = ? AND status_admin = ?", claims.UserID, models.Aktif).First(&admin).Error; err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Tidak ada akun petugas aktif untuk akun Anda"})
+			return
+		}
+		if admin.Role != models.PetugasBSI && admin.Role != models.PetugasBSM && admin.Role != models.PetugasBSU {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Akses ditolak. Switch role mobile hanya untuk Petugas Lapangan"})
+			return
+		}
+		if admin.BankID != nil {
+			var bankAdmin models.BankSampah
+			if err := ac.DB.Select("is_active").Where("bank_id = ?", *admin.BankID).First(&bankAdmin).Error; err == nil && !bankAdmin.IsActive {
+				c.JSON(http.StatusForbidden, gin.H{"error": "Operasional bank sampah sedang berhenti sementara"})
+				return
+			}
+		}
+		finalRole = admin.Role
+		identityID = admin.AdminID
+		bankID = admin.BankID
+	}
+
+	accessToken, err := utils.GenerateJWT(claims.UserID, finalRole)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat access token"})
+		return
+	}
+
+	refreshToken, err := utils.GenerateRefreshToken(claims.UserID, finalRole)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat refresh token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Switch role berhasil",
+		"data": gin.H{
+			"user_id":       claims.UserID,
+			"nama":          user.Nama,
+			"email":         user.Email,
+			"role":          finalRole,
+			"bank_id":       bankID,
+			"identity_id":   identityID,
+			"access_token":  accessToken,
+			"refresh_token": refreshToken,
+		},
+	})
+}
+
+func (ac *AuthController) ResetPassword(c *gin.Context) {
+	var req struct {
+		Email                  string `json:"email" binding:"required,email"`
+		OTP                    string `json:"otp" binding:"required"`
+		PasswordBaru           string `json:"password_baru" binding:"required,min=8"`
+		KonfirmasiPasswordBaru string `json:"konfirmasi_password_baru" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.PasswordBaru != req.KonfirmasiPasswordBaru {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Konfirmasi password baru tidak cocok"})
+		return
+	}
+
+	var user models.User
+	if err := ac.DB.Where("email = ?", req.Email).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Pengguna tidak ditemukan"})
+		return
+	}
+
+	var aktivasi models.AktivasiAkun
+	errAktivasi := ac.DB.Where("user_id = ? AND is_used = ? AND expired_at > ? AND tujuan = ?",
+		user.UserID, false, time.Now(), models.TujuanResetPassword).
+		Order("created_at desc").
+		First(&aktivasi).Error
+
+	if errAktivasi != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Kode OTP tidak valid atau sudah kadaluarsa"})
+		return
+	}
+
+	if !utils.VerifyOTP(req.OTP, aktivasi.Token) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Kode OTP salah"})
+		return
+	}
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.PasswordBaru), 12)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memproses password baru"})
+		return
+	}
+
+	tx := ac.DB.Begin()
+	if err := tx.Model(&user).Update("password", string(hashedPassword)).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengupdate password"})
+		return
+	}
+
+	if err := tx.Model(&aktivasi).Where("aktivasi_id = ?", aktivasi.AktivasiID).Updates(map[string]interface{}{
+		"is_used": true,
+		"used_at": time.Now(),
+	}).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyelesaikan proses reset password"})
+		return
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyimpan data"})
+		return
+	}
+
+	emailBody := fmt.Sprintf(`
+		<div style="font-family: Arial, sans-serif; background-color: #f4fdf4; padding: 30px; border-radius: 10px;">
+			<h2 style="color: #4ea771; margin-top: 0;">Halo, %s!</h2>
+			<p style="font-size: 14px; color: #333; line-height: 1.5;">
+				Password akun Enviroo Anda berhasil direset.
+				Silakan login menggunakan password baru Anda.
+				Jika Anda tidak merasa melakukan reset password, segera hubungi administrator.
+			</p>
+			<hr style="border: 0; height: 1px; background: #ddd; margin: 25px 0;">
+			<p style="font-size: 12px; color: #999; text-align: center; margin: 0;">&copy; Enviroo APP</p>
+		</div>
+	`, user.Nama)
+
+	go func() {
+		_ = ac.Mailer.SendEmail(utils.EmailParams{
+			To:      user.Email,
+			Subject: "Konfirmasi Reset Password Enviroo",
+			Body:    emailBody,
+		})
+	}()
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Password berhasil diubah. Silakan login menggunakan password baru Anda.",
 	})
 }

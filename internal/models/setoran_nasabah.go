@@ -19,11 +19,10 @@ type SetoranNasabah struct {
 	CreatedAt     time.Time     `gorm:"column:created_at;autoCreateTime"`
 
 	TotalItem     int           `gorm:"column:total_item;default:0"`
-	TotalPoin     float64       `gorm:"column:total_poin;type:decimal(20,4);default:0"`
-
+ 
 	StatusSetoran StatusSetoran `gorm:"column:status_setoran;type:status_setoran_enum;default:'pending'"`
 	BuktiViaManual string        `gorm:"column:bukti_via_manual;type:varchar(255)"`
-
+ 
 	Admin         Admin         `gorm:"foreignKey:AdminID;references:AdminID"`
 	Nasabah       Nasabah       `gorm:"foreignKey:NasabahID;references:NasabahID"`
 	Penimbangan   Penimbangan   `gorm:"foreignKey:PenimbanganID;references:PenimbanganID"`

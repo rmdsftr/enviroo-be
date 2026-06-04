@@ -19,6 +19,7 @@ type User struct {
 	PhotoURL   string    `gorm:"column:photo_url;type:varchar(255)"`
 	CreatedAt  time.Time `gorm:"column:created_at;autoCreateTime"`
 	UpdatedAt  time.Time `gorm:"column:updated_at;autoUpdateTime"`
+	FCMToken   string    `gorm:"column:fcm_token;type:text"`
 
 	Nasabahs []Nasabah `gorm:"foreignKey:UserID"`
 	Admins   []Admin   `gorm:"foreignKey:UserID"`
