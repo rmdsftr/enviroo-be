@@ -11,6 +11,8 @@ RUN go build -o enviroo-be ./cmd/api/main.go
 
 FROM alpine:latest
 
+RUN apk add --no-cache tzdata ca-certificates
+
 WORKDIR /app
 
 COPY --from=builder /app/enviroo-be .
