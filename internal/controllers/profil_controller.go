@@ -212,28 +212,6 @@ func (pc *ProfilController) DeleteBankSampah(c *gin.Context) {
 	})
 }
 
-func (pc *ProfilController) DeleteNasabah(c *gin.Context) {
-	nasabahID := c.Param("nasabah_id")
-
-	var nasabah models.Nasabah
-	if err := pc.DB.Where("nasabah_id = ?", nasabahID).First(&nasabah).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Nasabah tidak ditemukan"})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get nasabah: " + err.Error()})
-		}
-		return
-	}
-
-	if err := pc.DB.Delete(&nasabah).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete nasabah: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Nasabah deleted successfully",
-	})
-}
 
 func (pc *ProfilController) GetProfilUser(c *gin.Context) {
 	userID := c.Param("user_id")

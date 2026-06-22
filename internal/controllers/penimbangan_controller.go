@@ -8,8 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
-	"gorm.io/gorm"
+"gorm.io/gorm"
 )
 
 type PenimbanganController struct {
@@ -38,7 +37,7 @@ func (pc *PenimbanganController) CheckJadwalHariIni(c *gin.Context) {
 	if err := pc.db.Model(&models.Penimbangan{}).Where("bank_id = ? AND status_penimbangan = ?", bankID, models.StatusAktif).Count(&activeCount).Error; err == nil && activeCount > 0 {
 		c.JSON(http.StatusConflict, gin.H{
 			"status": "active_session",
-			"error": "Masih ada penimbangan yang aktif untuk BSU ini",
+			"error":  "Masih ada penimbangan yang aktif untuk BSU ini",
 		})
 		return
 	}
@@ -50,6 +49,7 @@ func (pc *PenimbanganController) CheckJadwalHariIni(c *gin.Context) {
 	}[now.Weekday()]
 	mingguKe := getWeekOfMonth(now)
 
+	var nama_jadwal string
 	var jadwals []models.Jadwal
 	err := pc.db.Where("bank_id = ? AND jenis_jadwal = ? AND ("+
 		"(is_rutin = true AND hari = ? AND (minggu_ke = ? OR minggu_ke = 0)) OR "+
@@ -63,6 +63,7 @@ func (pc *PenimbanganController) CheckJadwalHariIni(c *gin.Context) {
 			pc.db.Model(&models.Penimbangan{}).Where("jadwal_id = ? AND DATE(started_at) = ?", jadwal.JadwalID, todayDate).Count(&penimbanganCount)
 			if penimbanganCount == 0 {
 				jadwalTersedia = true
+				nama_jadwal = jadwal.NamaJadwalSpesial // ← sesuaikan nama field-nya
 				break
 			}
 		}
@@ -76,7 +77,8 @@ func (pc *PenimbanganController) CheckJadwalHariIni(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"status": "scheduled",
+		"status":              "scheduled",
+		"nama_jadwal_spesial": nama_jadwal, // ← ini yang diisi
 	})
 }
 
@@ -90,30 +92,30 @@ func (pc *PenimbanganController) CheckJadwalActive(c *gin.Context) {
 		return
 	}
 
-	var activeJadwalCount int64
-	err := pc.db.Model(&models.Penimbangan{}).
-		Where("bank_id = ? AND status_penimbangan = ?", bankID, models.StatusAktif).
-		Count(&activeJadwalCount).Error
+	var activePenimbangan models.Penimbangan
+	err := pc.db.Where("bank_id = ? AND status_penimbangan = ?", bankID, models.StatusAktif).
+		First(&activePenimbangan).Error
 
-	if err != nil {
+	if err != nil && err != gorm.ErrRecordNotFound {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengecek jadwal aktif: " + err.Error()})
 		return
 	}
 
+	isActive := err == nil
+	var penimbanganID *string
+	if isActive {
+		penimbanganID = &activePenimbangan.PenimbanganID
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"is_active": activeJadwalCount > 0,
+		"is_active":      isActive,
+		"penimbangan_id": penimbanganID,
 	})
 }
 
 func (pc *PenimbanganController) AddNewPenimbangan(c *gin.Context) {
 	bankID := c.Param("bank_id")
 	adminID := c.Param("admin_id")
-
-	var req struct {
-		ForceDadakan bool `json:"force_dadakan"`
-	}
-	// Opsional: jika request body tidak ada, ForceDadakan otomatis false
-	c.ShouldBindJSON(&req)
 
 	// 1. Cek bank sampah
 	var bank models.BankSampah
@@ -138,7 +140,7 @@ func (pc *PenimbanganController) AddNewPenimbangan(c *gin.Context) {
 	mingguKe := getWeekOfMonth(now)
 
 	var jadwals []models.Jadwal
-	
+
 	// Query cek apakah hari ini tercatat ada jadwal penimbangan secara formal
 	err := pc.db.Where("bank_id = ? AND jenis_jadwal = ? AND ("+
 		"(is_rutin = true AND hari = ? AND (minggu_ke = ? OR minggu_ke = 0)) OR "+
@@ -161,45 +163,10 @@ func (pc *PenimbanganController) AddNewPenimbangan(c *gin.Context) {
 
 	tx := pc.db.Begin()
 
-	// Jika jadwal tidak ada atau sudah terpakai, cek status ForceDadakan. Jika false, tolak!
 	if !jadwalTersedia {
-		if !req.ForceDadakan {
-			tx.Rollback()
-			c.JSON(http.StatusForbidden, gin.H{"error": "Tidak ada jadwal penimbangan hari ini. Konfirmasi sesi dadakan diperlukan."})
-			return
-		}
-
-		trueVal := true
-		falseVal := false
-		
-		jamMulai := now.Format("15:04")
-		endTime := now.Add(2 * time.Hour)
-		jamSelesai := endTime.Format("15:04")
-
-		// Jika melewati tengah malam, paksa ke 23:59 agar tidak melanggar constraint (jam_selesai > jam_mulai)
-		if endTime.Day() != now.Day() {
-			jamSelesai = "23:59"
-		}
-
-		selectedJadwal = models.Jadwal{
-			JadwalID:          uuid.New(),
-			BankID:            bankID,
-			Hari:              todayHari,
-			MingguKe:          mingguKe,
-			JenisJadwal:       models.JadwalPenimbangan,
-			JamMulai:          jamMulai,
-			JamSelesai:        jamSelesai,
-			IsActive:          &trueVal,
-			IsRutin:           &falseVal,
-			Tanggal:           now,
-			NamaJadwalSpesial: "Penimbangan Dadakan",
-			CreatedBy:         adminID,
-		}
-		if err := tx.Create(&selectedJadwal).Error; err != nil {
-			tx.Rollback()
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat jadwal dadakan"})
-			return
-		}
+		tx.Rollback()
+		c.JSON(http.StatusForbidden, gin.H{"error": "Tidak ada jadwal penimbangan hari ini"})
+		return
 	}
 
 	// 4. Create penimbangan record
@@ -284,12 +251,23 @@ func (pc *PenimbanganController) GetPenimbangan(c *gin.Context) {
 
 	var penimbanganList []PenimbanganResponse
 
-	if err := pc.db.Table("penimbangan").
+	q := pc.db.Table("penimbangan").
 		Select("penimbangan.*, users.nama").
 		Joins("LEFT JOIN users ON users.user_id = penimbangan.started_by").
-		Where("penimbangan.bank_id = ?", bankID).
-		Order("penimbangan.started_at desc").
-		Find(&penimbanganList).Error; err != nil {
+		Where("penimbangan.bank_id = ?", bankID)
+
+	if startStr := c.Query("start_date"); startStr != "" {
+		if t, err := time.Parse("2006-01-02", startStr); err == nil {
+			q = q.Where("penimbangan.started_at >= ?", t)
+		}
+	}
+	if endStr := c.Query("end_date"); endStr != "" {
+		if t, err := time.Parse("2006-01-02", endStr); err == nil {
+			q = q.Where("penimbangan.started_at <= ?", t.Add(24*time.Hour-time.Second))
+		}
+	}
+
+	if err := q.Order("penimbangan.started_at desc").Find(&penimbanganList).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data penimbangan"})
 		return
 	}
@@ -315,12 +293,12 @@ func (pc *PenimbanganController) ListSetoranPenimbangan(c *gin.Context) {
 	}
 
 	type PenimbanganHeaderResponse struct {
-		PenimbanganID     string               `json:"penimbangan_id" gorm:"column:penimbangan_id"`
-		StartedAt         *time.Time           `json:"started_at" gorm:"column:started_at"`
-		EndedAt           *time.Time           `json:"ended_at" gorm:"column:ended_at"`
-		StartedBy         string               `json:"started_by" gorm:"column:started_by"`
-		EndedBy           string               `json:"ended_by" gorm:"column:ended_by"`
-		StatusPenimbangan string               `json:"status_penimbangan" gorm:"column:status_penimbangan"`
+		PenimbanganID     string                `json:"penimbangan_id" gorm:"column:penimbangan_id"`
+		StartedAt         *time.Time            `json:"started_at" gorm:"column:started_at"`
+		EndedAt           *time.Time            `json:"ended_at" gorm:"column:ended_at"`
+		StartedBy         string                `json:"started_by" gorm:"column:started_by"`
+		EndedBy           string                `json:"ended_by" gorm:"column:ended_by"`
+		StatusPenimbangan string                `json:"status_penimbangan" gorm:"column:status_penimbangan"`
 		ListSetoran       []ListSetoranResponse `json:"list_setoran" gorm:"-"`
 	}
 

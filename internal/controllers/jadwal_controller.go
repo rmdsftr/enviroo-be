@@ -3,6 +3,7 @@ package controllers
 import (
 	"enviroo-be/internal/models"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -138,42 +139,49 @@ func (jc *JadwalController) GetJadwalBank(c *gin.Context) {
 		TargetBankName string `json:"target_bank_name"`
 	}
 
+	monthStr := c.Query("month")
+	yearStr := c.Query("year")
+	month, _ := strconv.Atoi(monthStr)
+	year, _ := strconv.Atoi(yearStr)
+	useMonthFilter := month >= 1 && month <= 12 && year > 0
+
+	// dateFilter: rutin selalu tampil, spesial difilter ke bulan/tahun yang diminta
+	applyDateFilter := func(q *gorm.DB) *gorm.DB {
+		if !useMonthFilter {
+			return q
+		}
+		return q.Where(
+			"jadwal.is_rutin = true OR (EXTRACT(MONTH FROM jadwal.tanggal) = ? AND EXTRACT(YEAR FROM jadwal.tanggal) = ?)",
+			month, year,
+		)
+	}
+
 	var listPenimbangan []PenimbanganResponse
 	var listPengangkutan []PengangkutanResponse
 
-	// Get Penimbangan where bank_id = bankID and jenis_jadwal = "penimbangan"
-	if err := jc.db.Table("jadwal").
+	penimbanganQ := jc.db.Table("jadwal").
 		Select("jadwal.*, bank_sampah.nama_bank as bank_name").
 		Joins("left join bank_sampah on bank_sampah.bank_id = jadwal.bank_id").
-		Where("jadwal.bank_id = ? AND jadwal.jenis_jadwal = ?", bankID, models.JadwalPenimbangan).
-		Find(&listPenimbangan).Error; err != nil {
+		Where("jadwal.bank_id = ? AND jadwal.jenis_jadwal = ?", bankID, models.JadwalPenimbangan)
+	if err := applyDateFilter(penimbanganQ).Find(&listPenimbangan).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Get Pengangkutan based on JenisBank
+	pengangkutanBase := jc.db.Table("jadwal").
+		Select("jadwal.*, b1.nama_bank as bank_name, b2.nama_bank as target_bank_name").
+		Joins("left join bank_sampah b1 on b1.bank_id = jadwal.bank_id").
+		Joins("left join bank_sampah b2 on b2.bank_id = jadwal.target_bank_id").
+		Where("jadwal.jenis_jadwal = ?", models.JadwalPengangkutan)
+
 	if bank.JenisBank == models.BSU {
-		// BSU fetches pengangkutan where they are the target
-		if err := jc.db.Table("jadwal").
-			Select("jadwal.*, b1.nama_bank as bank_name, b2.nama_bank as target_bank_name").
-			Joins("left join bank_sampah b1 on b1.bank_id = jadwal.bank_id").
-			Joins("left join bank_sampah b2 on b2.bank_id = jadwal.target_bank_id").
-			Where("jadwal.target_bank_id = ? AND jadwal.jenis_jadwal = ?", bankID, models.JadwalPengangkutan).
-			Find(&listPengangkutan).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
+		pengangkutanBase = pengangkutanBase.Where("jadwal.target_bank_id = ?", bankID)
 	} else {
-		// Other banks fetch pengangkutan where they are the initiator (bank_id)
-		if err := jc.db.Table("jadwal").
-			Select("jadwal.*, b1.nama_bank as bank_name, b2.nama_bank as target_bank_name").
-			Joins("left join bank_sampah b1 on b1.bank_id = jadwal.bank_id").
-			Joins("left join bank_sampah b2 on b2.bank_id = jadwal.target_bank_id").
-			Where("jadwal.bank_id = ? AND jadwal.jenis_jadwal = ?", bankID, models.JadwalPengangkutan).
-			Find(&listPengangkutan).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
+		pengangkutanBase = pengangkutanBase.Where("jadwal.bank_id = ?", bankID)
+	}
+	if err := applyDateFilter(pengangkutanBase).Find(&listPengangkutan).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{

@@ -6,6 +6,7 @@ import (
 	"enviroo-be/pkg/utils"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -208,7 +209,7 @@ func (bc *BSIController) AddNewBSI(c *gin.Context) {
 			<div style="font-family: Arial, sans-serif; background-color: #f4fdf4; padding: 30px; border-radius: 10px;">
 				<h2 style="color: #4ea771; margin-top: 0;">Halo, %s!</h2>
 				<p style="font-size: 14px; color: #333; line-height: 1.5;">
-					Anda telah ditunjuk sebagai <b>Administrator</b> di Bank Sampah <b>%s</b>.
+					Anda telah ditunjuk sebagai <b>Administrator</b> di <b>%s</b>.
 					Untuk menyelesaikan proses aktivasi akun, gunakan kode OTP berikut:
 				</p>
 				<div style="background-color: #fff; border: 2px dashed #4ea771; padding: 15px; text-align: center; margin: 20px 0;">
@@ -252,24 +253,60 @@ func (bc *BSIController) GetBSI(c *gin.Context) {
 		models.BankSampah
 		JumlahBSU     int64 `json:"jumlah_bsu" gorm:"column:jumlah_bsu"`
 		JumlahNasabah int64 `json:"jumlah_nasabah" gorm:"column:jumlah_nasabah"`
+		TotalCount    int   `json:"-" gorm:"column:total_count"`
 	}
 
+	pageStr := c.Query("page")
+
+	const selectCols = "bank_sampah.*, " +
+		"(SELECT COUNT(bank_id) FROM bank_sampah bsu WHERE bsu.parent_bank_id = bank_sampah.bank_id AND bsu.jenis_bank = 'bsu') AS jumlah_bsu, " +
+		"(SELECT COUNT(nasabah_id) FROM nasabah WHERE nasabah.bank_id = bank_sampah.bank_id) AS jumlah_nasabah"
+
+	if pageStr == "" {
+		var results []BSIResponse
+		query := bc.DB.Model(&models.BankSampah{}).
+			Select(selectCols).
+			Where("bank_sampah.jenis_bank = ?", models.BSI)
+		if err := query.Find(&results).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get BSI: " + err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "BSI fetched successfully", "data": results})
+		return
+	}
+
+	page, _ := strconv.Atoi(pageStr)
+	if page < 1 {
+		page = 1
+	}
+	const limit = 20
+	offset := (page - 1) * limit
+
 	var results []BSIResponse
-
-	// Query utama dengan subquery SELECT COUNT untuk menghitung anak cabang (BSU) dan jumlah nasabah
 	query := bc.DB.Model(&models.BankSampah{}).
-		Select("bank_sampah.*, (SELECT COUNT(bank_id) FROM bank_sampah bsu WHERE bsu.parent_bank_id = bank_sampah.bank_id AND bsu.jenis_bank = 'bsu') AS jumlah_bsu, " +
-			"(SELECT COUNT(nasabah_id) FROM nasabah WHERE nasabah.bank_id = bank_sampah.bank_id) AS jumlah_nasabah").
-		Where("bank_sampah.jenis_bank = ?", models.BSI)
-
+		Select(selectCols+", COUNT(*) OVER() AS total_count").
+		Where("bank_sampah.jenis_bank = ?", models.BSI).
+		Limit(limit).Offset(offset)
 	if err := query.Find(&results).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get BSI: " + err.Error()})
 		return
 	}
 
+	totalCount := 0
+	if len(results) > 0 {
+		totalCount = results[0].TotalCount
+	}
+	totalPages := (totalCount + limit - 1) / limit
+
 	c.JSON(http.StatusOK, gin.H{
 		"message": "BSI fetched successfully",
-		"data":    results,
+		"pagination": gin.H{
+			"page":        page,
+			"limit":       limit,
+			"total":       totalCount,
+			"total_pages": totalPages,
+		},
+		"data": results,
 	})
 }
 
@@ -280,26 +317,83 @@ func (bc *BSIController) GetUnitBSI(c *gin.Context) {
 		return
 	}
 
-	type BSUResponse struct {
-		models.BankSampah
-		JumlahNasabah int64 `json:"jumlah_nasabah" gorm:"column:jumlah_nasabah"`
+	pageStr := c.Query("page")
+	usePagination := pageStr != ""
+
+	type UnitBSI struct {
+		BankID        string `gorm:"column:bank_id" json:"BankID"`
+		NamaBank      string `gorm:"column:nama_bank" json:"NamaBank"`
+		PhotoURL      string `gorm:"column:photo_url" json:"PhotoURL"`
+		JumlahNasabah int64  `gorm:"column:jumlah_nasabah" json:"jumlah_nasabah"`
+		JumlahStaff   int64  `gorm:"column:jumlah_staff" json:"jumlah_staff"`
+		IsActive      bool   `gorm:"column:is_active" json:"IsActive"`
+		TotalCount    int    `gorm:"column:total_count" json:"-"`
 	}
 
-	var results []BSUResponse
+	baseQuery := `
+		SELECT
+			b.bank_id,
+			b.nama_bank,
+			b.photo_url,
+			b.is_active,
+			(SELECT COUNT(*) FROM nasabah n WHERE n.bank_id = b.bank_id) AS jumlah_nasabah,
+			(SELECT COUNT(*) FROM admin a WHERE a.bank_id = b.bank_id AND a.role IN ('admin_bsu', 'petugas_bsu')) AS jumlah_staff
+			%s
+		FROM bank_sampah b
+		WHERE b.parent_bank_id = ? AND b.jenis_bank = 'bsu'
+		ORDER BY b.nama_bank ASC
+		%s`
 
-	// Query utama dengan subquery SELECT COUNT untuk menghitung jumlah nasabah
-	query := bc.DB.Model(&models.BankSampah{}).
-		Select("bank_sampah.*, (SELECT COUNT(nasabah_id) FROM nasabah WHERE nasabah.bank_id = bank_sampah.bank_id) AS jumlah_nasabah").
-		Where("bank_sampah.parent_bank_id = ? AND bank_sampah.jenis_bank = ?", bankID, models.BSU)
+	var results []UnitBSI
+	var err error
 
-	if err := query.Find(&results).Error; err != nil {
+	if !usePagination {
+		q := fmt.Sprintf(baseQuery, "", "")
+		err = bc.DB.Raw(q, bankID).Scan(&results).Error
+	} else {
+		page, _ := strconv.Atoi(pageStr)
+		if page < 1 {
+			page = 1
+		}
+		const limit = 15
+		offset := (page - 1) * limit
+
+		q := fmt.Sprintf(baseQuery, ", COUNT(*) OVER() AS total_count", "LIMIT ? OFFSET ?")
+		err = bc.DB.Raw(q, bankID, limit, offset).Scan(&results).Error
+	}
+
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get BSU: " + err.Error()})
 		return
 	}
 
+	if !usePagination {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "BSU fetched successfully",
+			"data":    results,
+		})
+		return
+	}
+
+	page, _ := strconv.Atoi(pageStr)
+	if page < 1 {
+		page = 1
+	}
+	totalCount := 0
+	if len(results) > 0 {
+		totalCount = results[0].TotalCount
+	}
+	totalPages := (totalCount + 14) / 15
+
 	c.JSON(http.StatusOK, gin.H{
 		"message": "BSU fetched successfully",
-		"data":    results,
+		"pagination": gin.H{
+			"page":        page,
+			"limit":       15,
+			"total":       totalCount,
+			"total_pages": totalPages,
+		},
+		"data": results,
 	})
 }
 
@@ -471,7 +565,7 @@ func (bc *BSIController) AddNewUnit(c *gin.Context) {
 			<div style="font-family: Arial, sans-serif; background-color: #f4fdf4; padding: 30px; border-radius: 10px;">
 				<h2 style="color: #4ea771; margin-top: 0;">Halo, %s!</h2>
 				<p style="font-size: 14px; color: #333; line-height: 1.5;">
-					Anda telah ditunjuk sebagai <b>Administrator</b> di Bank Sampah <b>%s</b> (BSU).
+					Anda telah ditunjuk sebagai <b>Administrator</b> di <b>%s</b> (BSU).
 					Untuk menyelesaikan proses aktivasi akun, gunakan kode OTP berikut:
 				</p>
 				<div style="background-color: #fff; border: 2px dashed #4ea771; padding: 15px; text-align: center; margin: 20px 0;">

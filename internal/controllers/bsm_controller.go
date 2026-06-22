@@ -6,6 +6,7 @@ import (
 	"enviroo-be/pkg/utils"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -208,7 +209,7 @@ func (bc *BSMController) AddNewBSM(c *gin.Context) {
 			<div style="font-family: Arial, sans-serif; background-color: #f4fdf4; padding: 30px; border-radius: 10px;">
 				<h2 style="color: #4ea771; margin-top: 0;">Halo, %s!</h2>
 				<p style="font-size: 14px; color: #333; line-height: 1.5;">
-					Anda telah ditunjuk sebagai <b>Administrator</b> di Bank Sampah <b>%s</b> (BSM).
+					Anda telah ditunjuk sebagai <b>Administrator</b> di <b>%s</b> (BSM).
 					Untuk menyelesaikan proses aktivasi akun, gunakan kode OTP berikut:
 				</p>
 				<div style="background-color: #fff; border: 2px dashed #4ea771; padding: 15px; text-align: center; margin: 20px 0;">
@@ -256,23 +257,59 @@ func (bc *BSMController) GetBSM(c *gin.Context) {
 		IsActive      bool   `json:"is_active" gorm:"column:is_active"`
 		JumlahNasabah int64  `json:"jumlah_nasabah" gorm:"column:jumlah_nasabah"`
 		JumlahStaff   int64  `json:"jumlah_staff" gorm:"column:jumlah_staff"`
+		TotalCount    int    `json:"-" gorm:"column:total_count"`
 	}
 
+	pageStr := c.Query("page")
+
+	const selectCols = "bank_sampah.bank_id, bank_sampah.nama_bank, bank_sampah.photo_url, bank_sampah.is_active, " +
+		"(SELECT COUNT(user_id) FROM nasabah WHERE nasabah.bank_id = bank_sampah.bank_id) AS jumlah_nasabah, " +
+		"(SELECT COUNT(user_id) FROM admin WHERE admin.bank_id = bank_sampah.bank_id) AS jumlah_staff"
+
+	if pageStr == "" {
+		var results []BSMResponse
+		query := bc.DB.Model(&models.BankSampah{}).
+			Select(selectCols).
+			Where("bank_sampah.jenis_bank = ?", models.BSM)
+		if err := query.Find(&results).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get BSM: " + err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "BSM fetched successfully", "data": results})
+		return
+	}
+
+	page, _ := strconv.Atoi(pageStr)
+	if page < 1 {
+		page = 1
+	}
+	const limit = 20
+	offset := (page - 1) * limit
+
 	var results []BSMResponse
-
 	query := bc.DB.Model(&models.BankSampah{}).
-		Select("bank_sampah.bank_id, bank_sampah.nama_bank, bank_sampah.photo_url, bank_sampah.is_active, " +
-			"(SELECT COUNT(user_id) FROM nasabah WHERE nasabah.bank_id = bank_sampah.bank_id) AS jumlah_nasabah, " +
-			"(SELECT COUNT(user_id) FROM admin WHERE admin.bank_id = bank_sampah.bank_id) AS jumlah_staff").
-		Where("bank_sampah.jenis_bank = ?", models.BSM)
-
+		Select(selectCols+", COUNT(*) OVER() AS total_count").
+		Where("bank_sampah.jenis_bank = ?", models.BSM).
+		Limit(limit).Offset(offset)
 	if err := query.Find(&results).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get BSM: " + err.Error()})
 		return
 	}
 
+	totalCount := 0
+	if len(results) > 0 {
+		totalCount = results[0].TotalCount
+	}
+	totalPages := (totalCount + limit - 1) / limit
+
 	c.JSON(http.StatusOK, gin.H{
 		"message": "BSM fetched successfully",
-		"data":    results,
+		"pagination": gin.H{
+			"page":        page,
+			"limit":       limit,
+			"total":       totalCount,
+			"total_pages": totalPages,
+		},
+		"data": results,
 	})
 }

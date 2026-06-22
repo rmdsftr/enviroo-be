@@ -131,13 +131,17 @@ func (ac *AuthController) Login(c *gin.Context) {
 	}
 
 	// 4. Generate Tokens
-	accessToken, err := utils.GenerateJWT(user.UserID, finalRole)
+	bankIDStr := ""
+	if bankID != nil {
+		bankIDStr = *bankID
+	}
+	accessToken, err := utils.GenerateJWT(user.UserID, finalRole, bankIDStr)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat access token"})
 		return
 	}
 
-	refreshToken, err := utils.GenerateRefreshToken(user.UserID, finalRole)
+	refreshToken, err := utils.GenerateRefreshToken(user.UserID, finalRole, bankIDStr)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat refresh token"})
 		return
@@ -178,14 +182,14 @@ func (ac *AuthController) RefreshToken(c *gin.Context) {
 	}
 
 	// Terbitkan access token baru
-	newAccessToken, err := utils.GenerateJWT(claims.UserID, claims.Role)
+	newAccessToken, err := utils.GenerateJWT(claims.UserID, claims.Role, claims.BankID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat token baru"})
 		return
 	}
 
 	// Terbitkan juga refresh token baru (rolling refresh)
-	newRefreshToken, err := utils.GenerateRefreshToken(claims.UserID, claims.Role)
+	newRefreshToken, err := utils.GenerateRefreshToken(claims.UserID, claims.Role, claims.BankID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat refresh token baru"})
 		return
@@ -555,7 +559,7 @@ func (ac *AuthController) GenerateReactivateAkun(c *gin.Context) {
 		<div style="font-family: Arial, sans-serif; background-color: #f4fdf4; padding: 30px; border-radius: 10px;">
 			<h2 style="color: #4ea771; margin-top: 0;">Halo, %s!</h2>
 			<p style="font-size: 14px; color: #333; line-height: 1.5;">
-				Untuk mengaktifkan kembali akun %s Anda di Bank Sampah <b>%s</b>, gunakan kode OTP berikut:
+				Untuk mengaktifkan kembali akun %s Anda di <b>%s</b>, gunakan kode OTP berikut:
 			</p>
 			<div style="background-color: #fff; border: 2px dashed #4ea771; padding: 15px; text-align: center; margin: 20px 0;">
 				<h1 style="color: #4ea771; font-size: 32px; font-weight: bold; margin: 0; letter-spacing: 5px;">%s</h1>
@@ -762,7 +766,7 @@ func (ac *AuthController) DeactivateAkun(c *gin.Context) {
 		<div style="font-family: Arial, sans-serif; background-color: #f4fdf4; padding: 30px; border-radius: 10px;">
 			<h2 style="color: #4ea771; margin-top: 0;">Halo, %s!</h2>
 			<p style="font-size: 14px; color: #333; line-height: 1.5;">
-				Akun <b>%s</b> Anda di Bank Sampah <b>%s</b> telah dinonaktifkan.
+				Akun <b>%s</b> Anda di <b>%s</b> telah dinonaktifkan.
 				Jika Anda merasa ini adalah kesalahan, silakan hubungi administrator.
 			</p>
 			<hr style="border: 0; height: 1px; background: #ddd; margin: 25px 0;">
@@ -1149,13 +1153,17 @@ func (ac *AuthController) SwitchRole(c *gin.Context) {
 		bankID = admin.BankID
 	}
 
-	accessToken, err := utils.GenerateJWT(claims.UserID, finalRole)
+	bankIDStr := ""
+	if bankID != nil {
+		bankIDStr = *bankID
+	}
+	accessToken, err := utils.GenerateJWT(claims.UserID, finalRole, bankIDStr)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat access token"})
 		return
 	}
 
-	refreshToken, err := utils.GenerateRefreshToken(claims.UserID, finalRole)
+	refreshToken, err := utils.GenerateRefreshToken(claims.UserID, finalRole, bankIDStr)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat refresh token"})
 		return

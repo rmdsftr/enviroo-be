@@ -141,9 +141,9 @@ func (w *PenarikanWorker) prosesPerPenarikan(penarikan models.Penarikan) error {
 			}
 
 			for _, d := range details {
-				if err := tx.Model(&models.KatalogSembako{}).
-					Where("sembako_id = ?", d.SembakoID).
-					Update("stok", gorm.Expr("stok + ?", d.Qty)).Error; err != nil {
+				if err := tx.Model(&models.StokSembako{}).
+					Where("sembako_id = ? AND bank_id = ?", d.SembakoID, p.BankID).
+					UpdateColumn("stok", gorm.Expr("stok + ?", d.Qty)).Error; err != nil {
 					return err
 				}
 			}

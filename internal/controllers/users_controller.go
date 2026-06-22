@@ -79,10 +79,11 @@ func (uc *UserController) UpdateProfilUser(c *gin.Context) {
 
 	nama := c.PostForm("nama")
 	noWhatsapp := c.PostForm("no_whatsapp")
+	deletePhoto := c.PostForm("delete_photo") == "true"
 	fileHeader, _ := c.FormFile("photo_profile")
 
-	if nama == "" && noWhatsapp == "" && fileHeader == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Minimal satu field harus diisi (nama, no_whatsapp, atau photo_profile)"})
+	if nama == "" && noWhatsapp == "" && fileHeader == nil && !deletePhoto {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Minimal satu field harus diisi (nama, no_whatsapp, photo_profile, atau delete_photo)"})
 		return
 	}
 
@@ -119,6 +120,8 @@ func (uc *UserController) UpdateProfilUser(c *gin.Context) {
 			return
 		}
 		updates["photo_url"] = photoURL
+	} else if deletePhoto {
+		updates["photo_url"] = ""
 	}
 
 	if err := uc.DB.Model(&user).Updates(updates).Error; err != nil {

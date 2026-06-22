@@ -3,11 +3,14 @@ package controllers
 import (
 	"enviroo-be/internal/models"
 	"enviroo-be/pkg/storage"
+	"errors"
 	"net/http"
+	"strconv"
 
 	"enviroo-be/pkg/utils"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 )
 
@@ -21,6 +24,27 @@ func NewKatalogController(db *gorm.DB, cfStorage *storage.CloudflareStorage) *Ka
 		DB:        db,
 		CFStorage: cfStorage,
 	}
+}
+
+func (kc *KatalogController) GetMasterSampah(c *gin.Context) {
+	query := c.Query("q")
+
+	var results []models.Sampah
+
+	db := kc.DB.Model(&models.Sampah{})
+
+	if query != "" {
+		db = db.Where("nama_sampah ~* ?", query)
+	}
+
+	if err := db.Limit(10).Find(&results).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data sampah"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data": results,
+	})
 }
 
 // ─── AddKatalog ─────────────────────────────────────────────────────────────
@@ -45,6 +69,7 @@ func (kc *KatalogController) AddKatalog(c *gin.Context) {
 
 	var req struct {
 		NamaSampah      string            `form:"nama_sampah" binding:"required"`
+		SarokID         int               `form:"sarok_id"`
 		Satuan          models.SatuanEnum `form:"satuan" binding:"required"`
 		KategoriID      int               `form:"kategori_id" binding:"required"`
 		RewardID        int               `form:"reward_id" binding:"required"`
@@ -71,16 +96,34 @@ func (kc *KatalogController) AddKatalog(c *gin.Context) {
 		}
 	}
 
+	var sarokID int
+
+	if req.SarokID > 0 {
+		var masterSampah models.Sampah
+		if err := kc.DB.First(&masterSampah, "sarok_id = ?", req.SarokID).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "sarok_id tidak valid"})
+			return
+		}
+		sarokID = masterSampah.SarokID
+
+	} else {
+		masterSampah, err := utils.FindOrCreateMasterSampah(kc.DB, req.NamaSampah, req.Satuan)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memproses master sampah: " + err.Error()})
+			return
+		}
+		sarokID = masterSampah.SarokID
+	}
+
 	sampahID := utils.GenerateBankRelatedID(bankID)
 
 	tx := kc.DB.Begin()
 
 	newKatalog := models.KatalogSampah{
 		SampahID:        sampahID,
+		SarokID:         sarokID,
 		BankID:          bankID,
-		NamaSampah:      req.NamaSampah,
 		PhotoURL:        fotoURL,
-		Satuan:          req.Satuan,
 		KategoriID:      req.KategoriID,
 		RewardID:        req.RewardID,
 		SyaratPemilahan: req.SyaratPemilahan,
@@ -142,11 +185,7 @@ func (kc *KatalogController) editKatalog(c *gin.Context) {
 	}
 
 	var req struct {
-		NamaSampah      string            `form:"nama_sampah" binding:"required"`
-		Satuan          models.SatuanEnum `form:"satuan" binding:"required"`
-		KategoriID      int               `form:"kategori_id" binding:"required"`
-		RewardID        int               `form:"reward_id" binding:"required"`
-		SyaratPemilahan string            `form:"syarat_pemilahan"`
+		SyaratPemilahan string `form:"syarat_pemilahan" binding:"required"`
 	}
 
 	if err := c.ShouldBind(&req); err != nil {
@@ -154,10 +193,6 @@ func (kc *KatalogController) editKatalog(c *gin.Context) {
 		return
 	}
 
-	katalog.NamaSampah = req.NamaSampah
-	katalog.Satuan = req.Satuan
-	katalog.KategoriID = req.KategoriID
-	katalog.RewardID = req.RewardID
 	katalog.SyaratPemilahan = req.SyaratPemilahan
 
 	if fileHeader, err := c.FormFile("foto"); err == nil {
@@ -211,6 +246,7 @@ func (kc *KatalogController) GetKatalogSampahBank(c *gin.Context) {
 
 	type KatalogResponseItem struct {
 		SampahID        string                `json:"sampah_id"`
+		SarokID         int                   `json:"sarok_id"`
 		NamaSampah      string                `json:"nama_sampah"`
 		PhotoURL        string                `json:"photo_url"`
 		Satuan          models.SatuanEnum     `json:"satuan"`
@@ -223,15 +259,31 @@ func (kc *KatalogController) GetKatalogSampahBank(c *gin.Context) {
 		Reward          models.Reward         `json:"reward"`
 	}
 
+	pageStr := c.Query("page")
+	usePagination := pageStr != ""
+
+	const limit = 12
+	baseQuery := kc.DB.Preload("Sarok").Preload("Kategori").Preload("Reward").Where("bank_id = ?", katalogBankID)
+
 	var katalogs []models.KatalogSampah
-	if err := kc.DB.Preload("Kategori").Preload("Reward").Where("bank_id = ?", katalogBankID).Find(&katalogs).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil katalog: " + err.Error()})
-		return
+	if usePagination {
+		page, _ := strconv.Atoi(pageStr)
+		if page < 1 {
+			page = 1
+		}
+		if err := baseQuery.Limit(limit).Offset((page - 1) * limit).Find(&katalogs).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil katalog"})
+			return
+		}
+	} else {
+		if err := baseQuery.Find(&katalogs).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil katalog"})
+			return
+		}
 	}
 
 	var result []KatalogResponseItem
 	for _, k := range katalogs {
-		// Ambil stok untuk bank yang meminta (bankID asli, bukan katalogBankID)
 		var stok models.StokSampah
 		var stokVal float64 = 0
 		if err := kc.DB.Where("bank_id = ? AND sampah_id = ?", bankID, k.SampahID).Limit(1).Find(&stok).Error; err == nil {
@@ -240,9 +292,10 @@ func (kc *KatalogController) GetKatalogSampahBank(c *gin.Context) {
 
 		result = append(result, KatalogResponseItem{
 			SampahID:        k.SampahID,
-			NamaSampah:      k.NamaSampah,
+			SarokID:         k.SarokID,
+			NamaSampah:      k.Sarok.NamaSampah,
 			PhotoURL:        k.PhotoURL,
-			Satuan:          k.Satuan,
+			Satuan:          k.Sarok.Satuan,
 			BankID:          k.BankID,
 			KategoriID:      k.KategoriID,
 			RewardID:        k.RewardID,
@@ -253,9 +306,35 @@ func (kc *KatalogController) GetKatalogSampahBank(c *gin.Context) {
 		})
 	}
 
+	if result == nil {
+		result = []KatalogResponseItem{}
+	}
+
+	if !usePagination {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Katalog berhasil diambil",
+			"data":    result,
+		})
+		return
+	}
+
+	page, _ := strconv.Atoi(pageStr)
+	if page < 1 {
+		page = 1
+	}
+	var totalCount int64
+	kc.DB.Model(&models.KatalogSampah{}).Where("bank_id = ?", katalogBankID).Count(&totalCount)
+	totalPages := (int(totalCount) + limit - 1) / limit
+
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Katalog berhasil diambil",
-		"data":    result,
+		"pagination": gin.H{
+			"page":        page,
+			"limit":       limit,
+			"total":       totalCount,
+			"total_pages": totalPages,
+		},
+		"data": result,
 	})
 }
 
@@ -272,6 +351,7 @@ func (kc *KatalogController) GetDetailSampah(c *gin.Context) {
 	// Ambil data katalog utama beserta relasi
 	var katalog models.KatalogSampah
 	if err := kc.DB.
+		Preload("Sarok").
 		Preload("Kategori").
 		Preload("Reward").
 		Preload("Bank").
@@ -290,10 +370,10 @@ func (kc *KatalogController) GetDetailSampah(c *gin.Context) {
 
 	// Ambil semua schema harga per level_user
 	type HargaPerLevel struct {
-		SchemaID     uint                      `json:"schema_id"`
-		LevelUser    models.LevelUser          `json:"level_user"`
-		Harga        float64                   `json:"harga"`
-		SatuanReward models.SatuanRewardEnum   `json:"satuan_reward"`
+		SchemaID     uint                    `json:"schema_id"`
+		LevelUser    models.LevelUser        `json:"level_user"`
+		Harga        float64                 `json:"harga"`
+		SatuanReward models.SatuanRewardEnum `json:"satuan_reward"`
 	}
 	var schemas []models.SchemaHargaSampah
 	kc.DB.Where("sampah_id = ?", sampahID).Find(&schemas)
@@ -310,14 +390,14 @@ func (kc *KatalogController) GetDetailSampah(c *gin.Context) {
 
 	// Ambil history perubahan harga, join dengan admin untuk nama pengubah
 	type HistoryItem struct {
-		HistoryID    int                     `json:"history_id"    gorm:"column:history_sampah_id"`
-		SchemaID     int                     `json:"schema_id"     gorm:"column:schema_id"`
-		LevelUser    models.LevelUser        `json:"level_user"    gorm:"column:level_user"`
-		HargaLama    float64                 `json:"harga_lama"    gorm:"column:harga_lama"`
-		HargaBaru    float64                 `json:"harga_baru"    gorm:"column:harga_baru"`
-		ChangedAt    string                  `json:"changed_at"    gorm:"column:changed_at"`
-		ChangedByID  string                  `json:"changed_by_id" gorm:"column:changed_by"`
-		ChangedByNama string                 `json:"changed_by_nama" gorm:"column:changed_by_nama"`
+		HistoryID     int              `json:"history_id"    gorm:"column:history_sampah_id"`
+		SchemaID      int              `json:"schema_id"     gorm:"column:schema_id"`
+		LevelUser     models.LevelUser `json:"level_user"    gorm:"column:level_user"`
+		HargaLama     float64          `json:"harga_lama"    gorm:"column:harga_lama"`
+		HargaBaru     float64          `json:"harga_baru"    gorm:"column:harga_baru"`
+		ChangedAt     string           `json:"changed_at"    gorm:"column:changed_at"`
+		ChangedByID   string           `json:"changed_by_id" gorm:"column:changed_by"`
+		ChangedByNama string           `json:"changed_by_nama" gorm:"column:changed_by_nama"`
 	}
 	var histories []HistoryItem
 	kc.DB.Model(&models.KatalogSampahHistory{}).
@@ -339,9 +419,10 @@ func (kc *KatalogController) GetDetailSampah(c *gin.Context) {
 	// Susun response akhir
 	response := gin.H{
 		"sampah_id":        katalog.SampahID,
-		"nama_sampah":      katalog.NamaSampah,
+		"sarok_id":         katalog.Sarok.SarokID,
+		"nama_sampah":      katalog.Sarok.NamaSampah,
 		"photo_url":        katalog.PhotoURL,
-		"satuan":           katalog.Satuan,
+		"satuan":           katalog.Sarok.Satuan,
 		"syarat_pemilahan": katalog.SyaratPemilahan,
 		"bank_id":          katalog.BankID,
 		"kategori":         katalog.Kategori,
@@ -380,6 +461,11 @@ func (kc *KatalogController) DeleteKatalogSampah(c *gin.Context) {
 	// Hapus katalog utama
 	if err := tx.Delete(&katalog).Error; err != nil {
 		tx.Rollback()
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			c.JSON(http.StatusConflict, gin.H{"error": "Sampah ini tidak dapat dihapus karena sudah digunakan dalam data setoran."})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghapus katalog: " + err.Error()})
 		return
 	}

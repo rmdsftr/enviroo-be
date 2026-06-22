@@ -7,6 +7,7 @@ import (
 	"enviroo-be/pkg/utils"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/datatypes"
@@ -110,36 +111,85 @@ func (bc *BankController) GetNasabahByBankID(c *gin.Context) {
 		return
 	}
 
-	var results []models.Nasabah
-	if err := bc.DB.Preload("User").Where("bank_id = ?", bankID).Find(&results).Error; err != nil {
+	pageStr := c.Query("page")
+	usePagination := pageStr != ""
+
+	type NasabahItem struct {
+		NasabahID     string            `gorm:"column:nasabah_id" json:"nasabah_id"`
+		Nama          string            `gorm:"column:nama" json:"nama"`
+		Email         string            `gorm:"column:email" json:"email"`
+		Foto          string            `gorm:"column:foto" json:"foto"`
+		Status        models.StatusAkun `gorm:"column:status" json:"status"`
+		NomorRekening string            `gorm:"column:nomor_rekening" json:"nomor_rekening"`
+		TotalCount    int               `gorm:"column:total_count" json:"-"`
+	}
+
+	baseSelect := `
+		n.nasabah_id,
+		u.nama,
+		u.email,
+		u.photo_url AS foto,
+		n.status_nasabah AS status,
+		n.nomor_rekening
+		%s`
+
+	baseFrom := `
+		FROM nasabah n
+		JOIN users u ON u.user_id = n.user_id
+		WHERE n.bank_id = ?
+		ORDER BY u.nama ASC
+		%s`
+
+	var items []NasabahItem
+	var err error
+
+	if !usePagination {
+		q := fmt.Sprintf("SELECT "+baseSelect+baseFrom, "", "")
+		err = bc.DB.Raw(q, bankID).Scan(&items).Error
+	} else {
+		page, _ := strconv.Atoi(pageStr)
+		if page < 1 {
+			page = 1
+		}
+		const limit = 20
+		offset := (page - 1) * limit
+
+		q := fmt.Sprintf("SELECT "+baseSelect+baseFrom, ", COUNT(*) OVER() AS total_count", "LIMIT ? OFFSET ?")
+		err = bc.DB.Raw(q, bankID, limit, offset).Scan(&items).Error
+	}
+
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get nasabah: " + err.Error()})
 		return
 	}
 
-	type NasabahItem struct {
-		NasabahID string            `json:"nasabah_id"`
-		Nama      string            `json:"nama"`
-		Email     string            `json:"email"`
-		Foto      string            `json:"foto"`
-		Status    models.StatusAkun `json:"status"`
-		NomorRekening string 		`json:"nomor_rekening"`
+	if !usePagination {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Nasabah fetched successfully",
+			"data":    items,
+		})
+		return
 	}
 
-	items := make([]NasabahItem, 0, len(results))
-	for _, n := range results {
-		items = append(items, NasabahItem{
-			NasabahID: n.NasabahID,
-			Nama:      n.User.Nama,
-			Email:     n.User.Email,
-			Foto:      n.User.PhotoURL,
-			Status:    n.StatusNasabah,
-			NomorRekening: n.NomorRekening,
-		})
+	page, _ := strconv.Atoi(pageStr)
+	if page < 1 {
+		page = 1
 	}
+	totalCount := 0
+	if len(items) > 0 {
+		totalCount = items[0].TotalCount
+	}
+	totalPages := (totalCount + 19) / 20
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Nasabah fetched successfully",
-		"data":    items,
+		"pagination": gin.H{
+			"page":        page,
+			"limit":       20,
+			"total":       totalCount,
+			"total_pages": totalPages,
+		},
+		"data": items,
 	})
 }
 

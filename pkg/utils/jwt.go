@@ -23,26 +23,28 @@ const (
 type JWTClaims struct {
 	UserID string           `json:"user_id"`
 	Role   models.RoleAdmin `json:"role"`
+	BankID string           `json:"bank_id"` // kosong untuk superadmin
 	jwt.RegisteredClaims
 }
 
 // ─── Generate ────────────────────────────────────────────────────────────────
 
 // GenerateJWT membuat short-lived access token (15 menit).
-func GenerateJWT(userID string, role models.RoleAdmin) (string, error) {
-	return generateToken(userID, role, AccessTokenDuration)
+func GenerateJWT(userID string, role models.RoleAdmin, bankID string) (string, error) {
+	return generateToken(userID, role, bankID, AccessTokenDuration)
 }
 
 // GenerateRefreshToken membuat long-lived refresh token (7 hari).
-func GenerateRefreshToken(userID string, role models.RoleAdmin) (string, error) {
-	return generateToken(userID, role, RefreshTokenDuration)
+func GenerateRefreshToken(userID string, role models.RoleAdmin, bankID string) (string, error) {
+	return generateToken(userID, role, bankID, RefreshTokenDuration)
 }
 
-func generateToken(userID string, role models.RoleAdmin, duration time.Duration) (string, error) {
+func generateToken(userID string, role models.RoleAdmin, bankID string, duration time.Duration) (string, error) {
 	secret := getSecret()
 	claims := JWTClaims{
 		UserID: userID,
 		Role:   role,
+		BankID: bankID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(duration)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -80,7 +82,7 @@ func ParseJWT(tokenStr string) (*JWTClaims, error) {
 // via Gin context.
 func SetTokenCookies(c *gin.Context, accessToken, refreshToken string) {
 	isProduction := os.Getenv("ENVIRONMENT") == "production"
-	sameSite := http.SameSiteStrictMode
+	sameSite := http.SameSiteNoneMode
 	if !isProduction {
 		// Di local dev (cross-origin FE:5173 → BE:8080) pakai Lax agar cookie dikirim.
 		sameSite = http.SameSiteLaxMode

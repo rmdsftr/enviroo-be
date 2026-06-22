@@ -31,6 +31,9 @@ func main() {
 	penarikanWorker := workers.NewPenarikanWorker(db, 1*time.Minute)
 	penarikanWorker.Start()
 
+	penimbanganWorker := workers.NewPenimbanganWorker(db)
+	penimbanganWorker.Start()
+
 	cfStorage, err := storage.NewCloudflareStorage(cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize Cloudflare Storage: %v", err)
@@ -52,13 +55,13 @@ func main() {
 	}
 
 	// ── Start reminder worker (kirim notif jadwal pukul 07:00 setiap hari) ──
-	reminderWorker := workers.NewReminderWorker(db, fcmClient, 18) 
+	reminderWorker := workers.NewReminderWorker(db, fcmClient, 18)
 	reminderWorker.Start()
 
 	r := gin.Default()
 
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:5173", "https://enviroo.tech", "https://www.enviroo.tech", "https://enviroo-web-fe.vercel.app"},
+		AllowOrigins:     []string{"http://localhost:5173", "https://enviroo.tech", "https://www.enviroo.tech"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
 		ExposeHeaders:    []string{"Content-Length"},
@@ -83,6 +86,7 @@ func main() {
 
 	log.Println("Shutting down server...")
 	penarikanWorker.Stop()
+	penimbanganWorker.Stop()
 	reminderWorker.Stop()
 	log.Println("Server stopped gracefully.")
 }
