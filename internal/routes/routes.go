@@ -52,35 +52,53 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 	}
 
 	// ─── Middleware shortcuts ────────────────────────────────────────────────────
-	requireAuth := middleware.RequireAuth(db)
-	superadminOnly := middleware.RequireAuth(db)
-	superadminRole := middleware.RequireRole(models.SuperAdmin)
+	requireAuth        := middleware.RequireAuth(db)
+	superadminRole     := middleware.RequireRole(models.SuperAdmin)
+	nasabahRole        := middleware.RequireRole(models.RoleNasabah)
+	adminBSI           := middleware.RequireRole(models.AdminBSI)
+	petugasBSI         := middleware.RequireRole(models.PetugasBSI)
+	petugasBSU         := middleware.RequireRole(models.PetugasBSU)
+	allAdmin           := middleware.RequireRole(models.AdminBSI, models.AdminBSU, models.AdminBSM)
+	allStaff           := middleware.RequireRole(models.AdminBSI, models.PetugasBSI, models.AdminBSU, models.PetugasBSU, models.AdminBSM, models.PetugasBSM)
+	superadminAndAdmin := middleware.RequireRole(models.SuperAdmin, models.AdminBSI, models.AdminBSU, models.AdminBSM)
+	nonNasabah         := middleware.RequireRole(models.SuperAdmin, models.AdminBSI, models.PetugasBSI, models.AdminBSU, models.PetugasBSU, models.AdminBSM, models.PetugasBSM)
+	staffBSU           := middleware.RequireRole(models.AdminBSU, models.PetugasBSU)
+	staffBSIBSM        := middleware.RequireRole(models.AdminBSI, models.PetugasBSI, models.AdminBSM, models.PetugasBSM)
+	staffBSIBSU        := middleware.RequireRole(models.AdminBSI, models.PetugasBSI, models.AdminBSU, models.PetugasBSU)
+	adminBSIBSM        := middleware.RequireRole(models.AdminBSI, models.AdminBSM)
+	petugasBSIBSM      := middleware.RequireRole(models.PetugasBSI, models.PetugasBSM)
+	petugasAll         := middleware.RequireRole(models.PetugasBSI, models.PetugasBSU, models.PetugasBSM)
+	bankParam          := middleware.RequireSameBankParam("bank_id")
+	bsiParam           := middleware.RequireSameBankParam("bsi_id")
+	bsuParam           := middleware.RequireSameBankParam("bsu_id")
+	// BSI staff boleh akses data bank lain (BSU di bawahnya) tanpa ownership check
+	bankParamOrBSI     := middleware.RequireSameBankParam("bank_id", models.AdminBSI, models.PetugasBSI)
 
 	// ─── Bank ───────────────────────────────────────────────────────────────────
 	bank := r.Group("/bank", requireAuth)
 	{
 		bankController := controllers.NewBankController(db, cfStorage, mailer)
-		bank.PATCH("/aktivasi/:bank_id", bankController.AktivasiBank)
+		bank.PATCH("/aktivasi/:bank_id", superadminAndAdmin, bankParamOrBSI, bankController.AktivasiBank)
 		bank.GET("/get-nasabah/:bank_id", bankController.GetNasabahByBankID)
 		bank.GET("/get-all", bankController.GetAllBankSampah)
-		bank.PATCH("/edit-profil/:bank_id", bankController.EditProfilBankSampah)
+		bank.PATCH("/edit-profil/:bank_id", allAdmin, bankParam, bankController.EditProfilBankSampah)
 	}
 
 	bsi := r.Group("/bsi", requireAuth)
 	{
 		bsiController := controllers.NewBSIController(db, cfStorage, mailer)
-		bsi.POST("/add-bsi", bsiController.AddNewBSI)
-		bsi.GET("/get-bsi", bsiController.GetBSI)
-		bsi.GET("/get-unit/:bank_id", bsiController.GetUnitBSI)
-		bsi.POST("/add-unit/:bank_id", bsiController.AddNewUnit)
+		bsi.POST("/add-bsi", superadminRole, bsiController.AddNewBSI)
+		bsi.GET("/get-bsi", middleware.RequireRole(models.SuperAdmin, models.AdminBSI), bsiController.GetBSI)
+		bsi.GET("/get-unit/:bank_id", middleware.RequireRole(models.SuperAdmin, models.AdminBSI, models.PetugasBSI), bankParam, bsiController.GetUnitBSI)
+		bsi.POST("/add-unit/:bank_id", middleware.RequireRole(models.SuperAdmin, models.AdminBSI), bankParam, bsiController.AddNewUnit)
 	}
-	bsm := r.Group("/bsm", superadminOnly, superadminRole)
+	bsm := r.Group("/bsm", requireAuth, superadminRole)
 	{
 		bsmController := controllers.NewBSMController(db, cfStorage, mailer)
 		bsm.POST("/add-bsm", bsmController.AddNewBSM)
 		bsm.GET("/get-bsm", bsmController.GetBSM)
 	}
-	bsu := r.Group("/bsu", superadminOnly, superadminRole)
+	bsu := r.Group("/bsu", requireAuth, superadminRole)
 	{
 		bsuController := controllers.NewBSUController(db, cfStorage, mailer)
 		bsu.POST("/add-bsu", bsuController.AddNewBSU)
@@ -92,15 +110,16 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 	nasabah := r.Group("/nasabah", requireAuth)
 	{
 		nasabahController := controllers.NewNasabahController(db, cfStorage, mailer)
-		nasabah.POST("/add-nasabah", nasabahController.AddNewNasabah)
-		nasabah.POST("/add-nasabah-from-old-user", nasabahController.AddNewNasabahOldUser)
-		nasabah.GET("/get-afiliasi", nasabahController.GetAfiliasi)
-		nasabah.GET("/get-nasabah", nasabahController.GetNasabah)
-		nasabah.GET("/:bank_id", nasabahController.NasabahBankSampah)
+		nasabah.POST("/add-nasabah", allAdmin, nasabahController.AddNewNasabah)
+		nasabah.POST("/add-nasabah-from-old-user", allAdmin, nasabahController.AddNewNasabahOldUser)
+		nasabah.GET("/get-afiliasi", adminBSI, nasabahController.GetAfiliasi)
+		nasabah.GET("/get-nasabah", superadminAndAdmin, nasabahController.GetNasabah)
+		nasabah.GET("/:bank_id", nonNasabah, bankParamOrBSI, nasabahController.NasabahBankSampah)
+		nasabah.DELETE("/:nasabah_id", superadminAndAdmin, nasabahController.DeleteNasabah)
 	}
 
 	// ─── Users ──────────────────────────────────────────────────────────────────
-	superadminMgmt := r.Group("/superadmin", superadminOnly, superadminRole)
+	superadminMgmt := r.Group("/superadmin", requireAuth, superadminRole)
 	{
 		userController := controllers.NewUserController(db, mailer, cfStorage)
 		superadminMgmt.GET("/list", userController.GetListSuperadmin)
@@ -111,28 +130,49 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 	user := r.Group("/users", requireAuth)
 	{
 		userController := controllers.NewUserController(db, mailer, cfStorage)
-		user.POST("/add-user", userController.AddUser)
+		user.POST("/add-user", superadminAndAdmin, userController.AddUser)
 		user.POST("/update-profil/:user_id", userController.UpdateProfilUser)
-		user.GET("/get-nonadmin-user", userController.GetNonAdminUser)
-		user.GET("/get-nonnasabah-user", userController.GetNonNasabahUser)
-		user.GET("/active-admin/:admin_id", userController.ActiveAdmin)
-		user.GET("/active-petugas/:admin_id", userController.ActivePetugas)
+		user.GET("/get-nonadmin-user", superadminAndAdmin, userController.GetNonAdminUser)
+		user.GET("/get-nonnasabah-user", superadminAndAdmin, userController.GetNonNasabahUser)
+		user.GET("/active-admin/:admin_id", allAdmin, userController.ActiveAdmin)
+		user.GET("/active-petugas/:admin_id", petugasAll, userController.ActivePetugas)
 		user.GET("/active-user/:user_id", userController.ActiveUser)
 		user.PATCH("/update-fcm-token", userController.UpdateFCMToken)
 		user.GET("/log/:user_id", userController.LogAkun)
-		user.GET("/get-all", userController.GetAllUsers)
-		user.GET("/detail-user/:user_id", userController.GetDetailUser)
-		user.DELETE("/delete-user/:user_id", userController.DeleteUser)
+		user.GET("/get-all", superadminRole, userController.GetAllUsers)
+		user.GET("/detail-user/:user_id", superadminRole, userController.GetDetailUser)
+		user.DELETE("/delete-user/:user_id", superadminRole, userController.DeleteUser)
+	}
+
+	// ─── Master Data (superadmin) ────────────────────────────────────────────────
+	masterData := r.Group("/master", requireAuth, superadminRole)
+	{
+		masterDataController := controllers.NewMasterDataController(db)
+		masterData.GET("/sampah", masterDataController.GetAllMasterSampah)
+		masterData.POST("/sampah", masterDataController.CreateMasterSampah)
+		masterData.GET("/sampah/statistik", masterDataController.GetStatistikSampah)
+		masterData.GET("/sampah/favorit", masterDataController.GetFavoritSampah)
+		masterData.GET("/sampah/per-kategori", masterDataController.GetSampahPerKategori)
+		masterData.PATCH("/sampah/:sarok_id", masterDataController.UpdateMasterSampah)
+		masterData.DELETE("/sampah/:sarok_id", masterDataController.DeleteMasterSampah)
+
+		masterData.GET("/sembako", masterDataController.GetAllMasterSembako)
+		masterData.POST("/sembako", masterDataController.CreateMasterSembako)
+		masterData.GET("/sembako/statistik", masterDataController.GetStatistikSembako)
+		masterData.GET("/sembako/favorit", masterDataController.GetFavoritSembako)
+		masterData.PATCH("/sembako/:barang_id", masterDataController.UpdateMasterSembako)
+		masterData.DELETE("/sembako/:barang_id", masterDataController.DeleteMasterSembako)
 	}
 
 	// ─── Statistik ──────────────────────────────────────────────────────────────
-	statistik := r.Group("/statistik", superadminOnly, superadminRole)
+	statistik := r.Group("/statistik", requireAuth, superadminRole)
 	{
 		statistikController := controllers.NewStatistikController(db)
 		statistik.GET("/bank-sampah", statistikController.GetBankSampahStatistik)
 		statistik.GET("/superadmin/ringkasan", statistikController.GetRingkasanSuperadmin)
 		statistik.GET("/superadmin/tren-penjualan", statistikController.GetTrenPenjualan)
 		statistik.GET("/superadmin/ranking-bank", statistikController.GetRankingBank)
+		statistik.GET("/superadmin/volume-sampah", statistikController.GetVolumeSampahNasabah)
 	}
 	statistikOpen := r.Group("/statistik", requireAuth)
 	{
@@ -147,31 +187,29 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 	profil := r.Group("/profil", requireAuth)
 	{
 		profilController := controllers.NewProfilController(db, cfStorage)
-		profil.GET("/bank-sampah/:bank_id", profilController.GetProfilBankSampah)
-		profil.GET("/bank-sampah/:bank_id/history", profilController.GetHistoryAkunBank)
+		profil.GET("/bank-sampah/:bank_id", nonNasabah, bankParamOrBSI, profilController.GetProfilBankSampah)
+		profil.GET("/bank-sampah/:bank_id/history", allAdmin, bankParamOrBSI, profilController.GetHistoryAkunBank)
 		profil.GET("/nasabah/:nasabah_id", profilController.GetProfilNasabah)
-		profil.PATCH("/nasabah/aktivasi/:nasabah_id", profilController.AktivasiNasabah)
-		profil.DELETE("/bank-sampah/:bank_id", profilController.DeleteBankSampah)
-		profil.DELETE("/nasabah/:nasabah_id", profilController.DeleteNasabah)
+		profil.PATCH("/nasabah/aktivasi/:nasabah_id", allAdmin, profilController.AktivasiNasabah)
+		profil.DELETE("/bank-sampah/:bank_id", superadminRole, profilController.DeleteBankSampah)
 		profil.GET("/:user_id", profilController.GetProfilUser)
 		profil.GET("/detail-nasabah/:nasabah_id", profilController.GetDetailNasabah)
-		profil.GET("/detail-petugas/:petugas_id", profilController.GetDetailPetugas)
-		profil.GET("/detail-bank/:bank_id", profilController.DetailBankSampah)
+		profil.GET("/detail-petugas/:petugas_id", nonNasabah, profilController.GetDetailPetugas)
+		profil.GET("/detail-bank/:bank_id", middleware.RequireRole(models.AdminBSI, models.PetugasBSI, models.AdminBSU, models.PetugasBSU, models.AdminBSM, models.PetugasBSM, models.RoleNasabah), bankParamOrBSI, profilController.DetailBankSampah)
 	}
 
 	// ─── Admin ──────────────────────────────────────────────────────────────────
 	admin := r.Group("/admin", requireAuth)
 	{
 		adminController := controllers.NewAdminController(db, mailer)
-		admin.GET("/get-admin/:bank_id", adminController.GetAdminBankSampah)
-		admin.POST("/add-admin-bank-sampah", adminController.AddAdminBankSampah)
-		admin.DELETE("/delete-staff/:admin_id", adminController.DeleteStaffBankSampah)
+		admin.GET("/get-admin/:bank_id", nonNasabah, bankParamOrBSI, adminController.GetAdminBankSampah)
+		admin.POST("/add-admin-bank-sampah", allAdmin, adminController.AddAdminBankSampah)
+		admin.DELETE("/delete-staff/:admin_id", allAdmin, adminController.DeleteStaffBankSampah)
 	}
 
 	// ─── Lokasi ─────────────────────────────────────────────────────────────────
 	lokasiController := controllers.NewLokasiController(db)
 
-	// Read-only: semua user yang sudah login
 	lokasiOpen := r.Group("/lokasi", requireAuth)
 	{
 		lokasiOpen.GET("/bank-sampah", lokasiController.GetLokasiBankSampah)
@@ -187,8 +225,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 		kelurahan.GET("/:id", lokasiController.GetKelurahanByID)
 	}
 
-	// Mutasi: superadmin saja
-	lokasiAdmin := r.Group("/lokasi", superadminOnly, superadminRole)
+	lokasiAdmin := r.Group("/lokasi", requireAuth, superadminRole)
 	{
 		kecamatan := lokasiAdmin.Group("/kecamatan")
 		kecamatan.POST("", lokasiController.CreateKecamatan)
@@ -205,105 +242,119 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 	katalog := r.Group("/katalog", requireAuth)
 	{
 		katalogController := controllers.NewKatalogController(db, cfStorage)
-		katalog.POST("/add-sampah/:bank_id", katalogController.AddKatalog)
-		katalog.PATCH("/edit-sampah/:sampah_id", katalogController.EditKatalog)
-		katalog.DELETE("/delete-sampah/:sampah_id", katalogController.DeleteKatalogSampah)
-		katalog.GET("/get-sampah/:bank_id", katalogController.GetKatalogSampahBank)
-		katalog.GET("/get-detail/:sampah_id", katalogController.GetDetailSampah)
-		katalog.POST("/add-kategori", katalogController.AddNewKategori)
+		katalog.GET("/master-sampah", superadminAndAdmin, katalogController.GetMasterSampah)
+		katalog.POST("/add-sampah/:bank_id", allAdmin, bankParam, katalogController.AddKatalog)
+		katalog.PATCH("/edit-sampah/:sampah_id", allAdmin, katalogController.EditKatalog)
+		katalog.DELETE("/delete-sampah/:sampah_id", allAdmin, katalogController.DeleteKatalogSampah)
+		katalog.GET("/get-sampah/:bank_id", middleware.RequireRole(models.AdminBSI, models.PetugasBSI, models.AdminBSU, models.PetugasBSU, models.AdminBSM, models.PetugasBSM, models.RoleNasabah), bankParamOrBSI, katalogController.GetKatalogSampahBank)
+		katalog.GET("/get-detail/:sampah_id", middleware.RequireRole(models.AdminBSI, models.PetugasBSI, models.AdminBSU, models.PetugasBSU, models.AdminBSM, models.PetugasBSM, models.RoleNasabah), katalogController.GetDetailSampah)
+		katalog.POST("/add-kategori", superadminRole, katalogController.AddNewKategori)
 		katalog.GET("/get-kategori", katalogController.GetKategori)
-		katalog.PATCH("/update-kategori/:kategori_id", katalogController.UpdateKategori)
-		katalog.DELETE("/delete-kategori/:kategori_id", katalogController.DeleteKategori)
+		katalog.PATCH("/update-kategori/:kategori_id", superadminRole, katalogController.UpdateKategori)
+		katalog.DELETE("/delete-kategori/:kategori_id", superadminRole, katalogController.DeleteKategori)
 	}
 
 	// ─── Sembako ────────────────────────────────────────────────────────────────
 	sembako := r.Group("/sembako", requireAuth)
 	{
 		sembakoController := controllers.NewSembakoController(db, cfStorage, notifSvc)
-		sembako.POST("/add-sembako/:bank_id", sembakoController.AddNewSembako)
-		sembako.GET("/get-sembako/:bank_id", sembakoController.GetSembakoBank)
-		sembako.DELETE("/delete-sembako/:sembako_id", sembakoController.DeleteSembako)
-		sembako.PATCH("/edit-sembako/:sembako_id", sembakoController.EditSembako)
-		sembako.GET("/detail-sembako-bsu/:sembako_id", sembakoController.GetDetailSembakoBSU)
-		sembako.POST("/add-distribusi-bsu/:bsi_id/:bsu_id", sembakoController.AddNewDistribusiSembakoBSU)
-		sembako.POST("/preview-distribusi-bsu/:bsi_id/:bsu_id", sembakoController.PreviewDistribusiSembakoBSU)
+		sembako.GET("/get-master", superadminAndAdmin, sembakoController.GetMasterSembako)
+		sembako.POST("/add-sembako/:bank_id", allAdmin, bankParam, sembakoController.AddNewSembako)
+		sembako.GET("/get-sembako/:bank_id", bankParamOrBSI, sembakoController.GetSembakoBank)
+		sembako.DELETE("/delete-sembako/:sembako_id", allAdmin, sembakoController.DeleteSembako)
+		sembako.PATCH("/edit-sembako/:sembako_id", allAdmin, sembakoController.EditSembako)
+		sembako.GET("/detail-sembako/:sembako_id", sembakoController.GetDetailSembako)
+		sembako.GET("/list-distribusi/:bank_id", staffBSIBSU, bankParamOrBSI, sembakoController.ListDistribusiSembako)
+		sembako.GET("/detail-distribusi/:distribusi_id", staffBSIBSU, sembakoController.GetDetailDistribusiSembako)
+		sembako.POST("/qr-distribusi", petugasBSI, sembakoController.QRDistribusiSembako)
+		sembako.POST("/add-distribusi-bsu", middleware.RequireRole(models.PetugasBSI, models.PetugasBSU), sembakoController.AddNewDistribusiSembakoBSU)
+		sembako.POST("/preview-distribusi-bsu/:bsi_id/:bsu_id", petugasBSI, bsiParam, sembakoController.PreviewDistribusiSembakoBSU)
 	}
 
 	// ─── Konten ─────────────────────────────────────────────────────────────────
-	konten := r.Group("/konten", requireAuth)
 	{
 		kontenController := controllers.NewKontenController(db, cfStorage)
-		konten.POST("/add-konten/:admin_id", kontenController.AddNewKonten)
-		konten.GET("/all-konten", kontenController.GetAllKontenSuperadmin)
-		konten.GET("/all-konten/:bank_id", kontenController.GetAllKonten)
-		konten.GET("/get-konten/:konten_id", kontenController.GetKontenByID)
-		konten.DELETE("/delete-konten/:konten_id", kontenController.DeleteKonten)
-		konten.PATCH("/edit-konten/:konten_id", kontenController.EditKonten)
+
+		kontenRead := r.Group("/konten", requireAuth)
+		kontenRead.GET("/all-konten", kontenController.GetAllKontenSuperadmin)
+		kontenRead.GET("/all-konten/:bank_id", kontenController.GetAllKonten)
+		kontenRead.GET("/get-konten/:konten_id", kontenController.GetKontenByID)
+
+		kontenAdmin := r.Group("/konten", requireAuth, superadminAndAdmin)
+		kontenAdmin.POST("/add-konten/:admin_id", kontenController.AddNewKonten)
+		kontenAdmin.DELETE("/delete-konten/:konten_id", kontenController.DeleteKonten)
+		kontenAdmin.PATCH("/edit-konten/:konten_id", kontenController.EditKonten)
 	}
 
 	// ─── Jadwal ─────────────────────────────────────────────────────────────────
 	jadwal := r.Group("/jadwal", requireAuth)
 	{
 		jadwalController := controllers.NewJadwalController(db)
-		jadwal.GET("/get-all", jadwalController.GetAllJadwal)
-		jadwal.GET("/get-jadwal/:bank_id", jadwalController.GetJadwalBank)
-		jadwal.POST("/add-jadwal/:bank_id", jadwalController.AddNewJadwal)
-		jadwal.DELETE("/delete-jadwal/:jadwal_id", jadwalController.DeleteJadwal)
-		jadwal.PATCH("/update-jadwal/:jadwal_id", jadwalController.UpdateJadwal)
+		jadwal.GET("/get-all", nonNasabah, jadwalController.GetAllJadwal)
+		jadwal.GET("/get-jadwal/:bank_id", allStaff, bankParamOrBSI, jadwalController.GetJadwalBank)
+		jadwal.POST("/add-jadwal/:bank_id", allAdmin, bankParam, jadwalController.AddNewJadwal)
+		jadwal.DELETE("/delete-jadwal/:jadwal_id", allAdmin, jadwalController.DeleteJadwal)
+		jadwal.PATCH("/update-jadwal/:jadwal_id", allAdmin, jadwalController.UpdateJadwal)
 	}
 
 	// ─── Penimbangan ────────────────────────────────────────────────────────────
 	penimbangan := r.Group("/penimbangan", requireAuth)
 	{
 		penimbanganController := controllers.NewPenimbanganController(db)
-		penimbangan.GET("/check/:bank_id", penimbanganController.CheckJadwalHariIni)
-		penimbangan.GET("/check-active/:bank_id", penimbanganController.CheckJadwalActive)
-		penimbangan.GET("/get-sesi-aktif/:penimbangan_id", penimbanganController.GetPenimbanganSesiAktif)
-		penimbangan.POST("/add/:bank_id/:admin_id", penimbanganController.AddNewPenimbangan)
-		penimbangan.PATCH("/update/:penimbangan_id/:admin_id", penimbanganController.UpdatePenimbangan)
-		penimbangan.GET("/get/:bank_id", penimbanganController.GetPenimbangan)
-		penimbangan.GET("/list-setoran/:penimbangan_id", penimbanganController.ListSetoranPenimbangan)
+		penimbangan.GET("/check/:bank_id", petugasAll, bankParam, penimbanganController.CheckJadwalHariIni)
+		penimbangan.GET("/check-active/:bank_id", middleware.RequireRole(models.PetugasBSI, models.PetugasBSU, models.PetugasBSM, models.RoleNasabah), penimbanganController.CheckJadwalActive)
+		penimbangan.GET("/get-sesi-aktif/:penimbangan_id", petugasAll, penimbanganController.GetPenimbanganSesiAktif)
+		penimbangan.POST("/add/:bank_id/:admin_id", petugasAll, bankParam, penimbanganController.AddNewPenimbangan)
+		penimbangan.PATCH("/update/:penimbangan_id/:admin_id", petugasAll, penimbanganController.UpdatePenimbangan)
+		penimbangan.GET("/get/:bank_id", allStaff, bankParamOrBSI, penimbanganController.GetPenimbangan)
+		penimbangan.GET("/list-setoran/:penimbangan_id", allStaff, penimbanganController.ListSetoranPenimbangan)
 	}
 
 	// ─── Dashboard ──────────────────────────────────────────────────────────────
 	dashboard := r.Group("/dashboard", requireAuth)
 	{
 		dashboardController := controllers.NewDashboardController(db)
-		dashboard.GET("/petugas/:bank_id", dashboardController.GetDashboardPetugas)
-		dashboard.GET("/saldo-bank/:bank_id", dashboardController.GetSaldoBank)
-		dashboard.GET("/saldo-nasabah/:nasabah_id", dashboardController.GetSaldoNasabah)
-		dashboard.GET("/mutasi-nasabah/:nasabah_id", dashboardController.MutasiSaldoNasabah)
-		dashboard.GET("/mutasi-bank/:bank_id", dashboardController.MutasiSaldoBank)
-		dashboard.POST("/catat-manual/:bank_id", dashboardController.CatatManualMutasiBank)
+		dashboard.GET("/petugas/:bank_id", petugasAll, bankParam, dashboardController.GetDashboardPetugas)
+		dashboard.GET("/saldo-bank/:bank_id", allStaff, bankParamOrBSI, dashboardController.GetSaldoBank)
+		dashboard.GET("/saldo-nasabah/:nasabah_id", middleware.RequireRole(models.RoleNasabah, models.AdminBSI, models.AdminBSU, models.AdminBSM), dashboardController.GetSaldoNasabah)
+		dashboard.GET("/mutasi-nasabah/:nasabah_id", nasabahRole, dashboardController.MutasiSaldoNasabah)
+		dashboard.GET("/mutasi-bank/:bank_id", allAdmin, bankParamOrBSI, dashboardController.MutasiSaldoBank)
+		dashboard.POST("/catat-manual/:bank_id", allAdmin, bankParam, dashboardController.CatatManualMutasiBank)
+		dashboard.GET("/total-saldo-all-nasabah/:bank_id", allAdmin, bankParamOrBSI, dashboardController.TotalSaldoAllNasabah)
+		dashboard.GET("/daftar-saldo-all-nasabah/:bank_id", allAdmin, bankParamOrBSI, dashboardController.ListSaldoAllNasabah)
 	}
 
 	// ─── Setoran ────────────────────────────────────────────────────────────────
 	setoran := r.Group("/setoran", requireAuth)
 	{
-		setoranController := controllers.NewSetoranController(db, cfStorage, notifSvc)
-		setoran.GET("/verifikasi/:penimbangan_id/:nasabah_id/:admin_id", setoranController.VerifikasiSetoranNasabah)
-		setoran.POST("/preview/:penimbangan_id/:nasabah_id", setoranController.PreviewSetoranNasabah)
-		setoran.POST("/input/:penimbangan_id/:nasabah_id/:admin_id", setoranController.InputSetoranNasabah)
-		setoran.GET("/detail-setoran-nasabah/:setoran_id", setoranController.DetailSetoranNasabah)
-		setoran.GET("/list-setoran-nasabah/:nasabah_id", setoranController.ListRiwayatSetoranNasabah)
+		setoranRepo := repositories.NewSetoranRepo(db)
+		setoranSvc := services.NewSetoranService(db, setoranRepo, notifSvc)
+		setoranController := controllers.NewSetoranController(setoranSvc, cfStorage)
+		setoran.POST("/verifikasi", petugasAll, setoranController.VerifikasiSetoranNasabah)
+		setoran.POST("/preview/:penimbangan_id/:nasabah_id", petugasAll, setoranController.PreviewSetoranNasabah)
+		setoran.POST("/input/:penimbangan_id/:nasabah_id/:admin_id", petugasAll, setoranController.InputSetoranNasabah)
+		setoran.GET("/detail/:setoran_id", setoranController.DetailSetoranNasabah)
+		setoran.GET("/riwayat/:nasabah_id", setoranController.ListRiwayatSetoranNasabah)
 	}
 
 	// ─── Pengangkutan ───────────────────────────────────────────────────────────
 	pengangkutan := r.Group("/pengangkutan", requireAuth)
 	{
-		pengangkutanController := controllers.NewPengangkutanController(db, cfStorage, notifSvc)
-		pengangkutan.GET("/check/:bsi_id/:bsu_id", pengangkutanController.CheckJadwalPengangkutan)
-		pengangkutan.GET("/check-sesi-active/:bsu_id", pengangkutanController.CheckSesiActivePengangkutan)
-		pengangkutan.GET("/detail-sesi-active/:pengangkutan_id", pengangkutanController.DetailSesiActivePengangkutan)
-		pengangkutan.GET("/get-all-active/:bsi_id/:admin_id", pengangkutanController.GetAllActivePengangkutan)
-		pengangkutan.POST("/start", pengangkutanController.StartSesiPengangkutan)
-		pengangkutan.GET("/get-all/:bank_id", pengangkutanController.GetAllPengangkutan)
-		pengangkutan.PATCH("/update/:pengangkutan_id/:admin_bsi_id", pengangkutanController.UpdatePengangkutanByBSI)
-		pengangkutan.POST("/request/:bsu_id/:admin_bsu_id", pengangkutanController.RequestPengangkutanByBSU)
-		pengangkutan.GET("/list-sampah/:bsi_id/:bsu_id", pengangkutanController.ListSampahPengangkutan)
-		pengangkutan.POST("/preview/:pengangkutan_id", pengangkutanController.PreviewPengangkutanSampah)
-		pengangkutan.POST("/input/:pengangkutan_id/:admin_bsi_id/:admin_bsu_id", pengangkutanController.InputSampahPengangkutan)
-		pengangkutan.GET("/detail-sampah/:pengangkutan_id", pengangkutanController.DetailSampahPengangkutan)
+		pengangkutanRepo := repositories.NewPengangkutanRepo(db)
+		pengangkutanSvc := services.NewPengangkutanService(db, pengangkutanRepo, notifSvc)
+		pengangkutanController := controllers.NewPengangkutanController(pengangkutanSvc, cfStorage)
+		pengangkutan.GET("/check/:bsi_id", petugasBSI, bsiParam, pengangkutanController.CheckJadwalPengangkutan)
+		pengangkutan.GET("/check-sesi-active/:bsu_id", petugasAll, pengangkutanController.CheckSesiActivePengangkutan)
+		pengangkutan.GET("/detail-sesi-active/:pengangkutan_id", staffBSIBSU, pengangkutanController.DetailSesiActivePengangkutan)
+		pengangkutan.GET("/get-all-active/:bsi_id/:admin_id", petugasBSI, bsiParam, pengangkutanController.GetAllActivePengangkutan)
+		pengangkutan.POST("/start", petugasBSI, pengangkutanController.StartSesiPengangkutan)
+		pengangkutan.GET("/get-all/:bank_id", staffBSIBSU, bankParamOrBSI, pengangkutanController.GetAllPengangkutan)
+		pengangkutan.PATCH("/update/:pengangkutan_id/:admin_bsi_id", petugasBSI, pengangkutanController.UpdatePengangkutanByBSI)
+		pengangkutan.POST("/request/:bsu_id/:admin_bsu_id", petugasBSU, bsuParam, pengangkutanController.RequestPengangkutanByBSU)
+		pengangkutan.GET("/list-sampah/:bsi_id/:bsu_id", middleware.RequireRole(models.PetugasBSI, models.PetugasBSU), bsiParam, pengangkutanController.ListSampahPengangkutan)
+		pengangkutan.POST("/preview/:pengangkutan_id", petugasBSI, pengangkutanController.PreviewPengangkutanSampah)
+		pengangkutan.POST("/input", petugasBSI, pengangkutanController.InputSampahPengangkutan)
+		pengangkutan.GET("/detail-sampah/:pengangkutan_id", staffBSIBSU, pengangkutanController.DetailSampahPengangkutan)
 	}
 
 	// ─── Reward ─────────────────────────────────────────────────────────────────
@@ -312,7 +363,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 		rewardController := controllers.NewRewardController(db, cfStorage, mailer)
 		reward.GET("/get-all", rewardController.GetRewards)
 
-		rewardAdmin := reward.Group("", superadminOnly, superadminRole)
+		rewardAdmin := reward.Group("", superadminRole)
 		rewardAdmin.POST("/add", rewardController.AddReward)
 		rewardAdmin.PATCH("/update/:reward_id", rewardController.UpdateReward)
 		rewardAdmin.DELETE("/delete/:reward_id", rewardController.DeleteReward)
@@ -322,86 +373,88 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 	{
 		rewardController := controllers.NewRewardController(db, cfStorage, mailer)
 		nilaiReward.GET("/get/:bank_id", rewardController.GetNilaiRewardBank)
-		nilaiReward.GET("/detail/:nilai_reward_id", rewardController.GetDetailNilaiRewardBank)
-		nilaiReward.POST("/add/:bank_id", rewardController.AddNewNilaiRewardBank)
-		nilaiReward.PATCH("/edit/:bank_id/:reward_id", rewardController.UpdateNilaiRewardBank)
-		nilaiReward.GET("/history/:nilai_reward_id", rewardController.GetHistoryNilaiRewardBank)
-		nilaiReward.DELETE("/delete/:nilai_reward_id", rewardController.DeleteNilaiRewardBank)
+		nilaiReward.GET("/detail/:nilai_reward_id", middleware.RequireRole(models.AdminBSI, models.AdminBSM, models.AdminBSU, models.PetugasBSU), rewardController.GetDetailNilaiRewardBank)
+		nilaiReward.POST("/add/:bank_id", adminBSIBSM, bankParam, rewardController.AddNewNilaiRewardBank)
+		nilaiReward.PATCH("/edit/:bank_id/:reward_id", adminBSIBSM, bankParam, rewardController.UpdateNilaiRewardBank)
+		nilaiReward.GET("/history/:nilai_reward_id", adminBSIBSM, rewardController.GetHistoryNilaiRewardBank)
+		nilaiReward.DELETE("/delete/:nilai_reward_id", adminBSIBSM, rewardController.DeleteNilaiRewardBank)
 	}
 
 	// ─── Penjualan ──────────────────────────────────────────────────────────────
 	penjualan := r.Group("/penjualan", requireAuth)
 	{
 		penjualanController := controllers.NewPenjualanController(db, cfStorage)
-		penjualan.POST("/preview/:bank_id", penjualanController.PreviewPenjualanEksternal)
-		penjualan.POST("/add-eksternal/:bank_id/:admin_id", penjualanController.AddNewPenjualanEksternal)
-		penjualan.GET("/riwayat-eksternal/:bank_id", penjualanController.GetRiwayatPenjualanEksternal)
-		penjualan.GET("/detail-eksternal/:penjualan_id", penjualanController.DetailPenjualanEksternal)
-		penjualan.GET("/mitra/:bank_id", penjualanController.GetListMitraPenjualan)
+		penjualan.POST("/preview/:bank_id", petugasBSIBSM, bankParam, penjualanController.PreviewPenjualanEksternal)
+		penjualan.POST("/add-eksternal/:bank_id/:admin_id", petugasBSIBSM, bankParam, penjualanController.AddNewPenjualanEksternal)
+		penjualan.GET("/riwayat-eksternal/:bank_id", staffBSIBSM, bankParam, penjualanController.GetRiwayatPenjualanEksternal)
+		penjualan.GET("/detail-eksternal/:penjualan_id", staffBSIBSM, penjualanController.DetailPenjualanEksternal)
+		penjualan.GET("/mitra/:bank_id", staffBSIBSM, bankParam, penjualanController.GetListMitraPenjualan)
 	}
 
 	// ─── Bagi Hasil ─────────────────────────────────────────────────────────────
 	bagihasil := r.Group("/bagi-hasil", requireAuth)
 	{
 		bagihasilController := controllers.NewBagiHasilController(db, notifSvc)
-		bagihasil.POST("/preview/:penjualan_id/:bank_id", bagihasilController.PreviewHitungBagiHasil)
-		bagihasil.POST("/submit/:penjualan_id/:bank_id", bagihasilController.SubmitBagiHasil)
-		bagihasil.GET("/detail/:penjualan_id", bagihasilController.GetDetailBagiHasil)
+		bagihasil.POST("/preview/:penjualan_id/:bank_id", petugasBSIBSM, bankParam, bagihasilController.PreviewHitungBagiHasil)
+		bagihasil.POST("/submit/:penjualan_id/:bank_id", petugasBSIBSM, bankParam, bagihasilController.SubmitBagiHasil)
+		bagihasil.GET("/detail/:penjualan_id", staffBSIBSM, bagihasilController.GetDetailBagiHasil)
 		bagihasil.GET("/list-bh-nasabah/:nasabah_id", bagihasilController.GetListBagiHasilPerNasabah)
 		bagihasil.GET("/detail-bh-nasabah/:penerima_id", bagihasilController.GetDetailBagiHasilNasabah)
-		bagihasil.GET("/list-bh-bsu/:bsu_id", bagihasilController.GetListBagiHasilPerBsu)
-		bagihasil.GET("/detail-bh-bsu/:penerima_id", bagihasilController.GetDetailBagiHasilBSU)
-		bagihasil.GET("/list-bh-bank/:bank_id", bagihasilController.GetListBagiHasilBankPusat)
-		bagihasil.GET("/detail-bh-bank/:bagi_hasil_id", bagihasilController.GetDetailBagiHasilBankPusat)
+		bagihasil.GET("/list-bh-bsu/:bsu_id", staffBSIBSU, bagihasilController.GetListBagiHasilPerBsu)
+		bagihasil.GET("/detail-bh-bsu/:penerima_id", staffBSIBSU, bagihasilController.GetDetailBagiHasilBSU)
+		bagihasil.GET("/list-bh-bank/:bank_id", staffBSIBSM, bankParam, bagihasilController.GetListBagiHasilBankPusat)
+		bagihasil.GET("/detail-bh-bank/:bagi_hasil_id", staffBSIBSM, bagihasilController.GetDetailBagiHasilBankPusat)
 	}
 
 	// ─── Distribusi Sisa ────────────────────────────────────────────────────────
 	distribusiSisa := r.Group("/distribusi-sisa", requireAuth)
 	{
 		distribusiSisaController := controllers.NewDistribusiSisa(db, notifSvc)
-		distribusiSisa.GET("/konfigurasi/:bank_id", distribusiSisaController.GetKonfigurasi)
-		distribusiSisa.POST("/konfigurasi/:bank_id", distribusiSisaController.AddKonfigurasi)
-		distribusiSisa.PATCH("/konfigurasi/:bank_id", distribusiSisaController.UpdateKonfigurasi)
-		distribusiSisa.GET("/preview/:bagi_hasil_id", distribusiSisaController.PreviewDistribusiSisa)
-		distribusiSisa.POST("/submit/:bagi_hasil_id", distribusiSisaController.SubmitDistribusiSisa)
-		distribusiSisa.GET("/detail/:distribusi_id", distribusiSisaController.GetDetailDistribusiSisa)
-		distribusiSisa.GET("/list-bh-bank/:bank_id", distribusiSisaController.ListBagiHasilBank)
-		distribusiSisa.GET("/detail-bh-bank/:penerima_sisa_id", distribusiSisaController.DetailBagiHasilBank)
+		distribusiSisa.GET("/konfigurasi/:bank_id", adminBSI, bankParam, distribusiSisaController.GetKonfigurasi)
+		distribusiSisa.POST("/konfigurasi/:bank_id", adminBSI, bankParam, distribusiSisaController.AddKonfigurasi)
+		distribusiSisa.PATCH("/konfigurasi/:bank_id", adminBSI, bankParam, distribusiSisaController.UpdateKonfigurasi)
+		distribusiSisa.GET("/preview/:bagi_hasil_id", petugasBSI, distribusiSisaController.PreviewDistribusiSisa)
+		distribusiSisa.POST("/submit/:bagi_hasil_id", petugasBSI, distribusiSisaController.SubmitDistribusiSisa)
+		distribusiSisa.GET("/detail/:distribusi_id", staffBSIBSU, distribusiSisaController.GetDetailDistribusiSisa)
+		distribusiSisa.GET("/list-bh-bank/:bank_id", staffBSIBSU, bankParamOrBSI, distribusiSisaController.ListBagiHasilBank)
+		distribusiSisa.GET("/detail-bh-bank/:penerima_sisa_id", staffBSIBSU, distribusiSisaController.DetailBagiHasilBank)
 	}
 
 	// ─── Tabungan Sampah ────────────────────────────────────────────────────────
 	tabunganSampah := r.Group("/tabungan-sampah", requireAuth)
 	{
 		tabunganSampahController := controllers.NewTabunganSampahController(db)
-		tabunganSampah.GET("/buku-tabungan/:nasabah_id", tabunganSampahController.GetBukuTabunganSampahNasabah)
-		tabunganSampah.GET("/buku-tabungan-bsu/:bsu_id", tabunganSampahController.GetBukuTabunganSampahBSU)
+		tabunganSampah.GET("/buku-tabungan/:nasabah_id", nasabahRole, tabunganSampahController.GetBukuTabunganSampahNasabah)
+		tabunganSampah.GET("/buku-tabungan-bsu/:bsu_id", staffBSU, bsuParam, tabunganSampahController.GetBukuTabunganSampahBSU)
 	}
 
 	// ─── Penarikan ──────────────────────────────────────────────────────────────
 	penarikan := r.Group("/penarikan", requireAuth)
 	{
-		penarikanController := controllers.NewPenarikanController(db, cfStorage, notifSvc)
-		penarikan.POST("/ajukan/:nasabah_id", penarikanController.AjukanPenarikan)
-		penarikan.POST("/preview/:nasabah_id", penarikanController.PreviewAjukanPenarikan)
-		penarikan.POST("/konfirmasi/:penarikan_id", penarikanController.KonfirmasiPenarikanNasabah)
-		penarikan.GET("/list-bank/:bank_id", penarikanController.ListPenarikanNasabahByBank)
+		penarikanRepo := repositories.NewPenarikanRepo(db)
+		penarikanSvc := services.NewPenarikanService(db, penarikanRepo, notifSvc)
+		penarikanController := controllers.NewPenarikanController(penarikanSvc, cfStorage)
+		penarikan.POST("/ajukan/:nasabah_id", nasabahRole, penarikanController.AjukanPenarikan)
+		penarikan.POST("/preview/:nasabah_id", nasabahRole, penarikanController.PreviewAjukanPenarikan)
+		penarikan.POST("/konfirmasi/:penarikan_id", petugasAll, penarikanController.KonfirmasiPenarikanNasabah)
+		penarikan.GET("/list-bank/:bank_id", allStaff, bankParamOrBSI, penarikanController.ListPenarikanNasabahByBank)
 		penarikan.GET("/list/:nasabah_id", penarikanController.ListPenarikanNasabah)
 		penarikan.GET("/detail/:penarikan_id", penarikanController.DetailPenarikanNasabah)
-		penarikan.PATCH("/batal/:penarikan_id", penarikanController.BatalPenarikan)
+		penarikan.PATCH("/batal/:penarikan_id", nasabahRole, penarikanController.BatalPenarikan)
 	}
 
 	// ─── Notifikasi ─────────────────────────────────────────────────────────────
 	notifikasi := r.Group("/notifikasi", requireAuth)
 	{
 		notifikasiController := controllers.NewNotifikasiController(notifSvc)
-		notifikasi.GET("/list/:user_id", notifikasiController.GetList)
+		notifikasi.GET("/list", notifikasiController.GetList)
 		notifikasi.PATCH("/read/:notifikasi_id", notifikasiController.MarkAsRead)
-		notifikasi.PATCH("/read-all/:user_id", notifikasiController.MarkAllAsRead)
-		notifikasi.GET("/unread-count/:user_id", notifikasiController.UnreadCount)
+		notifikasi.PATCH("/read-all", notifikasiController.MarkAllAsRead)
+		notifikasi.GET("/unread-count", notifikasiController.UnreadCount)
 	}
 
 	// ─── Info Mobile ────────────────────────────────────────────────────────────
-	infoMobile := r.Group("/info-mobile", requireAuth)
+	infoMobile := r.Group("/info-mobile", requireAuth, nasabahRole)
 	{
 		infoMobileController := controllers.NewInfoMobileController(db)
 		infoMobile.GET("/jadwal-penimbangan/:nasabah_id", infoMobileController.JadwalPenimbanganForNasabah)
@@ -412,11 +465,13 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 	laporan := r.Group("/laporan", requireAuth)
 	{
 		laporanController := controllers.NewLaporanController(db)
-		laporan.GET("/penimbangan/:penimbangan_id", laporanController.DownloadLaporanPenimbangan)
-		laporan.GET("/penjualan/:penjualan_id", laporanController.DownloadLaporanPenjualan)
-		laporan.GET("/nasabah/:bank_id", laporanController.DownloadLaporanNasabah)
-		laporan.GET("/pengangkutan/:pengangkutan_id", laporanController.DownloadLaporanPengangkutan)
-		laporan.GET("/bagi-hasil/:bagi_hasil_id", laporanController.DownloadLaporanBagiHasil)
-		laporan.GET("/bank-sampah", laporanController.DownloadLaporanBankSampah)
+		laporan.GET("/penimbangan/:penimbangan_id", allAdmin, laporanController.DownloadLaporanPenimbangan)
+		laporan.GET("/penjualan/:penjualan_id", adminBSIBSM, laporanController.DownloadLaporanPenjualan)
+		laporan.GET("/nasabah/:bank_id", allAdmin, bankParamOrBSI, laporanController.DownloadLaporanNasabah)
+		laporan.GET("/pengangkutan/:pengangkutan_id", middleware.RequireRole(models.AdminBSI, models.AdminBSU), laporanController.DownloadLaporanPengangkutan)
+		laporan.GET("/bagi-hasil/:bagi_hasil_id", adminBSIBSM, laporanController.DownloadLaporanBagiHasil)
+		laporan.GET("/bank-sampah", superadminRole, laporanController.DownloadLaporanBankSampah)
+		laporan.GET("/katalog-sampah/:bank_id", allAdmin, bankParam, laporanController.DownloadLaporanKatalogSampah)
+		laporan.GET("/katalog-sembako/:bank_id", allAdmin, bankParam, laporanController.DownloadLaporanKatalogSembako)
 	}
 }

@@ -3,6 +3,7 @@ package controllers
 import (
 	"enviroo-be/internal/models"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -87,15 +88,28 @@ func (tc *TabunganSampahController) GetBukuTabunganSampahNasabah(c *gin.Context)
 		return
 	}
 
+	startDate := c.Query("start_date")
+	endDate := c.Query("end_date")
+
 	// ── 1. Ambil semua tabungan milik nasabah ──────────────────────
-	// Preload KatalogSampah + Reward untuk dapat nama_sampah, satuan,
-	// reward_id, dan nama_reward sekaligus.
 	var tabungans []models.TabunganSampah
-	if err := tc.DB.
+	q := tc.DB.
 		Where("nasabah_id = ? AND entitas = ?", nasabahID, models.EntitasNasabah).
 		Preload("KatalogSampah.Reward").
-		Order("created_at ASC").
-		Find(&tabungans).Error; err != nil {
+		Preload("KatalogSampah.Sarok")
+
+	if startDate != "" {
+		if t, err := time.Parse("2006-01-02", startDate); err == nil {
+			q = q.Where("created_at >= ?", t)
+		}
+	}
+	if endDate != "" {
+		if t, err := time.Parse("2006-01-02", endDate); err == nil {
+			q = q.Where("created_at <= ?", t.Add(24*time.Hour-time.Second))
+		}
+	}
+
+	if err := q.Order("created_at ASC").Find(&tabungans).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data tabungan: " + err.Error()})
 		return
 	}
@@ -209,8 +223,8 @@ func (tc *TabunganSampahController) GetBukuTabunganSampahNasabah(c *gin.Context)
 			namaReward := ""
 
 			if tab.KatalogSampah != nil {
-				namaSampah = tab.KatalogSampah.NamaSampah
-				satuan = string(tab.KatalogSampah.Satuan)
+				namaSampah = tab.KatalogSampah.Sarok.NamaSampah
+				satuan = string(tab.KatalogSampah.Sarok.Satuan)
 				rewardID = tab.KatalogSampah.RewardID
 				namaReward = string(tab.KatalogSampah.Reward.NamaReward)
 			}
@@ -339,8 +353,8 @@ func buildSetoranList(
 			namaReward := ""
  
 			if tab.KatalogSampah != nil {
-				namaSampah = tab.KatalogSampah.NamaSampah
-				satuan = string(tab.KatalogSampah.Satuan)
+				namaSampah = tab.KatalogSampah.Sarok.NamaSampah
+				satuan = string(tab.KatalogSampah.Sarok.Satuan)
 				rewardID = tab.KatalogSampah.RewardID
 				namaReward = string(tab.KatalogSampah.Reward.NamaReward)
 			}
@@ -392,6 +406,7 @@ func (tc *TabunganSampahController) GetBukuTabunganSampahBSU(c *gin.Context) {
 	if err := tc.DB.
 		Where("bank_id = ? AND entitas = ?", bankID, models.EntitasBankSampah).
 		Preload("KatalogSampah.Reward").
+		Preload("KatalogSampah.Sarok").
 		Order("created_at ASC").
 		Find(&tabungans).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data tabungan: " + err.Error()})
@@ -439,14 +454,13 @@ func (tc *TabunganSampahController) GetBukuTabunganSampahBSU(c *gin.Context) {
 	if len(pengangkutanIDs) > 0 {
 		var riwayats []tanggalPengangkutan
 		if err := tc.DB.Raw(`
-			SELECT DISTINCT ON (psb.paket_id)
-				psb.paket_id AS source_id,
-				TO_CHAR(rp.changed_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS changed_at
-			FROM riwayat_pengangkutan rp
-			JOIN paket_setoran_bank psb ON psb.pengangkutan_id = rp.pengangkutan_id
-			WHERE psb.paket_id IN ?
-			  AND rp.status_pengangkutan = ?
-			ORDER BY psb.paket_id, rp.changed_at DESC
+			SELECT DISTINCT ON (pengangkutan_id)
+				pengangkutan_id AS source_id,
+				TO_CHAR(changed_at, 'YYYY-MM-DD"T"HH24:MI:SSOF') AS changed_at
+			FROM riwayat_pengangkutan
+			WHERE pengangkutan_id IN ?
+			  AND status_pengangkutan = ?
+			ORDER BY pengangkutan_id, changed_at DESC
 		`, pengangkutanIDs, models.StatusCompleted).Scan(&riwayats).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil tanggal pengangkutan: " + err.Error()})
 			return

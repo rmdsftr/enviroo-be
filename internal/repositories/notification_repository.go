@@ -12,10 +12,10 @@ import (
 type NotifikasiRepository interface {
 	Create(notif *models.Notifikasi) error
 	FindByID(notifikasiID string) (*models.Notifikasi, error)
-	FindByUserID(userID string, limit, offset int) ([]models.Notifikasi, int64, error)
+	FindByUserID(userID, roleTarget string, limit, offset int) ([]models.Notifikasi, int64, error)
 	MarkAsRead(notifikasiID, userID string) error
-	MarkAllAsRead(userID string) error
-	CountUnread(userID string) (int64, error)
+	MarkAllAsRead(userID, roleTarget string) error
+	CountUnread(userID, roleTarget string) (int64, error)
 	Delete(notifikasiID, userID string) error
 }
 
@@ -46,12 +46,12 @@ func (r *notifikasiRepository) FindByID(notifikasiID string) (*models.Notifikasi
 	return &notif, nil
 }
 
-// FindByUserID returns paginated notifications for a user, newest first.
-func (r *notifikasiRepository) FindByUserID(userID string, limit, offset int) ([]models.Notifikasi, int64, error) {
+// FindByUserID returns paginated notifications for a user filtered by role target, newest first.
+func (r *notifikasiRepository) FindByUserID(userID, roleTarget string, limit, offset int) ([]models.Notifikasi, int64, error) {
 	var notifs []models.Notifikasi
 	var total int64
 
-	base := r.db.Model(&models.Notifikasi{}).Where("user_id = ?", userID)
+	base := r.db.Model(&models.Notifikasi{}).Where("user_id = ? AND role_target = ?", userID, roleTarget)
 
 	if err := base.Count(&total).Error; err != nil {
 		return nil, 0, err
@@ -77,16 +77,16 @@ func (r *notifikasiRepository) MarkAsRead(notifikasiID, userID string) error {
 	return nil
 }
 
-func (r *notifikasiRepository) MarkAllAsRead(userID string) error {
+func (r *notifikasiRepository) MarkAllAsRead(userID, roleTarget string) error {
 	return r.db.Model(&models.Notifikasi{}).
-		Where("user_id = ? AND is_read = false", userID).
+		Where("user_id = ? AND role_target = ? AND is_read = false", userID, roleTarget).
 		Update("is_read", true).Error
 }
 
-func (r *notifikasiRepository) CountUnread(userID string) (int64, error) {
+func (r *notifikasiRepository) CountUnread(userID, roleTarget string) (int64, error) {
 	var count int64
 	err := r.db.Model(&models.Notifikasi{}).
-		Where("user_id = ? AND is_read = false", userID).
+		Where("user_id = ? AND role_target = ? AND is_read = false", userID, roleTarget).
 		Count(&count).Error
 	return count, err
 }

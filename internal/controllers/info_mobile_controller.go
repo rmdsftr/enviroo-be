@@ -3,6 +3,8 @@ package controllers
 import (
 	"enviroo-be/internal/models"
 	"net/http"
+	"sort"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -20,46 +22,92 @@ func (imc *InfoMobileController) JadwalPenimbanganForNasabah(c *gin.Context) {
 	nasabahID := c.Param("nasabah_id")
 
 	var nasabah models.Nasabah
-	// Preload Bank untuk mendapatkan nama bank
-	if err := imc.db.Preload("Bank").Where("nasabah_id = ? AND status_nasabah=?", nasabahID, models.Aktif).First(&nasabah).Error; err != nil {
+	if err := imc.db.Preload("Bank").Where("nasabah_id = ? AND status_nasabah = ?", nasabahID, models.Aktif).First(&nasabah).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Nasabah tidak ditemukan"})
 		return
 	}
 
 	bankID := nasabah.BankID
+	namaBank := nasabah.Bank.NamaBank
 
-	var bank models.BankSampah
-	if err := imc.db.Where("bank_id = ?", bankID).First(&bank).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil bank sampah"})
-		return 
-	}
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	until := today.AddDate(0, 1, 0)
 
-	// Gunakan Find untuk mengambil semua jadwal rutin penimbangan (bisa jadi lebih dari satu hari)
-	var jadwalList []models.Jadwal
-	if err := imc.db.Where("bank_id = ? AND jenis_jadwal = ? AND is_active = ? AND is_rutin=?", bankID, models.JadwalPenimbangan, true, true).Find(&jadwalList).Error; err != nil {
+	var semuaJadwal []models.Jadwal
+	if err := imc.db.Where(
+		"bank_id = ? AND jenis_jadwal = ? AND is_active = ?",
+		bankID, models.JadwalPenimbangan, true,
+	).Find(&semuaJadwal).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil jadwal penimbangan"})
 		return
 	}
 
-	var responseJadwal []gin.H
-	for _, j := range jadwalList {
-		responseJadwal = append(responseJadwal, gin.H{
-			"hari":        j.Hari,
-			"minggu_ke":   j.MingguKe,
-			"jam_mulai":   j.JamMulai,
-			"jam_selesai": j.JamSelesai,
-		})
+	type JadwalItem struct {
+		Tanggal    string `json:"tanggal"`
+		JamMulai   string `json:"jam_mulai"`
+		JamSelesai string `json:"jam_selesai"`
+		NamaJadwal string `json:"nama_jadwal"`
 	}
 
-	if responseJadwal == nil {
-		responseJadwal = []gin.H{}
+	hariOf := func(t time.Time) models.HariEnum {
+		return []models.HariEnum{
+			models.Minggu, models.Senin, models.Selasa, models.Rabu,
+			models.Kamis, models.Jumat, models.Sabtu,
+		}[t.Weekday()]
+	}
+
+	weekOfMonth := func(d time.Time) int {
+		first := time.Date(d.Year(), d.Month(), 1, 0, 0, 0, 0, d.Location())
+		return (d.Day()+int(first.Weekday())-1)/7 + 1
+	}
+
+	var result []JadwalItem
+
+	for _, j := range semuaJadwal {
+		isRutin := j.IsRutin != nil && *j.IsRutin
+
+		if isRutin {
+			for d := today; !d.After(until); d = d.AddDate(0, 0, 1) {
+				if hariOf(d) == j.Hari && weekOfMonth(d) == j.MingguKe {
+					result = append(result, JadwalItem{
+						Tanggal:    d.Format("2006-01-02"),
+						JamMulai:   j.JamMulai,
+						JamSelesai: j.JamSelesai,
+						NamaJadwal: "Penimbangan Rutin",
+					})
+				}
+			}
+		} else {
+			tgl := time.Date(j.Tanggal.Year(), j.Tanggal.Month(), j.Tanggal.Day(), 0, 0, 0, 0, now.Location())
+			if !tgl.Before(today) && !tgl.After(until) {
+				nama := j.NamaJadwalSpesial
+				if nama == "" {
+					nama = "Penimbangan Rutin"
+				}
+				result = append(result, JadwalItem{
+					Tanggal:    tgl.Format("2006-01-02"),
+					JamMulai:   j.JamMulai,
+					JamSelesai: j.JamSelesai,
+					NamaJadwal: nama,
+				})
+			}
+		}
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Tanggal < result[j].Tanggal
+	})
+
+	if result == nil {
+		result = []JadwalItem{}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Berhasil mengambil jadwal penimbangan",
 		"data": gin.H{
-			"nama_bank": bank.NamaBank,
-			"jadwal":    responseJadwal,
+			"nama_bank": namaBank,
+			"jadwal":    result,
 		},
 	})
 }

@@ -102,6 +102,35 @@ func RequireRole(roles ...models.RoleAdmin) gin.HandlerFunc {
 	}
 }
 
+// RequireSameBankParam memastikan bank_id di URL param cocok dengan bank_id di token.
+// Superadmin (BankID == "") di-skip otomatis.
+// bypassRoles: role yang diizinkan akses lintas bank tanpa ownership check (mis. AdminBSI).
+// Harus dipasang setelah RequireAuth.
+func RequireSameBankParam(paramName string, bypassRoles ...models.RoleAdmin) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims, ok := GetClaims(c)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Tidak terautentikasi"})
+			return
+		}
+		if claims.BankID == "" {
+			c.Next()
+			return
+		}
+		for _, r := range bypassRoles {
+			if claims.Role == r {
+				c.Next()
+				return
+			}
+		}
+		if c.Param(paramName) != claims.BankID {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Akses ditolak. Anda tidak memiliki akses ke bank sampah ini."})
+			return
+		}
+		c.Next()
+	}
+}
+
 // GetClaims adalah helper untuk mengambil claims dari context Gin.
 func GetClaims(c *gin.Context) (*utils.JWTClaims, bool) {
 	raw, exists := c.Get(ClaimsKey)

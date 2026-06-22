@@ -6,6 +6,9 @@ type Notifikasi struct {
 	NotifikasiID string `gorm:"column:notifikasi_id;type:varchar(100);primaryKey" json:"notifikasi_id"`
 	UserID       string `gorm:"column:user_id;type:varchar(100)"                  json:"user_id"`
 
+	// "nasabah" atau "admin" — menentukan akun mana yang menerima notifikasi ini
+	RoleTarget string `gorm:"column:role_target;type:varchar(20);not null;default:'admin'" json:"role_target"`
+
 	Judul string `gorm:"column:judul;type:varchar(255);not null" json:"judul"`
 	Pesan string `gorm:"column:pesan;type:text;not null"         json:"pesan"`
 

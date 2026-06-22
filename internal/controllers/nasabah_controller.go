@@ -4,6 +4,7 @@ import (
 	"enviroo-be/internal/models"
 	"enviroo-be/pkg/storage"
 	"enviroo-be/pkg/utils"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -218,7 +219,7 @@ func (nc *NasabahController) AddNewNasabah(c *gin.Context) {
 		<div style="font-family: Arial, sans-serif; background-color: #f4fdf4; padding: 30px; border-radius: 10px;">
 			<h2 style="color: #4ea771; margin-top: 0;">Halo, %s!</h2>
 			<p style="font-size: 14px; color: #333; line-height: 1.5;">
-				Terima kasih telah mendaftar sebagai Nasabah di Bank Sampah <b>%s</b>.
+				Terima kasih telah mendaftar sebagai Nasabah di <b>%s</b>.
 				Untuk menyelesaikan proses aktivasi akun, gunakan kode OTP berikut:
 			</p>
 			<div style="background-color: #fff; border: 2px dashed #4ea771; padding: 15px; text-align: center; margin: 20px 0;">
@@ -233,23 +234,16 @@ func (nc *NasabahController) AddNewNasabah(c *gin.Context) {
 		</div>
 	`, req.Nama, bank.NamaBank, otp, newAktivasiAkun.ExpiredAt.Format("02 Jan 2006 15:04 WIB"))
 
-	sendErr := nc.Mailer.SendEmail(utils.EmailParams{
-		To:      req.Email,
-		Subject: "Aktivasi Akun Nasabah Enviroo",
-		Body:    emailBody,
-	})
-
-	if sendErr != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send email: " + sendErr.Error()})
-		return
-	}
-
-	// Semua beres, simpan permanen
 	if err := tx.Commit().Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction: " + err.Error()})
 		return
 	}
+
+	go nc.Mailer.SendEmail(utils.EmailParams{
+		To:      req.Email,
+		Subject: "Aktivasi Akun Nasabah Enviroo",
+		Body:    emailBody,
+	})
 
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Nasabah created successfully. Activation email sent.",
@@ -509,7 +503,7 @@ func (nc *NasabahController) AddNewNasabahOldUser(c *gin.Context) {
 		<div style="font-family: Arial, sans-serif; background-color: #f4fdf4; padding: 30px; border-radius: 10px;">
 			<h2 style="color: #4ea771; margin-top: 0;">Halo, %s!</h2>
 			<p style="font-size: 14px; color: #333; line-height: 1.5;">
-				Terima kasih telah mendaftar sebagai Nasabah di Bank Sampah <b>%s</b>.
+				Terima kasih telah mendaftar sebagai Nasabah di <b>%s</b>.
 				Untuk menyelesaikan proses aktivasi akun, gunakan kode OTP berikut:
 			</p>
 			<div style="background-color: #fff; border: 2px dashed #4ea771; padding: 15px; text-align: center; margin: 20px 0;">
@@ -524,27 +518,81 @@ func (nc *NasabahController) AddNewNasabahOldUser(c *gin.Context) {
 		</div>
 	`, existingUser.Nama, bank.NamaBank, otp, newAktivasiAkun.ExpiredAt.Format("02 Jan 2006 15:04 WIB"))
 
-	sendErr := nc.Mailer.SendEmail(utils.EmailParams{
-		To:      existingUser.Email,
-		Subject: "Aktivasi Akun Nasabah Enviroo",
-		Body:    emailBody,
-	})
-
-	if sendErr != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send email: " + sendErr.Error()})
-		return
-	}
-
 	if err := tx.Commit().Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction: " + err.Error()})
 		return
 	}
 
+	go nc.Mailer.SendEmail(utils.EmailParams{
+		To:      existingUser.Email,
+		Subject: "Aktivasi Akun Nasabah Enviroo",
+		Body:    emailBody,
+	})
+
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Nasabah created successfully. Activation email sent.",
 		"data":    newNasabah,
 	})
+}
+
+func (nc *NasabahController) DeleteNasabah(c *gin.Context) {
+	nasabahID := c.Param("nasabah_id")
+
+	var nasabah models.Nasabah
+	if err := nc.DB.Where("nasabah_id = ?", nasabahID).First(&nasabah).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Nasabah tidak ditemukan"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data nasabah"})
+		}
+		return
+	}
+
+	// Cek apakah nasabah punya riwayat transaksi nyata
+	type txCheck struct {
+		table string
+		count int64
+	}
+	checks := []txCheck{
+		{table: "setoran_nasabah"},
+		{table: "penarikan"},
+		{table: "penerima_bagi_hasil"},
+		{table: "tabungan_sampah"},
+	}
+	for _, chk := range checks {
+		if err := nc.DB.Table(chk.table).Where("nasabah_id = ?", nasabahID).Count(&chk.count).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memvalidasi data nasabah"})
+			return
+		}
+		if chk.count > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "Nasabah tidak dapat dihapus karena masih memiliki riwayat transaksi."})
+			return
+		}
+	}
+
+	if err := nc.DB.Transaction(func(tx *gorm.DB) error {
+		// Ambil semua rekening_id milik nasabah ini
+		var rekeningIDs []string
+		if err := tx.Model(&models.SaldoRekening{}).
+			Where("nasabah_id = ?", nasabahID).
+			Pluck("rekening_id", &rekeningIDs).Error; err != nil {
+			return err
+		}
+		if len(rekeningIDs) > 0 {
+			if err := tx.Where("rekening_id IN ?", rekeningIDs).Delete(&models.RiwayatArusSaldo{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("nasabah_id = ?", nasabahID).Delete(&models.SaldoRekening{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&nasabah).Error
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghapus nasabah"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Nasabah deleted successfully"})
 }
 
 func (nc *NasabahController) NasabahBankSampah(c *gin.Context) {

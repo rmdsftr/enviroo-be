@@ -73,16 +73,17 @@ func (lc *LaporanController) DownloadLaporanPenimbangan(c *gin.Context) {
 			u_n.nama          AS nama_nasabah,
 			n.nomor_rekening,
 			sn.created_at     AS waktu_setoran,
-			ks.nama_sampah,
-			ks.satuan,
+			s.nama_sampah,
+			s.satuan,
 			dsn.qty
 		FROM setoran_nasabah sn
 		JOIN nasabah n                   ON n.nasabah_id   = sn.nasabah_id
 		JOIN users u_n                   ON u_n.user_id    = n.user_id
 		JOIN detail_setoran_nasabah dsn  ON dsn.setoran_id = sn.setoran_id
 		JOIN katalog_sampah ks           ON ks.sampah_id   = dsn.sampah_id
+		JOIN sampah s                    ON s.sarok_id     = ks.sarok_id
 		WHERE sn.penimbangan_id = ?
-		ORDER BY sn.created_at ASC, ks.nama_sampah ASC
+		ORDER BY sn.created_at ASC, s.nama_sampah ASC
 	`, penimbanganID).Scan(&details).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data setoran: " + err.Error()})
 		return
@@ -568,16 +569,8 @@ func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 		return
 	}
 
-	// ── 2. Guard: paket harus sudah ada (pengangkutan selesai) ────────────────
-	type paketData struct {
-		PaketID   string `gorm:"column:paket_id"`
-		TotalItem int    `gorm:"column:total_item"`
-	}
-	var paket paketData
-	if err := lc.DB.Raw(
-		`SELECT paket_id, total_item FROM paket_setoran_bank WHERE pengangkutan_id = ? LIMIT 1`,
-		pengangkutanID,
-	).Scan(&paket).Error; err != nil || paket.PaketID == "" {
+	// ── 2. Guard: pengangkutan harus sudah selesai ────────────────────────────
+	if hdr.StatusTerakhir != "completed" {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Laporan hanya tersedia untuk pengangkutan yang sudah selesai"})
 		return
 	}
@@ -614,12 +607,13 @@ func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 	}
 	var details []detailRow
 	if err := lc.DB.Raw(`
-		SELECT ks.nama_sampah, ks.satuan, dp.qty
-		FROM detail_paket dp
+		SELECT s.nama_sampah, s.satuan, dp.qty
+		FROM detail_pengangkutan dp
 		JOIN katalog_sampah ks ON ks.sampah_id = dp.sampah_id
-		WHERE dp.paket_id = ?
-		ORDER BY ks.nama_sampah ASC
-	`, paket.PaketID).Scan(&details).Error; err != nil {
+		JOIN sampah s ON s.sarok_id = ks.sarok_id
+		WHERE dp.pengangkutan_id = ?
+		ORDER BY s.nama_sampah ASC
+	`, pengangkutanID).Scan(&details).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil detail sampah: " + err.Error()})
 		return
 	}
@@ -830,7 +824,7 @@ func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 	f.MergeCell(sheet, fmt.Sprintf("A%d", totalRow), fmt.Sprintf("C%d", totalRow))
 	f.SetCellValue(sheet, fmt.Sprintf("A%d", totalRow), "TOTAL JENIS SAMPAH")
 	f.SetCellStyle(sheet, fmt.Sprintf("A%d", totalRow), fmt.Sprintf("C%d", totalRow), styleTotalLabel)
-	f.SetCellValue(sheet, fmt.Sprintf("D%d", totalRow), paket.TotalItem)
+	f.SetCellValue(sheet, fmt.Sprintf("D%d", totalRow), len(details))
 	f.SetCellStyle(sheet, fmt.Sprintf("D%d", totalRow), fmt.Sprintf("D%d", totalRow), styleTotalNum)
 	f.SetCellStyle(sheet, fmt.Sprintf("E%d", totalRow), fmt.Sprintf("E%d", totalRow), styleTotalLabel)
 	f.SetRowHeight(sheet, totalRow, 22)
@@ -959,7 +953,6 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 		Transportasi    float64 `gorm:"column:transportasi"`
 		NominalDiterima float64 `gorm:"column:nominal_diterima"`
 		Satuan          string  `gorm:"column:satuan"`
-		DiantarOleh     string  `gorm:"column:diantar_oleh"`
 	}
 
 	var penerimaSisaList []penerimaSisaRow
@@ -971,8 +964,7 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 				pds.porsi,
 				pds.transportasi,
 				pds.nominal_diterima,
-				pds.satuan_nominal AS satuan,
-				COALESCE(pds.diantar_oleh::text, '-') AS diantar_oleh
+				pds.satuan_nominal AS satuan
 			FROM penerima_distribusi_sisa pds
 			LEFT JOIN bank_sampah bs ON bs.bank_id = pds.bank_id
 			WHERE pds.distribusi_id = ?
@@ -1227,7 +1219,7 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 		}
 
 		sisaTableHeaderRow := sisaInfoStart + len(sisaInfoRows) + 1
-		sisaHeaders := []string{"No", "Bank Penerima", "Jenis Penerimaan", "Porsi (%)", "Transportasi", "Nominal Diterima", "Satuan", "Diantar Oleh"}
+		sisaHeaders := []string{"No", "Bank Penerima", "Jenis Penerimaan", "Porsi (%)", "Transportasi", "Nominal Diterima", "Satuan"}
 		for i, h := range sisaHeaders {
 			f.SetCellValue(sheet, cell(cols[i], sisaTableHeaderRow), h)
 			f.SetCellStyle(sheet, cell(cols[i], sisaTableHeaderRow), cell(cols[i], sisaTableHeaderRow), styleTableHeader)
@@ -1259,7 +1251,6 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 			f.SetCellStyle(sheet, cell("F", rowIdx), cell("F", rowIdx), bnSt)
 			f.SetCellValue(sheet, cell("G", rowIdx), p.Satuan)
 			f.SetCellStyle(sheet, cell("G", rowIdx), cell("G", rowIdx), bcSt)
-			f.SetCellValue(sheet, cell("H", rowIdx), p.DiantarOleh)
 			f.SetCellStyle(sheet, cell("H", rowIdx), cell("H", rowIdx), bSt)
 			rowIdx++
 		}
@@ -1341,16 +1332,17 @@ func (lc *LaporanController) DownloadLaporanPenjualan(c *gin.Context) {
 	var details []detailRow
 	if err := lc.DB.Raw(`
 		SELECT
-			ks.nama_sampah,
-			ks.satuan,
+			s.nama_sampah,
+			s.satuan,
 			dp.qty,
 			dp.harga_jual,
 			dp.subtotal_penjualan,
 			dp.harga_nasabah_snapshot
 		FROM detail_penjualan dp
 		JOIN katalog_sampah ks ON ks.sampah_id = dp.sampah_id
+		JOIN sampah s ON s.sarok_id = ks.sarok_id
 		WHERE dp.penjualan_id = ?
-		ORDER BY ks.nama_sampah ASC
+		ORDER BY s.nama_sampah ASC
 	`, penjualanID).Scan(&details).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil detail penjualan: " + err.Error()})
 		return
@@ -1789,6 +1781,466 @@ func (lc *LaporanController) DownloadLaporanBankSampah(c *gin.Context) {
 
 	// ── Send response ─────────────────────────────────────────────────────────
 	filename := fmt.Sprintf("laporan-bank-sampah-%s.xlsx", time.Now().Format("20060102"))
+	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	c.Header("Cache-Control", "no-cache")
+
+	if err := f.Write(c.Writer); err != nil {
+		fmt.Printf("[Laporan] Gagal menulis Excel: %v\n", err)
+	}
+}
+
+// GET /laporan/katalog-sampah/:bank_id
+func (lc *LaporanController) DownloadLaporanKatalogSampah(c *gin.Context) {
+	bankID := c.Param("bank_id")
+
+	type bankData struct {
+		BankID       string  `gorm:"column:bank_id"`
+		NamaBank     string  `gorm:"column:nama_bank"`
+		JenisBank    string  `gorm:"column:jenis_bank"`
+		ParentBankID *string `gorm:"column:parent_bank_id"`
+	}
+	var bank bankData
+	if err := lc.DB.Raw(`SELECT bank_id, nama_bank, jenis_bank, parent_bank_id FROM bank_sampah WHERE bank_id = ?`, bankID).Scan(&bank).Error; err != nil || bank.BankID == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Bank sampah tidak ditemukan"})
+		return
+	}
+
+	// BSU menggunakan katalog milik parent BSI, difilter berdasarkan stok yang dimiliki BSU
+	catalogBankID := bankID
+	if bank.JenisBank == "bsu" && bank.ParentBankID != nil {
+		catalogBankID = *bank.ParentBankID
+	}
+
+	type katalogRow struct {
+		NamaSampah      string    `gorm:"column:nama_sampah"`
+		Kategori        string    `gorm:"column:kategori"`
+		Satuan          string    `gorm:"column:satuan"`
+		JenisReward     string    `gorm:"column:jenis_reward"`
+		HargaNasabah    float64   `gorm:"column:harga_nasabah"`
+		HargaEksternal  float64   `gorm:"column:harga_eksternal"`
+		SatuanReward    string    `gorm:"column:satuan_reward"`
+		SyaratPemilahan string    `gorm:"column:syarat_pemilahan"`
+		CreatedAt       time.Time `gorm:"column:created_at"`
+	}
+
+	var rows []katalogRow
+	var queryArgs []interface{}
+	stokFilter := ""
+	if bank.JenisBank == "bsu" {
+		stokFilter = "AND EXISTS (SELECT 1 FROM stok_sampah ss WHERE ss.sampah_id = ks.sampah_id AND ss.bank_id = ?)"
+		queryArgs = append(queryArgs, catalogBankID, bankID)
+	} else {
+		queryArgs = append(queryArgs, catalogBankID)
+	}
+	if err := lc.DB.Raw(fmt.Sprintf(`
+		SELECT
+			s.nama_sampah,
+			k.kategori,
+			s.satuan,
+			r.nama_reward                                                                        AS jenis_reward,
+			COALESCE(MAX(sh.harga) FILTER (WHERE sh.level_user = 'nasabah'),   0)               AS harga_nasabah,
+			COALESCE(MAX(sh.harga) FILTER (WHERE sh.level_user = 'eksternal'), 0)               AS harga_eksternal,
+			COALESCE(MAX(sh.satuan_reward::text) FILTER (WHERE sh.level_user = 'nasabah'), '-') AS satuan_reward,
+			ks.syarat_pemilahan,
+			ks.created_at
+		FROM katalog_sampah ks
+		JOIN sampah s           ON s.sarok_id    = ks.sarok_id
+		JOIN kategori_sampah k  ON k.kategori_id = ks.kategori_id
+		JOIN reward r           ON r.reward_id   = ks.reward_id
+		LEFT JOIN schema_harga_sampah sh ON sh.sampah_id = ks.sampah_id
+		WHERE ks.bank_id = ? %s
+		GROUP BY s.nama_sampah, k.kategori, s.satuan, r.nama_reward, ks.syarat_pemilahan, ks.created_at
+		ORDER BY k.kategori ASC, s.nama_sampah ASC
+	`, stokFilter), queryArgs...).Scan(&rows).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data katalog sampah: " + err.Error()})
+		return
+	}
+
+	f := excelize.NewFile()
+	defer f.Close()
+
+	sheet := "Katalog Sampah"
+	f.SetSheetName("Sheet1", sheet)
+
+	numFmt := "#,##0.00"
+
+	styleTitle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Size: 14},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+	})
+	styleBold, _ := f.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Bold: true},
+	})
+	styleTableHeader, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Color: "FFFFFF"},
+		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"33691E"}},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center", WrapText: true},
+		Border: []excelize.Border{
+			{Type: "left", Color: "FFFFFF", Style: 1},
+			{Type: "right", Color: "FFFFFF", Style: 1},
+			{Type: "top", Color: "FFFFFF", Style: 1},
+			{Type: "bottom", Color: "FFFFFF", Style: 1},
+		},
+	})
+	styleBorder, _ := f.NewStyle(&excelize.Style{
+		Alignment: &excelize.Alignment{Vertical: "center", WrapText: true},
+		Border: []excelize.Border{
+			{Type: "left", Color: "CCCCCC", Style: 1},
+			{Type: "right", Color: "CCCCCC", Style: 1},
+			{Type: "top", Color: "CCCCCC", Style: 1},
+			{Type: "bottom", Color: "CCCCCC", Style: 1},
+		},
+	})
+	styleBorderAlt, _ := f.NewStyle(&excelize.Style{
+		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"F5F5F5"}},
+		Alignment: &excelize.Alignment{Vertical: "center", WrapText: true},
+		Border: []excelize.Border{
+			{Type: "left", Color: "CCCCCC", Style: 1},
+			{Type: "right", Color: "CCCCCC", Style: 1},
+			{Type: "top", Color: "CCCCCC", Style: 1},
+			{Type: "bottom", Color: "CCCCCC", Style: 1},
+		},
+	})
+	styleBorderCenter, _ := f.NewStyle(&excelize.Style{
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+		Border: []excelize.Border{
+			{Type: "left", Color: "CCCCCC", Style: 1},
+			{Type: "right", Color: "CCCCCC", Style: 1},
+			{Type: "top", Color: "CCCCCC", Style: 1},
+			{Type: "bottom", Color: "CCCCCC", Style: 1},
+		},
+	})
+	styleBorderCenterAlt, _ := f.NewStyle(&excelize.Style{
+		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"F5F5F5"}},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+		Border: []excelize.Border{
+			{Type: "left", Color: "CCCCCC", Style: 1},
+			{Type: "right", Color: "CCCCCC", Style: 1},
+			{Type: "top", Color: "CCCCCC", Style: 1},
+			{Type: "bottom", Color: "CCCCCC", Style: 1},
+		},
+	})
+	styleBorderNum, _ := f.NewStyle(&excelize.Style{
+		CustomNumFmt: &numFmt,
+		Alignment:    &excelize.Alignment{Horizontal: "right", Vertical: "center"},
+		Border: []excelize.Border{
+			{Type: "left", Color: "CCCCCC", Style: 1},
+			{Type: "right", Color: "CCCCCC", Style: 1},
+			{Type: "top", Color: "CCCCCC", Style: 1},
+			{Type: "bottom", Color: "CCCCCC", Style: 1},
+		},
+	})
+	styleBorderNumAlt, _ := f.NewStyle(&excelize.Style{
+		CustomNumFmt: &numFmt,
+		Fill:         excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"F5F5F5"}},
+		Alignment:    &excelize.Alignment{Horizontal: "right", Vertical: "center"},
+		Border: []excelize.Border{
+			{Type: "left", Color: "CCCCCC", Style: 1},
+			{Type: "right", Color: "CCCCCC", Style: 1},
+			{Type: "top", Color: "CCCCCC", Style: 1},
+			{Type: "bottom", Color: "CCCCCC", Style: 1},
+		},
+	})
+
+	// ── Row 1: Title ──────────────────────────────────────────────────────────
+	f.MergeCell(sheet, "A1", "J1")
+	f.SetCellValue(sheet, "A1", "KATALOG SAMPAH BANK SAMPAH")
+	f.SetCellStyle(sheet, "A1", "J1", styleTitle)
+	f.SetRowHeight(sheet, 1, 32)
+
+	// ── Rows 3+: Info header ──────────────────────────────────────────────────
+	infoRows := [][2]string{
+		{"Nama Bank Sampah", bank.NamaBank},
+		{"Bank ID",          bank.BankID},
+		{"Tanggal Cetak",    time.Now().Format("02 January 2006, 15:04:05")},
+		{"Total Item",       fmt.Sprintf("%d jenis sampah", len(rows))},
+	}
+	const infoStartRow = 3
+	for i, row := range infoRows {
+		r := infoStartRow + i
+		f.MergeCell(sheet, fmt.Sprintf("A%d", r), fmt.Sprintf("B%d", r))
+		f.SetCellValue(sheet, fmt.Sprintf("A%d", r), row[0])
+		f.SetCellStyle(sheet, fmt.Sprintf("A%d", r), fmt.Sprintf("B%d", r), styleBold)
+		f.MergeCell(sheet, fmt.Sprintf("C%d", r), fmt.Sprintf("J%d", r))
+		f.SetCellValue(sheet, fmt.Sprintf("C%d", r), row[1])
+	}
+
+	// ── Table header ──────────────────────────────────────────────────────────
+	tableHeaderRow := infoStartRow + len(infoRows) + 1
+	headers := []string{"No", "Nama Sampah", "Kategori", "Satuan", "Jenis Reward", "Harga Nasabah/Satuan", "Harga Eksternal/Satuan", "Satuan Reward", "Syarat Pemilahan", "Tanggal Ditambahkan"}
+	cols := []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"}
+	for i, h := range headers {
+		cell := fmt.Sprintf("%s%d", cols[i], tableHeaderRow)
+		f.SetCellValue(sheet, cell, h)
+		f.SetCellStyle(sheet, cell, cell, styleTableHeader)
+	}
+	f.SetRowHeight(sheet, tableHeaderRow, 30)
+
+	// ── Data rows ─────────────────────────────────────────────────────────────
+	rowIdx := tableHeaderRow + 1
+	for i, d := range rows {
+		no := i + 1
+		bSt := styleBorder
+		bcSt := styleBorderCenter
+		bnSt := styleBorderNum
+		if no%2 == 0 {
+			bSt = styleBorderAlt
+			bcSt = styleBorderCenterAlt
+			bnSt = styleBorderNumAlt
+		}
+
+		f.SetCellValue(sheet, fmt.Sprintf("A%d", rowIdx), no)
+		f.SetCellStyle(sheet, fmt.Sprintf("A%d", rowIdx), fmt.Sprintf("A%d", rowIdx), bcSt)
+		f.SetCellValue(sheet, fmt.Sprintf("B%d", rowIdx), d.NamaSampah)
+		f.SetCellStyle(sheet, fmt.Sprintf("B%d", rowIdx), fmt.Sprintf("B%d", rowIdx), bSt)
+		f.SetCellValue(sheet, fmt.Sprintf("C%d", rowIdx), d.Kategori)
+		f.SetCellStyle(sheet, fmt.Sprintf("C%d", rowIdx), fmt.Sprintf("C%d", rowIdx), bSt)
+		f.SetCellValue(sheet, fmt.Sprintf("D%d", rowIdx), d.Satuan)
+		f.SetCellStyle(sheet, fmt.Sprintf("D%d", rowIdx), fmt.Sprintf("D%d", rowIdx), bcSt)
+		f.SetCellValue(sheet, fmt.Sprintf("E%d", rowIdx), d.JenisReward)
+		f.SetCellStyle(sheet, fmt.Sprintf("E%d", rowIdx), fmt.Sprintf("E%d", rowIdx), bcSt)
+		f.SetCellValue(sheet, fmt.Sprintf("F%d", rowIdx), d.HargaNasabah)
+		f.SetCellStyle(sheet, fmt.Sprintf("F%d", rowIdx), fmt.Sprintf("F%d", rowIdx), bnSt)
+		f.SetCellValue(sheet, fmt.Sprintf("G%d", rowIdx), d.HargaEksternal)
+		f.SetCellStyle(sheet, fmt.Sprintf("G%d", rowIdx), fmt.Sprintf("G%d", rowIdx), bnSt)
+		f.SetCellValue(sheet, fmt.Sprintf("H%d", rowIdx), d.SatuanReward)
+		f.SetCellStyle(sheet, fmt.Sprintf("H%d", rowIdx), fmt.Sprintf("H%d", rowIdx), bcSt)
+		f.SetCellValue(sheet, fmt.Sprintf("I%d", rowIdx), d.SyaratPemilahan)
+		f.SetCellStyle(sheet, fmt.Sprintf("I%d", rowIdx), fmt.Sprintf("I%d", rowIdx), bSt)
+		f.SetCellValue(sheet, fmt.Sprintf("J%d", rowIdx), d.CreatedAt.Format("02 January 2006"))
+		f.SetCellStyle(sheet, fmt.Sprintf("J%d", rowIdx), fmt.Sprintf("J%d", rowIdx), bcSt)
+
+		rowIdx++
+	}
+
+	// ── Column widths ─────────────────────────────────────────────────────────
+	f.SetColWidth(sheet, "A", "A", 6)
+	f.SetColWidth(sheet, "B", "B", 26)
+	f.SetColWidth(sheet, "C", "C", 20)
+	f.SetColWidth(sheet, "D", "D", 10)
+	f.SetColWidth(sheet, "E", "E", 14)
+	f.SetColWidth(sheet, "F", "F", 24)
+	f.SetColWidth(sheet, "G", "G", 24)
+	f.SetColWidth(sheet, "H", "H", 14)
+	f.SetColWidth(sheet, "I", "I", 36)
+	f.SetColWidth(sheet, "J", "J", 22)
+
+	// ── Send response ─────────────────────────────────────────────────────────
+	filename := fmt.Sprintf("katalog-sampah-%s.xlsx", bankID)
+	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	c.Header("Cache-Control", "no-cache")
+
+	if err := f.Write(c.Writer); err != nil {
+		fmt.Printf("[Laporan] Gagal menulis Excel: %v\n", err)
+	}
+}
+
+// GET /laporan/katalog-sembako/:bank_id
+func (lc *LaporanController) DownloadLaporanKatalogSembako(c *gin.Context) {
+	bankID := c.Param("bank_id")
+
+	type bankData struct {
+		BankID       string  `gorm:"column:bank_id"`
+		NamaBank     string  `gorm:"column:nama_bank"`
+		JenisBank    string  `gorm:"column:jenis_bank"`
+		ParentBankID *string `gorm:"column:parent_bank_id"`
+	}
+	var bank bankData
+	if err := lc.DB.Raw(`SELECT bank_id, nama_bank, jenis_bank, parent_bank_id FROM bank_sampah WHERE bank_id = ?`, bankID).Scan(&bank).Error; err != nil || bank.BankID == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Bank sampah tidak ditemukan"})
+		return
+	}
+
+	// BSU menggunakan katalog milik parent BSI, difilter berdasarkan stok yang dimiliki BSU
+	catalogBankID := bankID
+	if bank.JenisBank == "bsu" && bank.ParentBankID != nil {
+		catalogBankID = *bank.ParentBankID
+	}
+
+	type katalogRow struct {
+		NamaBarang string    `gorm:"column:nama_barang"`
+		NilaiPoin  float64   `gorm:"column:nilai_poin"`
+		CreatedAt  time.Time `gorm:"column:created_at"`
+	}
+
+	var rows []katalogRow
+	var queryArgs []interface{}
+	stokFilter := ""
+	if bank.JenisBank == "bsu" {
+		stokFilter = "AND EXISTS (SELECT 1 FROM stok_sembako st WHERE st.sembako_id = ks.sembako_id AND st.bank_id = ?)"
+		queryArgs = append(queryArgs, catalogBankID, bankID)
+	} else {
+		queryArgs = append(queryArgs, catalogBankID)
+	}
+	if err := lc.DB.Raw(fmt.Sprintf(`
+		SELECT
+			s.nama_barang,
+			ks.nilai_poin,
+			ks.created_at
+		FROM katalog_sembako ks
+		JOIN sembako s ON s.barang_id = ks.barang_id
+		WHERE ks.bank_id = ? %s
+		ORDER BY s.nama_barang ASC
+	`, stokFilter), queryArgs...).Scan(&rows).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data katalog sembako: " + err.Error()})
+		return
+	}
+
+	f := excelize.NewFile()
+	defer f.Close()
+
+	sheet := "Katalog Sembako"
+	f.SetSheetName("Sheet1", sheet)
+
+	numFmt := "#,##0.00"
+
+	styleTitle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Size: 14},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+	})
+	styleBold, _ := f.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Bold: true},
+	})
+	styleTableHeader, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Color: "FFFFFF"},
+		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"E65100"}},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+		Border: []excelize.Border{
+			{Type: "left", Color: "FFFFFF", Style: 1},
+			{Type: "right", Color: "FFFFFF", Style: 1},
+			{Type: "top", Color: "FFFFFF", Style: 1},
+			{Type: "bottom", Color: "FFFFFF", Style: 1},
+		},
+	})
+	styleBorder, _ := f.NewStyle(&excelize.Style{
+		Alignment: &excelize.Alignment{Vertical: "center"},
+		Border: []excelize.Border{
+			{Type: "left", Color: "CCCCCC", Style: 1},
+			{Type: "right", Color: "CCCCCC", Style: 1},
+			{Type: "top", Color: "CCCCCC", Style: 1},
+			{Type: "bottom", Color: "CCCCCC", Style: 1},
+		},
+	})
+	styleBorderAlt, _ := f.NewStyle(&excelize.Style{
+		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"F5F5F5"}},
+		Alignment: &excelize.Alignment{Vertical: "center"},
+		Border: []excelize.Border{
+			{Type: "left", Color: "CCCCCC", Style: 1},
+			{Type: "right", Color: "CCCCCC", Style: 1},
+			{Type: "top", Color: "CCCCCC", Style: 1},
+			{Type: "bottom", Color: "CCCCCC", Style: 1},
+		},
+	})
+	styleBorderCenter, _ := f.NewStyle(&excelize.Style{
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+		Border: []excelize.Border{
+			{Type: "left", Color: "CCCCCC", Style: 1},
+			{Type: "right", Color: "CCCCCC", Style: 1},
+			{Type: "top", Color: "CCCCCC", Style: 1},
+			{Type: "bottom", Color: "CCCCCC", Style: 1},
+		},
+	})
+	styleBorderCenterAlt, _ := f.NewStyle(&excelize.Style{
+		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"F5F5F5"}},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+		Border: []excelize.Border{
+			{Type: "left", Color: "CCCCCC", Style: 1},
+			{Type: "right", Color: "CCCCCC", Style: 1},
+			{Type: "top", Color: "CCCCCC", Style: 1},
+			{Type: "bottom", Color: "CCCCCC", Style: 1},
+		},
+	})
+	styleBorderNum, _ := f.NewStyle(&excelize.Style{
+		CustomNumFmt: &numFmt,
+		Alignment:    &excelize.Alignment{Horizontal: "right", Vertical: "center"},
+		Border: []excelize.Border{
+			{Type: "left", Color: "CCCCCC", Style: 1},
+			{Type: "right", Color: "CCCCCC", Style: 1},
+			{Type: "top", Color: "CCCCCC", Style: 1},
+			{Type: "bottom", Color: "CCCCCC", Style: 1},
+		},
+	})
+	styleBorderNumAlt, _ := f.NewStyle(&excelize.Style{
+		CustomNumFmt: &numFmt,
+		Fill:         excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"F5F5F5"}},
+		Alignment:    &excelize.Alignment{Horizontal: "right", Vertical: "center"},
+		Border: []excelize.Border{
+			{Type: "left", Color: "CCCCCC", Style: 1},
+			{Type: "right", Color: "CCCCCC", Style: 1},
+			{Type: "top", Color: "CCCCCC", Style: 1},
+			{Type: "bottom", Color: "CCCCCC", Style: 1},
+		},
+	})
+
+	// ── Row 1: Title ──────────────────────────────────────────────────────────
+	f.MergeCell(sheet, "A1", "D1")
+	f.SetCellValue(sheet, "A1", "KATALOG SEMBAKO BANK SAMPAH")
+	f.SetCellStyle(sheet, "A1", "D1", styleTitle)
+	f.SetRowHeight(sheet, 1, 32)
+
+	// ── Rows 3+: Info header ──────────────────────────────────────────────────
+	infoRows := [][2]string{
+		{"Nama Bank Sampah", bank.NamaBank},
+		{"Bank ID",          bank.BankID},
+		{"Tanggal Cetak",    time.Now().Format("02 January 2006, 15:04:05")},
+		{"Total Item",       fmt.Sprintf("%d jenis barang", len(rows))},
+	}
+	const infoStartRow = 3
+	for i, row := range infoRows {
+		r := infoStartRow + i
+		f.MergeCell(sheet, fmt.Sprintf("A%d", r), fmt.Sprintf("B%d", r))
+		f.SetCellValue(sheet, fmt.Sprintf("A%d", r), row[0])
+		f.SetCellStyle(sheet, fmt.Sprintf("A%d", r), fmt.Sprintf("B%d", r), styleBold)
+		f.MergeCell(sheet, fmt.Sprintf("C%d", r), fmt.Sprintf("D%d", r))
+		f.SetCellValue(sheet, fmt.Sprintf("C%d", r), row[1])
+	}
+
+	// ── Table header ──────────────────────────────────────────────────────────
+	tableHeaderRow := infoStartRow + len(infoRows) + 1
+	headers := []string{"No", "Nama Barang", "Nilai Poin", "Tanggal Ditambahkan"}
+	cols := []string{"A", "B", "C", "D"}
+	for i, h := range headers {
+		cell := fmt.Sprintf("%s%d", cols[i], tableHeaderRow)
+		f.SetCellValue(sheet, cell, h)
+		f.SetCellStyle(sheet, cell, cell, styleTableHeader)
+	}
+	f.SetRowHeight(sheet, tableHeaderRow, 25)
+
+	// ── Data rows ─────────────────────────────────────────────────────────────
+	rowIdx := tableHeaderRow + 1
+	for i, d := range rows {
+		no := i + 1
+		bSt := styleBorder
+		bcSt := styleBorderCenter
+		bnSt := styleBorderNum
+		if no%2 == 0 {
+			bSt = styleBorderAlt
+			bcSt = styleBorderCenterAlt
+			bnSt = styleBorderNumAlt
+		}
+
+		f.SetCellValue(sheet, fmt.Sprintf("A%d", rowIdx), no)
+		f.SetCellStyle(sheet, fmt.Sprintf("A%d", rowIdx), fmt.Sprintf("A%d", rowIdx), bcSt)
+		f.SetCellValue(sheet, fmt.Sprintf("B%d", rowIdx), d.NamaBarang)
+		f.SetCellStyle(sheet, fmt.Sprintf("B%d", rowIdx), fmt.Sprintf("B%d", rowIdx), bSt)
+		f.SetCellValue(sheet, fmt.Sprintf("C%d", rowIdx), d.NilaiPoin)
+		f.SetCellStyle(sheet, fmt.Sprintf("C%d", rowIdx), fmt.Sprintf("C%d", rowIdx), bnSt)
+		f.SetCellValue(sheet, fmt.Sprintf("D%d", rowIdx), d.CreatedAt.Format("02 January 2006"))
+		f.SetCellStyle(sheet, fmt.Sprintf("D%d", rowIdx), fmt.Sprintf("D%d", rowIdx), bcSt)
+
+		rowIdx++
+	}
+
+	// ── Column widths ─────────────────────────────────────────────────────────
+	f.SetColWidth(sheet, "A", "A", 6)
+	f.SetColWidth(sheet, "B", "B", 32)
+	f.SetColWidth(sheet, "C", "C", 16)
+	f.SetColWidth(sheet, "D", "D", 22)
+
+	// ── Send response ─────────────────────────────────────────────────────────
+	filename := fmt.Sprintf("katalog-sembako-%s.xlsx", bankID)
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	c.Header("Cache-Control", "no-cache")

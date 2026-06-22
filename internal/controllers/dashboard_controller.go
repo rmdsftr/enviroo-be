@@ -116,7 +116,7 @@ func (dc *DashboardController) GetDashboardPetugas(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid bank type"})
 	}
 }
-	
+
 func (dc *DashboardController) GetSaldoBank(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
@@ -145,7 +145,7 @@ func (dc *DashboardController) GetSaldoBank(c *gin.Context) {
 	res := ResponseSaldo{
 		Uang: SaldoUang{TotalUang: 0, SatuanUang: models.SatuanRewardEnumRp},
 	}
-	
+
 	if bank.JenisBank != models.BSU {
 		res.Poin = &SaldoPoin{TotalPoin: 0, SatuanPoin: models.SatuanRewardEnumPoin}
 	}
@@ -181,19 +181,19 @@ func (dc *DashboardController) GetSaldoNasabah(c *gin.Context) {
 	if err := dc.DB.Preload("User").Where("nasabah_id = ?", nasabahID).First(&nasabah).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "Nasabah tidak ditemukan"})
 		return
-	}	
+	}
 
-	type SaldoUang struct{
+	type SaldoUang struct {
 		TotalUang  float64                 `json:"total_uang"`
 		SatuanUang models.SatuanRewardEnum `json:"satuan_uang"`
 	}
-	
-	type SaldoPoin struct{
+
+	type SaldoPoin struct {
 		TotalPoin  float64                 `json:"total_poin"`
 		SatuanPoin models.SatuanRewardEnum `json:"satuan_poin"`
 	}
 
-	type ResponseSaldo struct{
+	type ResponseSaldo struct {
 		Uang SaldoUang `json:"uang"`
 		Poin SaldoPoin `json:"poin"`
 	}
@@ -524,4 +524,133 @@ func (dc *DashboardController) CatatManualMutasiBank(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Mutasi berhasil dicatat"})
+}
+
+func (dc *DashboardController) TotalSaldoAllNasabah(c *gin.Context) {
+	bankID := c.Param("bank_id")
+
+	var bank models.BankSampah
+	if err := dc.DB.Where("bank_id = ?", bankID).First(&bank).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Bank tidak ditemukan"})
+		return
+	}
+
+	type response struct {
+		TotalUang float64 `json:"total_uang"`
+		TotalPoin float64 `json:"total_poin"`
+	}
+
+	var nasabahIDs []string
+	dc.DB.Model(&models.Nasabah{}).Where("bank_id = ?", bankID).Pluck("nasabah_id", &nasabahIDs)
+
+	res := response{}
+
+	if len(nasabahIDs) > 0 {
+		dc.DB.Model(&models.SaldoRekening{}).
+			Where("nasabah_id IN ? AND entitas = ? AND satuan_nominal_saldo = ?", nasabahIDs, models.EntitasNasabah, models.SatuanRewardEnumRp).
+			Select("COALESCE(SUM(nominal_saldo), 0)").
+			Scan(&res.TotalUang)
+
+		dc.DB.Model(&models.SaldoRekening{}).
+			Where("nasabah_id IN ? AND entitas = ? AND satuan_nominal_saldo = ?", nasabahIDs, models.EntitasNasabah, models.SatuanRewardEnumPoin).
+			Select("COALESCE(SUM(nominal_saldo), 0)").
+			Scan(&res.TotalPoin)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Total saldo semua nasabah berhasil diambil",
+		"data":    res,
+	})
+}
+
+func (dc *DashboardController) ListSaldoAllNasabah(c *gin.Context) {
+	bankID := c.Param("bank_id")
+
+	var bank models.BankSampah
+	if err := dc.DB.Where("bank_id = ?", bankID).First(&bank).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Bank tidak ditemukan"})
+		return
+	}
+
+	type nasabahRow struct {
+		NasabahID     string            `json:"nasabah_id"`
+		NamaNasabah   string            `json:"nama_nasabah"`
+		StatusNasabah models.StatusAkun `json:"status_nasabah"`
+		SaldoUang     float64           `json:"saldo_uang"`
+		SaldoPoin     float64           `json:"saldo_poin"`
+	}
+
+	const limit = 20
+	page := 1
+	if p, err := fmt.Sscanf(c.DefaultQuery("page", "1"), "%d", &page); p == 0 || err != nil || page < 1 {
+		page = 1
+	}
+	offset := (page - 1) * limit
+
+	var total int64
+	dc.DB.Model(&models.Nasabah{}).Where("bank_id = ?", bankID).Count(&total)
+
+	var nasabahList []models.Nasabah
+	dc.DB.Preload("User").Where("bank_id = ?", bankID).Limit(limit).Offset(offset).Find(&nasabahList)
+
+	if len(nasabahList) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Berhasil mengambil list saldo nasabah",
+			"data":    []nasabahRow{},
+			"meta": gin.H{
+				"page":        page,
+				"limit":       limit,
+				"total":       total,
+				"total_pages": (total + int64(limit) - 1) / int64(limit),
+			},
+		})
+		return
+	}
+
+	nasabahIDs := make([]string, len(nasabahList))
+	for i, n := range nasabahList {
+		nasabahIDs[i] = n.NasabahID
+	}
+
+	var saldoList []models.SaldoRekening
+	dc.DB.Where("nasabah_id IN ? AND entitas = ?", nasabahIDs, models.EntitasNasabah).Find(&saldoList)
+
+	type saldoPair struct{ uang, poin float64 }
+	saldoMap := make(map[string]saldoPair)
+	for _, s := range saldoList {
+		if s.NasabahID == nil {
+			continue
+		}
+		pair := saldoMap[*s.NasabahID]
+		switch s.SatuanNominalSaldo {
+		case models.SatuanRewardEnumRp:
+			pair.uang += s.NominalSaldo
+		case models.SatuanRewardEnumPoin:
+			pair.poin += s.NominalSaldo
+		}
+		saldoMap[*s.NasabahID] = pair
+	}
+
+	response := make([]nasabahRow, 0, len(nasabahList))
+	for _, n := range nasabahList {
+		pair := saldoMap[n.NasabahID]
+		response = append(response, nasabahRow{
+			NasabahID:     n.NasabahID,
+			NamaNasabah:   n.User.Nama,
+			StatusNasabah: n.StatusNasabah,
+			SaldoUang:     pair.uang,
+			SaldoPoin:     pair.poin,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Berhasil mengambil list saldo nasabah",
+		"data":    response,
+		"meta": gin.H{
+			"page":        page,
+			"limit":       limit,
+			"total":       total,
+			"total_pages": (total + int64(limit) - 1) / int64(limit),
+		},
+	})
 }
