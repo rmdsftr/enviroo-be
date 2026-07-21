@@ -476,7 +476,7 @@ func (dc *DashboardController) CatatManualMutasiBank(c *gin.Context) {
 				return findErr
 			}
 			rekeningBank = models.SaldoRekening{
-				RekeningID:         utils.GenerateID("RKN"),
+				RekeningID:         utils.GenerateRekeningID(rewardID, bankID),
 				BankID:             &bankID,
 				RewardID:           &rewardID,
 				Entitas:            models.EntitasBankSampah,

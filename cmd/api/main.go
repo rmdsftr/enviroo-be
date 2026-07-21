@@ -4,6 +4,7 @@ import (
 	"context"
 	"enviroo-be/internal/config"
 	"enviroo-be/internal/database"
+	"enviroo-be/internal/middleware"
 	"enviroo-be/internal/routes"
 	"enviroo-be/internal/workers"
 	"enviroo-be/pkg/storage"
@@ -16,11 +17,22 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"golang.org/x/time/rate"
 )
 
 func main() {
 
 	cfg := config.LoadConfig()
+
+	// Validasi JWT secret: tolak jalan jika kosong, terlalu pendek, atau masih
+	// memakai nilai default lemah bawaan. Mencegah token bisa dipalsukan.
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if len(jwtSecret) < 32 ||
+		jwtSecret == "enviroo-jwt-secret-ganti-di-production" ||
+		jwtSecret == "enviroo-secret-dev-fallback-change-me" {
+		log.Fatal("JWT_SECRET tidak diset, terlalu pendek, atau masih memakai nilai default yang lemah. " +
+			"Set JWT_SECRET yang kuat (mis. `openssl rand -base64 48`) di environment.")
+	}
 
 	db, err := database.ConnectDB(cfg)
 	if err != nil {
@@ -58,7 +70,23 @@ func main() {
 	reminderWorker := workers.NewReminderWorker(db, fcmClient, 18)
 	reminderWorker.Start()
 
+	if cfg.Environment == "production" {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
 	r := gin.Default()
+
+	// Percaya proxy lokal (nginx) agar c.ClientIP() membaca IP asli dari
+	// X-Forwarded-For, bukan IP proxy. Penting agar rate limiting per-IP akurat
+	// di produksi. Di lokal (tanpa proxy) tetap aman.
+	if err := r.SetTrustedProxies([]string{"127.0.0.1"}); err != nil {
+		log.Printf("Warning: gagal set trusted proxies: %v", err)
+	}
+
+	// Rate limiting global (in-memory, per-IP) sebagai tameng DoS/abuse umum.
+	// ~100 request/menit per IP dengan burst 50.
+	globalLimiter := middleware.NewIPRateLimiter(rate.Every(600*time.Millisecond), 50)
+	r.Use(globalLimiter.Middleware())
 
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:5173", "https://enviroo.tech", "https://www.enviroo.tech"},

@@ -119,10 +119,9 @@ func ClearTokenCookies(c *gin.Context) {
 
 // ─── Internal ────────────────────────────────────────────────────────────────
 
+// getSecret mengambil JWT secret dari environment.
+// Kehadiran & kekuatan secret sudah divalidasi saat startup di main.go,
+// sehingga di sini tidak ada fallback lemah.
 func getSecret() string {
-	s := os.Getenv("JWT_SECRET")
-	if s == "" {
-		s = "enviroo-secret-dev-fallback-change-me"
-	}
-	return s
+	return os.Getenv("JWT_SECRET")
 }

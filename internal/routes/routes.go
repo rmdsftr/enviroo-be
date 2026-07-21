@@ -9,8 +9,10 @@ import (
 	"enviroo-be/pkg/storage"
 	"enviroo-be/pkg/utils"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/time/rate"
 	"gorm.io/gorm"
 )
 
@@ -31,19 +33,26 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 	auth := r.Group("/auth")
 	{
 		authController := controllers.NewAuthController(db, mailer)
-		auth.POST("/login", authController.Login)
+
+		// Rate limiter ketat untuk endpoint auth publik (anti brute-force &
+		// tebak OTP): ~10 request/menit per IP, burst 5. Satu instance dibagi
+		// ke semua endpoint sensitif agar kuota tidak bisa dipecah antar-endpoint.
+		authLimiter := middleware.NewIPRateLimiter(rate.Every(6*time.Second), 5)
+		authRL := authLimiter.Middleware()
+
+		auth.POST("/login", authRL, authController.Login)
 		auth.POST("/refresh", authController.RefreshToken)
 		auth.POST("/logout", authController.Logout)
-		auth.POST("/cek-user-mobile", authController.CekUserMobile)
+		auth.POST("/cek-user-mobile", authRL, authController.CekUserMobile)
 
-		auth.POST("/aktivasi-akun", authController.AktivasiAkun)
+		auth.POST("/aktivasi-akun", authRL, authController.AktivasiAkun)
 		auth.POST("/deactivate-akun", authController.DeactivateAkun)
 		auth.POST("/generate-reactivate-akun", authController.GenerateReactivateAkun)
-		auth.POST("/reactivate-akun", authController.ReactivateAkun)
+		auth.POST("/reactivate-akun", authRL, authController.ReactivateAkun)
 
-		auth.POST("/forget-password/send-email", authController.SendEmailForgetPassword)
-		auth.POST("/forget-password/verifikasi-otp", authController.VerifikasiOTP)
-		auth.POST("/forget-password/reset-password", authController.ResetPassword)
+		auth.POST("/forget-password/send-email", authRL, authController.SendEmailForgetPassword)
+		auth.POST("/forget-password/verifikasi-otp", authRL, authController.VerifikasiOTP)
+		auth.POST("/forget-password/reset-password", authRL, authController.ResetPassword)
 
 		authProtected := auth.Group("", middleware.RequireAuth(db))
 		authProtected.GET("/me", authController.Me)
@@ -73,6 +82,8 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 	bsuParam           := middleware.RequireSameBankParam("bsu_id")
 	// BSI staff boleh akses data bank lain (BSU di bawahnya) tanpa ownership check
 	bankParamOrBSI     := middleware.RequireSameBankParam("bank_id", models.AdminBSI, models.PetugasBSI)
+	// Nasabah hanya boleh mengakses data nasabah miliknya sendiri (role lain di-skip)
+	sameNasabah        := middleware.RequireSameNasabah(db, "nasabah_id")
 
 	// ─── Bank ───────────────────────────────────────────────────────────────────
 	bank := r.Group("/bank", requireAuth)
@@ -189,11 +200,11 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 		profilController := controllers.NewProfilController(db, cfStorage)
 		profil.GET("/bank-sampah/:bank_id", nonNasabah, bankParamOrBSI, profilController.GetProfilBankSampah)
 		profil.GET("/bank-sampah/:bank_id/history", allAdmin, bankParamOrBSI, profilController.GetHistoryAkunBank)
-		profil.GET("/nasabah/:nasabah_id", profilController.GetProfilNasabah)
+		profil.GET("/nasabah/:nasabah_id", sameNasabah, profilController.GetProfilNasabah)
 		profil.PATCH("/nasabah/aktivasi/:nasabah_id", allAdmin, profilController.AktivasiNasabah)
 		profil.DELETE("/bank-sampah/:bank_id", superadminRole, profilController.DeleteBankSampah)
 		profil.GET("/:user_id", profilController.GetProfilUser)
-		profil.GET("/detail-nasabah/:nasabah_id", profilController.GetDetailNasabah)
+		profil.GET("/detail-nasabah/:nasabah_id", sameNasabah, profilController.GetDetailNasabah)
 		profil.GET("/detail-petugas/:petugas_id", nonNasabah, profilController.GetDetailPetugas)
 		profil.GET("/detail-bank/:bank_id", middleware.RequireRole(models.AdminBSI, models.PetugasBSI, models.AdminBSU, models.PetugasBSU, models.AdminBSM, models.PetugasBSM, models.RoleNasabah), bankParamOrBSI, profilController.DetailBankSampah)
 	}
@@ -293,6 +304,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 		jadwal.GET("/get-all", nonNasabah, jadwalController.GetAllJadwal)
 		jadwal.GET("/get-jadwal/:bank_id", allStaff, bankParamOrBSI, jadwalController.GetJadwalBank)
 		jadwal.POST("/add-jadwal/:bank_id", allAdmin, bankParam, jadwalController.AddNewJadwal)
+		jadwal.POST("/add-jadwal-batch/:bank_id", allAdmin, bankParam, jadwalController.AddJadwalBatch)
 		jadwal.DELETE("/delete-jadwal/:jadwal_id", allAdmin, jadwalController.DeleteJadwal)
 		jadwal.PATCH("/update-jadwal/:jadwal_id", allAdmin, jadwalController.UpdateJadwal)
 	}
@@ -316,8 +328,8 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 		dashboardController := controllers.NewDashboardController(db)
 		dashboard.GET("/petugas/:bank_id", petugasAll, bankParam, dashboardController.GetDashboardPetugas)
 		dashboard.GET("/saldo-bank/:bank_id", allStaff, bankParamOrBSI, dashboardController.GetSaldoBank)
-		dashboard.GET("/saldo-nasabah/:nasabah_id", middleware.RequireRole(models.RoleNasabah, models.AdminBSI, models.AdminBSU, models.AdminBSM), dashboardController.GetSaldoNasabah)
-		dashboard.GET("/mutasi-nasabah/:nasabah_id", nasabahRole, dashboardController.MutasiSaldoNasabah)
+		dashboard.GET("/saldo-nasabah/:nasabah_id", middleware.RequireRole(models.RoleNasabah, models.AdminBSI, models.AdminBSU, models.AdminBSM), sameNasabah, dashboardController.GetSaldoNasabah)
+		dashboard.GET("/mutasi-nasabah/:nasabah_id", nasabahRole, sameNasabah, dashboardController.MutasiSaldoNasabah)
 		dashboard.GET("/mutasi-bank/:bank_id", allAdmin, bankParamOrBSI, dashboardController.MutasiSaldoBank)
 		dashboard.POST("/catat-manual/:bank_id", allAdmin, bankParam, dashboardController.CatatManualMutasiBank)
 		dashboard.GET("/total-saldo-all-nasabah/:bank_id", allAdmin, bankParamOrBSI, dashboardController.TotalSaldoAllNasabah)
@@ -334,7 +346,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 		setoran.POST("/preview/:penimbangan_id/:nasabah_id", petugasAll, setoranController.PreviewSetoranNasabah)
 		setoran.POST("/input/:penimbangan_id/:nasabah_id/:admin_id", petugasAll, setoranController.InputSetoranNasabah)
 		setoran.GET("/detail/:setoran_id", setoranController.DetailSetoranNasabah)
-		setoran.GET("/riwayat/:nasabah_id", setoranController.ListRiwayatSetoranNasabah)
+		setoran.GET("/riwayat/:nasabah_id", sameNasabah, setoranController.ListRiwayatSetoranNasabah)
 	}
 
 	// ─── Pengangkutan ───────────────────────────────────────────────────────────
@@ -398,7 +410,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 		bagihasil.POST("/preview/:penjualan_id/:bank_id", petugasBSIBSM, bankParam, bagihasilController.PreviewHitungBagiHasil)
 		bagihasil.POST("/submit/:penjualan_id/:bank_id", petugasBSIBSM, bankParam, bagihasilController.SubmitBagiHasil)
 		bagihasil.GET("/detail/:penjualan_id", staffBSIBSM, bagihasilController.GetDetailBagiHasil)
-		bagihasil.GET("/list-bh-nasabah/:nasabah_id", bagihasilController.GetListBagiHasilPerNasabah)
+		bagihasil.GET("/list-bh-nasabah/:nasabah_id", sameNasabah, bagihasilController.GetListBagiHasilPerNasabah)
 		bagihasil.GET("/detail-bh-nasabah/:penerima_id", bagihasilController.GetDetailBagiHasilNasabah)
 		bagihasil.GET("/list-bh-bsu/:bsu_id", staffBSIBSU, bagihasilController.GetListBagiHasilPerBsu)
 		bagihasil.GET("/detail-bh-bsu/:penerima_id", staffBSIBSU, bagihasilController.GetDetailBagiHasilBSU)
@@ -424,7 +436,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 	tabunganSampah := r.Group("/tabungan-sampah", requireAuth)
 	{
 		tabunganSampahController := controllers.NewTabunganSampahController(db)
-		tabunganSampah.GET("/buku-tabungan/:nasabah_id", nasabahRole, tabunganSampahController.GetBukuTabunganSampahNasabah)
+		tabunganSampah.GET("/buku-tabungan/:nasabah_id", nasabahRole, sameNasabah, tabunganSampahController.GetBukuTabunganSampahNasabah)
 		tabunganSampah.GET("/buku-tabungan-bsu/:bsu_id", staffBSU, bsuParam, tabunganSampahController.GetBukuTabunganSampahBSU)
 	}
 
@@ -434,11 +446,11 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 		penarikanRepo := repositories.NewPenarikanRepo(db)
 		penarikanSvc := services.NewPenarikanService(db, penarikanRepo, notifSvc)
 		penarikanController := controllers.NewPenarikanController(penarikanSvc, cfStorage)
-		penarikan.POST("/ajukan/:nasabah_id", nasabahRole, penarikanController.AjukanPenarikan)
-		penarikan.POST("/preview/:nasabah_id", nasabahRole, penarikanController.PreviewAjukanPenarikan)
+		penarikan.POST("/ajukan/:nasabah_id", nasabahRole, sameNasabah, penarikanController.AjukanPenarikan)
+		penarikan.POST("/preview/:nasabah_id", nasabahRole, sameNasabah, penarikanController.PreviewAjukanPenarikan)
 		penarikan.POST("/konfirmasi/:penarikan_id", petugasAll, penarikanController.KonfirmasiPenarikanNasabah)
 		penarikan.GET("/list-bank/:bank_id", allStaff, bankParamOrBSI, penarikanController.ListPenarikanNasabahByBank)
-		penarikan.GET("/list/:nasabah_id", penarikanController.ListPenarikanNasabah)
+		penarikan.GET("/list/:nasabah_id", sameNasabah, penarikanController.ListPenarikanNasabah)
 		penarikan.GET("/detail/:penarikan_id", penarikanController.DetailPenarikanNasabah)
 		penarikan.PATCH("/batal/:penarikan_id", nasabahRole, penarikanController.BatalPenarikan)
 	}
@@ -454,7 +466,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 	}
 
 	// ─── Info Mobile ────────────────────────────────────────────────────────────
-	infoMobile := r.Group("/info-mobile", requireAuth, nasabahRole)
+	infoMobile := r.Group("/info-mobile", requireAuth, nasabahRole, sameNasabah)
 	{
 		infoMobileController := controllers.NewInfoMobileController(db)
 		infoMobile.GET("/jadwal-penimbangan/:nasabah_id", infoMobileController.JadwalPenimbanganForNasabah)
@@ -466,10 +478,14 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 	{
 		laporanController := controllers.NewLaporanController(db)
 		laporan.GET("/penimbangan/:penimbangan_id", allAdmin, laporanController.DownloadLaporanPenimbangan)
+		laporan.GET("/penimbangan/rekap/:bank_id", allAdmin, bankParam, laporanController.DownloadLaporanRekapPenimbangan)
 		laporan.GET("/penjualan/:penjualan_id", adminBSIBSM, laporanController.DownloadLaporanPenjualan)
+		laporan.GET("/penjualan/rekap/:bank_id", adminBSIBSM, bankParam, laporanController.DownloadLaporanRekapPenjualan)
 		laporan.GET("/nasabah/:bank_id", allAdmin, bankParamOrBSI, laporanController.DownloadLaporanNasabah)
 		laporan.GET("/pengangkutan/:pengangkutan_id", middleware.RequireRole(models.AdminBSI, models.AdminBSU), laporanController.DownloadLaporanPengangkutan)
 		laporan.GET("/bagi-hasil/:bagi_hasil_id", adminBSIBSM, laporanController.DownloadLaporanBagiHasil)
+		laporan.GET("/bagi-hasil/rekap/:bank_id", middleware.RequireRole(models.AdminBSM), bankParam, laporanController.DownloadLaporanRekapBagiHasil)
+		laporan.GET("/penarikan/rekap/:bank_id", allAdmin, bankParam, laporanController.DownloadLaporanRekapPenarikan)
 		laporan.GET("/bank-sampah", superadminRole, laporanController.DownloadLaporanBankSampah)
 		laporan.GET("/katalog-sampah/:bank_id", allAdmin, bankParam, laporanController.DownloadLaporanKatalogSampah)
 		laporan.GET("/katalog-sembako/:bank_id", allAdmin, bankParam, laporanController.DownloadLaporanKatalogSembako)
