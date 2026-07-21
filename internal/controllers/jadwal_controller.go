@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -92,6 +93,38 @@ func (jc *JadwalController) AddNewJadwal(c *gin.Context) {
 		req.TargetBankID = ""
 	}
 
+	// Cek bentrok untuk jadwal penimbangan spesial: kalau tanggalnya jatuh pada
+	// hari + minggu yang punya jadwal rutin, atau ada jadwal spesial lain di tanggal
+	// yang sama, dengan jam beririsan → tolak.
+	if req.JenisJadwal == models.JadwalPenimbangan && !req.IsRutin {
+		normJam := func(t string) string {
+			if len(t) >= 5 {
+				return t[:5]
+			}
+			return t
+		}
+		overlap := func(aMulai, aSelesai, bMulai, bSelesai string) bool {
+			return aMulai < bSelesai && bMulai < aSelesai
+		}
+		newMulai, newSelesai := normJam(req.JamMulai), normJam(req.JamSelesai)
+
+		var existing []models.Jadwal
+		jc.db.Where("bank_id = ? AND jenis_jadwal = ?", bankID, models.JadwalPenimbangan).Find(&existing)
+		for _, e := range existing {
+			isRutin := e.IsRutin != nil && *e.IsRutin
+			cocok := false
+			if isRutin {
+				cocok = e.Hari == req.Hari && (e.MingguKe == req.MingguKe || e.MingguKe == 0)
+			} else {
+				cocok = !e.Tanggal.IsZero() && e.Tanggal.Format("2006-01-02") == tanggal.Format("2006-01-02")
+			}
+			if cocok && overlap(normJam(e.JamMulai), normJam(e.JamSelesai), newMulai, newSelesai) {
+				c.JSON(http.StatusConflict, gin.H{"error": "Jadwal spesial bentrok dengan jadwal penimbangan yang sudah ada pada tanggal tersebut"})
+				return
+			}
+		}
+	}
+
 	newJadwal := models.Jadwal{
 		BankID:            bankID,
 		Hari:              req.Hari,
@@ -113,6 +146,120 @@ func (jc *JadwalController) AddNewJadwal(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Jadwal berhasil ditambahkan", "data": newJadwal})
+}
+
+// AddJadwalBatch menambahkan banyak jadwal penimbangan rutin sekaligus.
+// Jika ada satu saja jadwal yang bentrok (hari & minggu sama, jam beririsan)
+// dengan jadwal yang sudah ada, seluruh permintaan ditolak dan tidak ada yang disimpan.
+func (jc *JadwalController) AddJadwalBatch(c *gin.Context) {
+	bankID := c.Param("bank_id")
+	if bankID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Bank ID wajib diisi"})
+		return
+	}
+
+	type BatchItem struct {
+		Hari       models.HariEnum `json:"hari"`
+		MingguKe   int             `json:"minggu_ke"`
+		JamMulai   string          `json:"jam_mulai"`
+		JamSelesai string          `json:"jam_selesai"`
+	}
+	type AddJadwalBatchRequest struct {
+		AdminID string      `json:"admin_id"`
+		Items   []BatchItem `json:"items"`
+	}
+
+	var req AddJadwalBatchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Format request tidak valid"})
+		return
+	}
+	if len(req.Items) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Minimal satu jadwal harus dikirim"})
+		return
+	}
+
+	// Normalisasi jam ke "HH:MM" karena DB bisa menyimpan "HH:MM:SS".
+	normJam := func(t string) string {
+		if len(t) >= 5 {
+			return t[:5]
+		}
+		return t
+	}
+
+	// Ambil jadwal penimbangan rutin yang sudah ada di bank ini untuk cek bentrok.
+	var existing []models.Jadwal
+	if err := jc.db.
+		Where("bank_id = ? AND jenis_jadwal = ? AND is_rutin = ?", bankID, models.JadwalPenimbangan, true).
+		Find(&existing).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memeriksa jadwal yang sudah ada"})
+		return
+	}
+
+	// Slot jam yang sudah terpakai: existing + yang sudah diterima dalam request ini.
+	type slot struct {
+		Hari     models.HariEnum
+		MingguKe int
+		Mulai    string
+		Selesai  string
+	}
+	occupied := make([]slot, 0, len(existing)+len(req.Items))
+	for _, e := range existing {
+		occupied = append(occupied, slot{e.Hari, e.MingguKe, normJam(e.JamMulai), normJam(e.JamSelesai)})
+	}
+
+	// minggu_ke 0 = setiap minggu → bentrok dengan minggu apa pun di hari yang sama.
+	weeksOverlap := func(a, b int) bool { return a == b || a == 0 || b == 0 }
+	// Jam bentrok bila [aMulai,aSelesai) beririsan dengan [bMulai,bSelesai) (format HH:MM).
+	timesOverlap := func(aMulai, aSelesai, bMulai, bSelesai string) bool {
+		return aMulai < bSelesai && bMulai < aSelesai
+	}
+
+	isActive := true
+	isRutin := true
+
+	jadwals := make([]models.Jadwal, 0, len(req.Items))
+	for _, it := range req.Items {
+		if it.MingguKe < 0 || it.MingguKe > 5 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Minggu ke harus antara 0 dan 5"})
+			return
+		}
+		if it.JamMulai == "" || it.JamSelesai == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Jam mulai dan jam selesai wajib diisi"})
+			return
+		}
+
+		mulai := normJam(it.JamMulai)
+		selesai := normJam(it.JamSelesai)
+		// Bentrok dengan jadwal lain di hari & minggu yang sama + jam beririsan → tolak semua.
+		for _, o := range occupied {
+			if o.Hari == it.Hari && weeksOverlap(o.MingguKe, it.MingguKe) && timesOverlap(o.Mulai, o.Selesai, mulai, selesai) {
+				c.JSON(http.StatusConflict, gin.H{"error": "Jadwal hari " + string(it.Hari) + " jam " + it.JamMulai + "–" + it.JamSelesai + " bentrok dengan jadwal yang sudah ada"})
+				return
+			}
+		}
+		occupied = append(occupied, slot{it.Hari, it.MingguKe, mulai, selesai})
+
+		jadwals = append(jadwals, models.Jadwal{
+			JadwalID:    uuid.New(),
+			BankID:      bankID,
+			Hari:        it.Hari,
+			MingguKe:    it.MingguKe,
+			JamMulai:    it.JamMulai,
+			JamSelesai:  it.JamSelesai,
+			JenisJadwal: models.JadwalPenimbangan,
+			IsActive:    &isActive,
+			IsRutin:     &isRutin,
+			CreatedBy:   req.AdminID,
+		})
+	}
+
+	if err := jc.db.Create(&jadwals).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyimpan jadwal"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Jadwal berhasil ditambahkan"})
 }
 
 func (jc *JadwalController) GetJadwalBank(c *gin.Context) {

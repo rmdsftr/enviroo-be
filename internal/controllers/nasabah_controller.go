@@ -138,7 +138,7 @@ func (nc *NasabahController) AddNewNasabah(c *gin.Context) {
 	}
 
 	riwayatRupiah := models.RiwayatArusSaldo{
-		RiwayatSaldoID: utils.GenerateID("RWY"),
+		RiwayatSaldoID: utils.GenerateID("RS"),
 		RekeningID:     &saldoRupiah.RekeningID,
 		NominalSebelum: 0,
 		NominalSesudah: req.SaldoRupiah,
@@ -168,7 +168,7 @@ func (nc *NasabahController) AddNewNasabah(c *gin.Context) {
 	}
 
 	riwayatPoin := models.RiwayatArusSaldo{
-		RiwayatSaldoID: utils.GenerateID("RWY"),
+		RiwayatSaldoID: utils.GenerateID("RS"),
 		RekeningID:     &saldoPoin.RekeningID,
 		NominalSebelum: 0,
 		NominalSesudah: req.SaldoPoin,
@@ -415,7 +415,7 @@ func (nc *NasabahController) AddNewNasabahOldUser(c *gin.Context) {
 	}
 
 	riwayatRupiah := models.RiwayatArusSaldo{
-		RiwayatSaldoID: utils.GenerateID("RWY"),
+		RiwayatSaldoID: utils.GenerateID("RS"),
 		RekeningID:     &saldoRupiah.RekeningID,
 		NominalSebelum: 0,
 		NominalSesudah: req.SaldoRupiah,
@@ -445,7 +445,7 @@ func (nc *NasabahController) AddNewNasabahOldUser(c *gin.Context) {
 	}
 
 	riwayatPoin := models.RiwayatArusSaldo{
-		RiwayatSaldoID: utils.GenerateID("RWY"),
+		RiwayatSaldoID: utils.GenerateID("RS"),
 		RekeningID:     &saldoPoin.RekeningID,
 		NominalSebelum: 0,
 		NominalSesudah: req.SaldoPoin,

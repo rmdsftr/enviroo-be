@@ -131,6 +131,34 @@ func RequireSameBankParam(paramName string, bypassRoles ...models.RoleAdmin) gin
 	}
 }
 
+// RequireSameNasabah memastikan nasabah_id di URL param benar-benar milik user di token.
+// Token hanya membawa UserID (bukan nasabah_id), jadi kepemilikan diverifikasi ke database.
+// Role selain nasabah (admin/petugas/superadmin) di-skip — akses mereka sudah diatur
+// oleh middleware role/bank lainnya. Harus dipasang setelah RequireAuth.
+func RequireSameNasabah(db *gorm.DB, paramName string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims, ok := GetClaims(c)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Tidak terautentikasi"})
+			return
+		}
+		// Hanya nasabah yang dibatasi kepemilikan; role lain diteruskan.
+		if claims.Role != models.RoleNasabah {
+			c.Next()
+			return
+		}
+		var count int64
+		db.Model(&models.Nasabah{}).
+			Where("nasabah_id = ? AND user_id = ?", c.Param(paramName), claims.UserID).
+			Count(&count)
+		if count == 0 {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Akses ditolak. Anda tidak memiliki akses ke data nasabah ini."})
+			return
+		}
+		c.Next()
+	}
+}
+
 // GetClaims adalah helper untuk mengambil claims dari context Gin.
 func GetClaims(c *gin.Context) (*utils.JWTClaims, bool) {
 	raw, exists := c.Get(ClaimsKey)

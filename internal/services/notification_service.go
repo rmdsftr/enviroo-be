@@ -299,28 +299,6 @@ func (s *notifikasiService) NotifPengajuanDitolak(ctx context.Context, userID, f
 	})
 }
 
-// ----------------------------------------------------------------
-// Util
-// ----------------------------------------------------------------
-
-// formatRupiah memformat angka ke format ribuan Indonesia.
-// Contoh: 1500000 → "1.500.000"
-func formatRupiah(nominal int64) string {
-	s := fmt.Sprintf("%d", nominal)
-	n := len(s)
-	if n <= 3 {
-		return s
-	}
-	result := ""
-	for i, c := range s {
-		if i > 0 && (n-i)%3 == 0 {
-			result += "."
-		}
-		result += string(c)
-	}
-	return result
-}
-
 func (s *notifikasiService) NotifPengangkutanBerhasil(ctx context.Context, userID, fcmToken string, totalJenisSampah int, namaBSI string, refID string) error {
 	return s.Kirim(ctx, KirimNotifRequest{
 		UserID:     userID,

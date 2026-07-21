@@ -15,6 +15,7 @@ type Config struct {
 	DBUser      string
 	DBPassword  string
 	DBName      string
+	DBSSLMode   string
 
 	// Cloudflare
 	CFAccountID       string
@@ -46,8 +47,9 @@ func LoadConfig() *Config {
 		DBHost:      getEnv("DB_HOST", "localhost"),
 		DBPort:      getEnv("DB_PORT", "5432"),
 		DBUser:      getEnv("DB_USER", "postgres"),
-		DBPassword:  getEnv("DB_PASSWORD", "behelhijau"),
+		DBPassword:  getEnv("DB_PASSWORD", ""),
 		DBName:      getEnv("DB_NAME", "enviroo"),
+		DBSSLMode:   getEnv("DB_SSLMODE", "require"),
 		CFAccountID:       getEnv("CF_ACCOUNT_ID", ""),
 		CFAccessKeyID:     getEnv("CF_ACCESS_KEY_ID", ""),
 		CFSecretAccessKey: getEnv("CF_SECRET_ACCESS_KEY", ""),
