@@ -34,7 +34,8 @@ func NewPenarikanRepo(db *gorm.DB) *PenarikanRepo {
 
 func (r *PenarikanRepo) FindNasabahAktif(nasabahID string) (*models.Nasabah, error) {
 	var n models.Nasabah
-	err := r.db.Where("nasabah_id = ? AND status_nasabah = ?", nasabahID, models.Aktif).First(&n).Error
+	err := r.db.Preload("Bank").
+		Where("nasabah_id = ? AND status_nasabah = ?", nasabahID, models.Aktif).First(&n).Error
 	return &n, err
 }
 

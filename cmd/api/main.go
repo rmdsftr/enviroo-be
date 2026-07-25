@@ -76,10 +76,11 @@ func main() {
 
 	r := gin.Default()
 
-	// Percaya proxy lokal (nginx) agar c.ClientIP() membaca IP asli dari
-	// X-Forwarded-For, bukan IP proxy. Penting agar rate limiting per-IP akurat
-	// di produksi. Di lokal (tanpa proxy) tetap aman.
-	if err := r.SetTrustedProxies([]string{"127.0.0.1"}); err != nil {
+	// Percaya proxy nginx agar c.ClientIP() membaca IP asli dari X-Forwarded-For,
+	// bukan IP proxy. Penting agar rate limiting per-IP akurat di produksi.
+	// 127.0.0.1: nginx di host yang sama; 172.16.0.0/12: gateway bridge Docker
+	// (saat app di container di belakang port yang di-publish).
+	if err := r.SetTrustedProxies([]string{"127.0.0.1", "172.16.0.0/12"}); err != nil {
 		log.Printf("Warning: gagal set trusted proxies: %v", err)
 	}
 

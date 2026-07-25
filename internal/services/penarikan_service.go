@@ -137,6 +137,17 @@ func NewPenarikanService(db *gorm.DB, repo PenarikanRepoIface, notifSvc Notifika
 	return &penarikanService{db: db, repo: repo, notifSvc: notifSvc}
 }
 
+// resolveKatalogBankID menentukan bank_id yang dipakai untuk lookup katalog_sembako.
+// BSU tidak punya katalog sendiri — katalog_sembako-nya tersimpan dengan bank_id
+// milik BSI induk (lihat SembakoController.GetSembakoBank), sementara stok tetap
+// per-BSU. Nasabah BSI/BSM pakai bank_id sendiri.
+func resolveKatalogBankID(nasabah *models.Nasabah) string {
+	if nasabah.Bank.JenisBank == models.BSU && nasabah.Bank.ParentBankID != nil {
+		return *nasabah.Bank.ParentBankID
+	}
+	return nasabah.BankID
+}
+
 // ── Preview ────────────────────────────────────────────────────────────────
 
 func (s *penarikanService) Preview(nasabahID string, req AjukanPenarikanReq) (*PreviewResult, error) {
@@ -163,9 +174,10 @@ func (s *penarikanService) Preview(nasabahID string, req AjukanPenarikanReq) (*P
 	var itemsSembako []PreviewSembakoItem
 
 	if reward.NamaReward == models.RewardEnumSembako {
+		katalogBankID := resolveKatalogBankID(nasabah)
 		var totalPoin float64
 		for _, item := range req.ItemSembako {
-			sembako, err := s.repo.FindSembako(item.SembakoID, nasabah.BankID)
+			sembako, err := s.repo.FindSembako(item.SembakoID, katalogBankID)
 			if err != nil {
 				return nil, errNotFound("Barang sembako tidak ditemukan: " + item.SembakoID)
 			}
@@ -234,9 +246,10 @@ func (s *penarikanService) Ajukan(nasabahID string, req AjukanPenarikanReq) (*Aj
 		var itemsToSave []models.DetailPenarikanSembako
 
 		if reward.NamaReward == models.RewardEnumSembako {
+			katalogBankID := resolveKatalogBankID(nasabah)
 			var totalPoin float64
 			for _, item := range req.ItemSembako {
-				sembako, err := s.repo.LockSembako(tx, item.SembakoID, nasabah.BankID)
+				sembako, err := s.repo.LockSembako(tx, item.SembakoID, katalogBankID)
 				if err != nil {
 					return errNotFound("Barang sembako tidak ditemukan: " + item.SembakoID)
 				}
