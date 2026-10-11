@@ -17,17 +17,14 @@ type Config struct {
 	DBName      string
 	DBSSLMode   string
 
-	// Cloudflare
 	CFAccountID       string
 	CFAccessKeyID     string
 	CFSecretAccessKey string
 	CFBucket          string
 	CFPublicURL       string
 
-	// Firebase / FCM
 	FCMCredentialsFile string
 
-	// SMTP Email
 	SMTPHost       string
 	SMTPPort       string
 	SMTPEmail      string

@@ -2,7 +2,6 @@ package models
 
 import "time"
 
-// ENUM
 type RoleUserEnum string
 
 const (
@@ -18,25 +17,28 @@ const (
 	TujuanResetPassword TujuanEnum = "reset_password"
 )
 
-// MODEL
 type AktivasiAkun struct {
-	AktivasiID string        `gorm:"column:aktivasi_id;primaryKey;size:100"`
-	UserID     string        `gorm:"column:user_id;size:100;not null;index"`
-	AsRole     RoleUserEnum  `gorm:"column:as_role;type:role_user_enum"`
+	AktivasiID string       `gorm:"column:aktivasi_id;primaryKey;size:29"`
+	UserID     string       `gorm:"column:user_id;size:25;not null;index"`
+	AsRole     RoleUserEnum `gorm:"column:as_role;type:role_user_enum;not null"`
 
-	Token      string        `gorm:"column:token;size:255;not null;index"`
+	NasabahID *string `gorm:"column:nasabah_id;type:varchar(15)"`
+	AdminID   *string `gorm:"column:admin_id;type:varchar(13)"`
 
-	IsUsed     bool          `gorm:"column:is_used;default:false"`
-	UsedAt     *time.Time    `gorm:"column:used_at"`
+	Token string `gorm:"column:token;size:255;not null;index"`
 
-	ExpiredAt  time.Time     `gorm:"column:expired_at;not null"`
-	CreatedAt  time.Time     `gorm:"column:created_at;autoCreateTime"`
+	IsUsed bool       `gorm:"column:is_used;default:false"`
+	UsedAt *time.Time `gorm:"column:used_at"`
 
-	GeneratedBy string       `gorm:"column:generated_by;size:100"`
-	Tujuan      TujuanEnum   `gorm:"column:tujuan;type:tujuan_enum"`
+	ExpiredAt time.Time `gorm:"column:expired_at;not null"`
+	CreatedAt time.Time `gorm:"column:created_at;autoCreateTime"`
 
-	// Relasi (optional)
-	User        *User        `gorm:"foreignKey:UserID;references:UserID;constraint:OnDelete:CASCADE"`
+	GeneratedBy string     `gorm:"column:generated_by;type:varchar(25);not null"`
+	Tujuan      TujuanEnum `gorm:"column:tujuan;type:tujuan_enum;not null"`
+
+	User    *User    `gorm:"foreignKey:UserID;references:UserID;constraint:OnDelete:CASCADE"`
+	Nasabah *Nasabah `gorm:"foreignKey:NasabahID;references:NasabahID;constraint:OnDelete:CASCADE"`
+	Admin   *Admin   `gorm:"foreignKey:AdminID;references:AdminID;constraint:OnDelete:CASCADE"`
 }
 
 func (AktivasiAkun) TableName() string {

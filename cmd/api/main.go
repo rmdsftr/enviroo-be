@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"enviroo-be/internal/adapters/fcm"
+	"enviroo-be/internal/adapters/mailer"
+	"enviroo-be/internal/adapters/storage"
 	"enviroo-be/internal/config"
 	"enviroo-be/internal/database"
 	"enviroo-be/internal/middleware"
+	"enviroo-be/internal/repositories"
 	"enviroo-be/internal/routes"
+	"enviroo-be/internal/services"
 	"enviroo-be/internal/workers"
-	"enviroo-be/pkg/storage"
-	"enviroo-be/pkg/utils"
 	"log"
 	"os"
 	"os/signal"
@@ -24,8 +27,6 @@ func main() {
 
 	cfg := config.LoadConfig()
 
-	// Validasi JWT secret: tolak jalan jika kosong, terlalu pendek, atau masih
-	// memakai nilai default lemah bawaan. Mencegah token bisa dipalsukan.
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if len(jwtSecret) < 32 ||
 		jwtSecret == "enviroo-jwt-secret-ganti-di-production" ||
@@ -39,23 +40,16 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
-	// ── Start background worker ──────────────────────────────────────────
-	penarikanWorker := workers.NewPenarikanWorker(db, 1*time.Minute)
-	penarikanWorker.Start()
-
-	penimbanganWorker := workers.NewPenimbanganWorker(db)
-	penimbanganWorker.Start()
-
 	cfStorage, err := storage.NewCloudflareStorage(cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize Cloudflare Storage: %v", err)
 	}
 
-	mailer := utils.NewMailer(cfg)
+	mail := mailer.New(cfg)
 
-	var fcmClient *utils.FCMClient
+	var fcmClient *fcm.Client
 	if cfg.FCMCredentialsFile != "" {
-		fc, err := utils.NewFCMClient(context.Background(), cfg.FCMCredentialsFile)
+		fc, err := fcm.New(context.Background(), cfg.FCMCredentialsFile)
 		if err != nil {
 			log.Printf("Warning: gagal inisialisasi FCM client: %v", err)
 		} else {
@@ -66,9 +60,16 @@ func main() {
 		log.Println("Warning: FCM_CREDENTIALS_FILE tidak diset, push notification dinonaktifkan")
 	}
 
-	// ── Start reminder worker (kirim notif jadwal pukul 07:00 setiap hari) ──
+	notifSvcWorker := services.NewNotifikasiService(repositories.NewNotifikasiRepository(db), fcmClient)
+	penimbanganSvc := services.NewPenimbanganService(db, repositories.NewPenimbanganRepo(db), notifSvcWorker)
+	penimbanganWorker := workers.NewPenimbanganWorker(penimbanganSvc)
+	penimbanganWorker.Start()
+
 	reminderWorker := workers.NewReminderWorker(db, fcmClient, 18)
 	reminderWorker.Start()
+
+	penarikanWorker := workers.NewPenarikanWorker(db, fcmClient, 1*time.Minute)
+	penarikanWorker.Start()
 
 	if cfg.Environment == "production" {
 		gin.SetMode(gin.ReleaseMode)
@@ -76,16 +77,10 @@ func main() {
 
 	r := gin.Default()
 
-	// Percaya proxy nginx agar c.ClientIP() membaca IP asli dari X-Forwarded-For,
-	// bukan IP proxy. Penting agar rate limiting per-IP akurat di produksi.
-	// 127.0.0.1: nginx di host yang sama; 172.16.0.0/12: gateway bridge Docker
-	// (saat app di container di belakang port yang di-publish).
 	if err := r.SetTrustedProxies([]string{"127.0.0.1", "172.16.0.0/12"}); err != nil {
 		log.Printf("Warning: gagal set trusted proxies: %v", err)
 	}
 
-	// Rate limiting global (in-memory, per-IP) sebagai tameng DoS/abuse umum.
-	// ~100 request/menit per IP dengan burst 50.
 	globalLimiter := middleware.NewIPRateLimiter(rate.Every(600*time.Millisecond), 50)
 	r.Use(globalLimiter.Middleware())
 
@@ -98,9 +93,8 @@ func main() {
 		MaxAge:           12 * time.Hour,
 	}))
 
-	routes.SetupRoutes(r, db, cfStorage, mailer, fcmClient)
+	routes.SetupRoutes(r, db, cfStorage, mail, fcmClient)
 
-	// ── Run Server in Goroutine ─────────────────────────────────────────
 	go func() {
 		log.Printf("Server starting on %s", cfg.ServerPort)
 		if err := r.Run(cfg.ServerPort); err != nil {
@@ -108,7 +102,6 @@ func main() {
 		}
 	}()
 
-	// ── Graceful Shutdown ────────────────────────────────────────────────
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	<-quit

@@ -6,14 +6,12 @@ import (
 	"log"
 	"time"
 
+	"enviroo-be/internal/idgen"
 	"enviroo-be/internal/models"
 	"enviroo-be/internal/repositories"
-	"enviroo-be/pkg/utils"
 
 	"gorm.io/gorm"
 )
-
-// ── Repo interface (diimplementasi oleh repositories.SetoranRepo) ──────────
 
 type SetoranRepoIface interface {
 	FindNasabahAktifWithUser(nasabahID string) (*models.Nasabah, error)
@@ -21,19 +19,17 @@ type SetoranRepoIface interface {
 	FindAdminAktif(adminID string) (*models.Admin, error)
 	FindPenimbanganAktif(penimbanganID string) (*models.Penimbangan, error)
 	FindKatalogSampah(sampahID string) (*models.KatalogSampah, error)
+	InsentifSampahDilayani(tx *gorm.DB, bankID, sampahID string) (bool, error)
 	FindBankSampah(bankID string) (*models.BankSampah, error)
 	GetDetailHeader(setoranID string) (*repositories.SetoranDetailHeader, error)
 	GetDetailItems(setoranID string) ([]repositories.SetoranDetailItem, error)
 	GetRiwayat(nasabahID, startDate, endDate string) ([]repositories.RiwayatSetoranRow, error)
-	// Transactional — caller menyediakan *gorm.DB dari db.Transaction
 	FindPenimbanganTx(tx *gorm.DB, penimbanganID string) (*models.Penimbangan, error)
 	CreateSetoran(tx *gorm.DB, s *models.SetoranNasabah) error
 	CreateDetailSetoran(tx *gorm.DB, d *models.DetailSetoranNasabah) error
 	UpsertStokSampah(tx *gorm.DB, bankID, sampahID string, qty float64) error
 	CreateTabunganSampah(tx *gorm.DB, t *models.TabunganSampah) error
 }
-
-// ── Request / Response types ───────────────────────────────────────────────
 
 type ItemSetoranReq struct {
 	SampahID string  `json:"sampah_id"`
@@ -68,22 +64,17 @@ type InputSetoranResult struct {
 }
 
 type SetoranDetail struct {
-	Header repositories.SetoranDetailHeader  `json:"header"`
-	Items  []repositories.SetoranDetailItem  `json:"items"`
+	Header repositories.SetoranDetailHeader `json:"header"`
+	Items  []repositories.SetoranDetailItem `json:"items"`
 }
 
-// ── Service interface ──────────────────────────────────────────────────────
-
 type SetoranService interface {
-	// Verifikasi selalu mengembalikan result, tidak pernah error — caller menulis 200.
 	Verifikasi(qrData, adminID string) *VerifikasiResult
 	Preview(penimbanganID, nasabahID string, items []ItemSetoranReq) (*PreviewSetoranResult, error)
 	Input(penimbanganID, nasabahID, adminID, via, buktiURL string, items []ItemSetoranReq) (*InputSetoranResult, error)
 	GetDetail(setoranID string) (*SetoranDetail, error)
 	GetRiwayat(nasabahID, startDate, endDate string) ([]repositories.RiwayatSetoranRow, error)
 }
-
-// ── Implementation ─────────────────────────────────────────────────────────
 
 type setoranService struct {
 	db       *gorm.DB
@@ -157,6 +148,16 @@ func (s *setoranService) Preview(penimbanganID, nasabahID string, items []ItemSe
 		if err != nil {
 			return nil, errBadRequest("Sampah tidak ditemukan: " + item.SampahID)
 		}
+
+		dilayani, err := s.repo.InsentifSampahDilayani(nil, nasabah.BankID, item.SampahID)
+		if err != nil {
+			return nil, errInternal("Gagal memeriksa jenis insentif sampah: " + err.Error())
+		}
+		if !dilayani {
+			return nil, errBadRequest("Bank sampah sudah tidak menerima setoran sampah untuk " +
+				katalog.Sarok.NamaSampah)
+		}
+
 		previews = append(previews, SetoranPreviewItem{
 			SampahID:    item.SampahID,
 			NamaSampah:  katalog.Sarok.NamaSampah,
@@ -188,9 +189,9 @@ func (s *setoranService) Input(penimbanganID, nasabahID, adminID, via, buktiURL 
 		return nil, errForbidden("Petugas tidak boleh mengisi setoran sampah sebagai nasabah sendiri")
 	}
 
-	setoranID := utils.GenerateID("STR")
 	totalItem := len(items)
 	var bankID string
+	var setoranID string
 
 	txErr := s.db.Transaction(func(tx *gorm.DB) error {
 		penimbangan, err := s.repo.FindPenimbanganTx(tx, penimbanganID)
@@ -206,13 +207,17 @@ func (s *setoranService) Input(penimbanganID, nasabahID, adminID, via, buktiURL 
 			return errForbidden("Nasabah tidak terdaftar di bank sampah ini")
 		}
 
+		setoranID, err = idgen.GenerateSetoranID(tx, penimbanganID)
+		if err != nil {
+			return errInternal("Gagal generate setoran ID: " + err.Error())
+		}
+
 		setoran := &models.SetoranNasabah{
 			SetoranID:      setoranID,
 			AdminID:        adminID,
 			NasabahID:      nasabahID,
 			PenimbanganID:  penimbanganID,
 			TotalItem:      totalItem,
-			StatusSetoran:  models.StatusBerhasil,
 			BuktiViaManual: buktiURL,
 		}
 		if err := s.repo.CreateSetoran(tx, setoran); err != nil {
@@ -220,6 +225,14 @@ func (s *setoranService) Input(penimbanganID, nasabahID, adminID, via, buktiURL 
 		}
 
 		for _, item := range items {
+			dilayani, err := s.repo.InsentifSampahDilayani(tx, bankID, item.SampahID)
+			if err != nil {
+				return errInternal("Gagal memeriksa jenis insentif sampah: " + err.Error())
+			}
+			if !dilayani {
+				return errBadRequest("Bank sampah sudah tidak menerima setoran untuk jenis insentif sampah " + item.SampahID)
+			}
+
 			detail := &models.DetailSetoranNasabah{
 				SetoranID: setoranID,
 				SampahID:  item.SampahID,
@@ -233,7 +246,10 @@ func (s *setoranService) Input(penimbanganID, nasabahID, adminID, via, buktiURL 
 				return errInternal("Gagal mengupdate stok sampah")
 			}
 
-			tabunganID := utils.GenerateID("TBG")
+			tabunganID, err := idgen.GenerateTabunganID(tx, setoranID)
+			if err != nil {
+				return errInternal("Gagal generate tabungan ID: " + err.Error())
+			}
 			tabungan := &models.TabunganSampah{
 				TabunganID: tabunganID,
 				NasabahID:  &nasabahID,

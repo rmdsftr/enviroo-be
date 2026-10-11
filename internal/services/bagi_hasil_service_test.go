@@ -5,6 +5,7 @@ import (
 	"enviroo-be/internal/services"
 	"enviroo-be/internal/services/mocks"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -22,7 +23,7 @@ func newTestDB(t *testing.T) (*gorm.DB, sqlmock.Sqlmock) {
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
-	// GORM MySQL driver queries VERSION() on connect
+
 	dbMock.ExpectQuery("SELECT VERSION()").
 		WillReturnRows(sqlmock.NewRows([]string{"VERSION()"}).AddRow("8.0.0"))
 	gdb, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB}), &gorm.Config{
@@ -34,8 +35,12 @@ func newTestDB(t *testing.T) (*gorm.DB, sqlmock.Sqlmock) {
 	return gdb, dbMock
 }
 
-func expectTx(m sqlmock.Sqlmock) {
+func expectTx(m sqlmock.Sqlmock, penerimaCount int) {
 	m.ExpectBegin()
+	for i := 0; i < penerimaCount; i++ {
+		m.ExpectQuery("SELECT").
+			WillReturnRows(sqlmock.NewRows([]string{"penerima_id"}))
+	}
 	m.ExpectCommit()
 }
 
@@ -44,7 +49,17 @@ func expectTxRollback(m sqlmock.Sqlmock) {
 	m.ExpectRollback()
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+func expectTxBagiHasil(m sqlmock.Sqlmock, penjualanID string, penerimaCount int) {
+	m.ExpectBegin()
+	for i := 0; i < penerimaCount; i++ {
+		rows := sqlmock.NewRows([]string{"penerima_id"})
+		if i > 0 {
+			rows.AddRow(fmt.Sprintf("P%s%03d", penjualanID, i))
+		}
+		m.ExpectQuery("SELECT").WillReturnRows(rows)
+	}
+	m.ExpectCommit()
+}
 
 func ptrStr(s string) *string { return &s }
 
@@ -77,19 +92,91 @@ func baseTabunganNasabah(tabunganID, nasabahID, sampahID string, sisaQty float64
 	}
 }
 
-func baseTabunganBSU(tabunganID, bankID, sampahID string, sisaQty float64) models.TabunganSampah {
-	return models.TabunganSampah{
-		TabunganID: tabunganID,
-		BankID:     ptrStr(bankID),
-		SampahID:   sampahID,
-		Entitas:    models.EntitasBankSampah,
-		Qty:        sisaQty,
-		SisaQty:    sisaQty,
-		CreatedAt:  time.Now(),
-	}
+type skenarioBSM struct {
+	repo    *mocks.MockBagiHasilRepo
+	pemilik map[string]string
 }
 
-// ── Tests: validasi awal ──────────────────────────────────────────────────────
+func skenarioBaruBSM(penjualan *models.Penjualan, detailPenjualan []models.DetailPenjualan) *skenarioBSM {
+	repo := new(mocks.MockBagiHasilRepo)
+	repo.On("GetPenjualanWithReward", "PJL-001", "BSM-001").Return(penjualan, nil)
+	repo.On("GetBankByID", "BSM-001").Return(&models.BankSampah{BankID: "BSM-001", JenisBank: models.BSM}, nil)
+	repo.On("GetDetailPenjualan", mock.Anything, "PJL-001").Return(detailPenjualan, nil)
+	return &skenarioBSM{repo: repo, pemilik: map[string]string{}}
+}
+
+func (sk *skenarioBSM) sediakanTabungan(sampahID string, tabungan ...models.TabunganSampah) {
+	sk.repo.On("GetTabunganNasabah", mock.Anything, sampahID, []string{"BSM-001"}).Return(tabungan, nil).Once()
+}
+
+func (sk *skenarioBSM) expectTabunganTersimpan(tabunganID string, sisaQty float64) {
+	sk.repo.On("SaveTabungan", mock.Anything, mock.MatchedBy(func(t *models.TabunganSampah) bool {
+		return t.TabunganID == tabunganID && t.SisaQty == sisaQty
+	})).Return(nil).Once()
+}
+
+func (sk *skenarioBSM) expectHargaNasabah(sampahID string, harga float64) {
+	sk.repo.On("UpsertSchemaHargaNasabah", mock.Anything, sampahID, harga, models.SatuanRewardEnumRp, "ADM-001").
+		Return(nil).Once()
+}
+
+func (sk *skenarioBSM) expectBagiHasil(gross, totalDistribusi, sisa float64) {
+	sk.repo.On("CreateBagiHasil", mock.Anything, mock.MatchedBy(func(bh *models.BagiHasil) bool {
+		return bh.BankID != nil && *bh.BankID == "BSM-001" &&
+			bh.PenjualanID != nil && *bh.PenjualanID == "PJL-001" &&
+			bh.GrossBank == gross && bh.TotalDistribusiNasabah == totalDistribusi && bh.SisaBagiHasil == sisa
+	})).Return(nil).Once()
+}
+
+func (sk *skenarioBSM) expectNasabahMenerima(nasabahID string, jumlahItem int, total float64) {
+	sk.repo.On("CreatePenerimaBagiHasil", mock.Anything, mock.MatchedBy(func(p *models.PenerimaBagiHasil) bool {
+		return p.NasabahID != nil && *p.NasabahID == nasabahID &&
+			p.TotalItem == jumlahItem && p.TotalDiterima == total
+	})).Run(func(args mock.Arguments) {
+		p := args.Get(1).(*models.PenerimaBagiHasil)
+		sk.pemilik[p.PenerimaID] = nasabahID
+	}).Return(nil).Once()
+
+	sk.repo.On("UpdateSaldoRekening", mock.Anything, (*string)(nil), ptrBernilai(nasabahID),
+		1, mock.Anything, total, models.EntitasNasabah, "ADM-001", mock.Anything).Return(nil).Once()
+
+	sk.repo.On("GetNasabahWithUser", nasabahID).
+		Return(&models.Nasabah{NasabahID: nasabahID, User: models.User{UserID: "USR-" + nasabahID}}, nil).Once()
+}
+
+func (sk *skenarioBSM) expectDetail(nasabahID, sampahID string, qty, harga, subtotal float64) {
+	sk.repo.On("CreateDetailBagiHasil", mock.Anything, mock.MatchedBy(func(d *models.DetailBagiHasil) bool {
+		return sk.pemilik[d.PenerimaID] == nasabahID && d.SampahID == sampahID &&
+			d.Qty == qty && d.HargaItem == harga && d.SubtotalHarga == subtotal
+	})).Return(nil).Once()
+}
+
+func (sk *skenarioBSM) expectPencairan(nasabahID, tabunganID string, qty float64) {
+	sk.repo.On("CreatePencairanTabungan", mock.Anything, mock.MatchedBy(func(p *models.PencairanTabungan) bool {
+		return sk.pemilik[p.PenerimaID] == nasabahID && p.TabunganID == tabunganID && p.QtyDipakai == qty
+	})).Return(nil).Once()
+}
+
+func (sk *skenarioBSM) expectSisaMasukBank(sisa float64) {
+	sk.repo.On("UpdateSaldoRekening", mock.Anything, ptrBernilai("BSM-001"), (*string)(nil),
+		1, mock.Anything, sisa, models.EntitasBankSampah, "ADM-001", mock.Anything).Return(nil).Once()
+}
+
+func (sk *skenarioBSM) expectPenjualanSelesai() {
+	sk.repo.On("UpdatePenjualanStatus", mock.Anything, mock.Anything, models.BagiHasilBerhasil).Return(nil).Once()
+}
+
+func ptrBernilai(s string) interface{} {
+	return mock.MatchedBy(func(p *string) bool { return p != nil && *p == s })
+}
+
+func totalNotifPerNasabah(notifs []services.NasabahNotifItem) map[string]float64 {
+	total := make(map[string]float64, len(notifs))
+	for _, n := range notifs {
+		total[n.NasabahID] = n.Total
+	}
+	return total
+}
 
 func TestSubmitBagiHasil_SudahDilakukan(t *testing.T) {
 	gdb, _ := newTestDB(t)
@@ -104,21 +191,6 @@ func TestSubmitBagiHasil_SudahDilakukan(t *testing.T) {
 	assert.Contains(t, err.Error(), "sudah dilakukan")
 }
 
-func TestSubmitBagiHasil_BSUTidakBisaBagiHasil(t *testing.T) {
-	gdb, _ := newTestDB(t)
-	repo := new(mocks.MockBagiHasilRepo)
-	svc := services.NewBagiHasilServiceWithRepo(gdb, repo)
-
-	bank := &models.BankSampah{BankID: "BSU-001", JenisBank: models.BSU}
-	repo.On("GetPenjualanWithReward", "PJL-001", "BSU-001").Return(basePenjualan(models.BagiHasilPending), nil)
-	repo.On("GetBankByID", "BSU-001").Return(bank, nil)
-
-	_, err := svc.Submit("PJL-001", "BSU-001", "ADM-001")
-
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "BSU tidak dapat")
-}
-
 func TestSubmitBagiHasil_PenjualanTidakDitemukan(t *testing.T) {
 	gdb, _ := newTestDB(t)
 	repo := new(mocks.MockBagiHasilRepo)
@@ -131,8 +203,6 @@ func TestSubmitBagiHasil_PenjualanTidakDitemukan(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "Penjualan tidak ditemukan")
 }
-
-// ── Tests: BSM sukses ─────────────────────────────────────────────────────────
 
 func TestSubmitBagiHasil_BSM_Sukses(t *testing.T) {
 	gdb, dbMock := newTestDB(t)
@@ -166,19 +236,17 @@ func TestSubmitBagiHasil_BSM_Sukses(t *testing.T) {
 	repo.On("GetNasabahWithUser", nasabahID).Return(nasabah, nil)
 	repo.On("UpdatePenjualanStatus", mock.Anything, mock.Anything, models.BagiHasilBerhasil).Return(nil)
 
-	expectTx(dbMock)
+	expectTx(dbMock, 1)
 
 	result, err := svc.Submit("PJL-001", "BSM-001", "ADM-001")
 
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
 	assert.Equal(t, float64(500000), result.GrossBank)
-	assert.Equal(t, float64(50000), result.TotalDistribusiNasabah) // 10 * 5000
+	assert.Equal(t, float64(50000), result.TotalDistribusiNasabah)
 	assert.Equal(t, float64(450000), result.SisaBagiHasil)
 	repo.AssertExpectations(t)
 }
-
-// ── Tests: stok tidak cukup ───────────────────────────────────────────────────
 
 func TestSubmitBagiHasil_StokTidakCukup(t *testing.T) {
 	gdb, dbMock := newTestDB(t)
@@ -189,7 +257,6 @@ func TestSubmitBagiHasil_StokTidakCukup(t *testing.T) {
 	detailPenjualan := []models.DetailPenjualan{
 		{SampahID: "SMP-001", Qty: 10, HargaNasabahSnapshot: 5000},
 	}
-	// hanya 5kg tersedia, butuh 10kg
 	tabungan := []models.TabunganSampah{
 		baseTabunganNasabah("TBG-001", "NSB-001", "SMP-001", 5),
 	}
@@ -210,81 +277,59 @@ func TestSubmitBagiHasil_StokTidakCukup(t *testing.T) {
 	assert.Equal(t, 422, se.Code)
 }
 
-// ── Tests: BSI dengan BSU ─────────────────────────────────────────────────────
-
-func TestSubmitBagiHasil_BSI_DenganBSU(t *testing.T) {
+func TestSubmitBagiHasil_StokTidakCukup_DiSampahKetiga(t *testing.T) {
 	gdb, dbMock := newTestDB(t)
-	repo := new(mocks.MockBagiHasilRepo)
-	svc := services.NewBagiHasilServiceWithRepo(gdb, repo)
 
-	r := baseReward()
-	penjualan := &models.Penjualan{
-		PenjualanID:     "PJL-002",
-		BankID:          "BSI-001",
-		TotalPenjualan:  200000,
-		SatuanReward:    models.SatuanRewardEnumRp,
-		RewardID:        1,
-		Reward:          r,
-		StatusBagiHasil: models.BagiHasilPending,
+	sk := skenarioBaruBSM(basePenjualan(models.BagiHasilPending), []models.DetailPenjualan{
+		{SampahID: "SMP-001", Qty: 5, HargaNasabahSnapshot: 3000},
+		{SampahID: "SMP-002", Qty: 4, HargaNasabahSnapshot: 1500},
+		{SampahID: "SMP-003", Qty: 8, HargaNasabahSnapshot: 4000},
+	})
+	svc := services.NewBagiHasilServiceWithRepo(gdb, sk.repo)
+
+	sk.sediakanTabungan("SMP-001",
+		baseTabunganNasabah("TBG-21", "NSB-001", "SMP-001", 5),
+	)
+	sk.sediakanTabungan("SMP-002",
+		baseTabunganNasabah("TBG-22", "NSB-002", "SMP-002", 2.5),
+		baseTabunganNasabah("TBG-23", "NSB-003", "SMP-002", 1.5),
+	)
+	sk.sediakanTabungan("SMP-003",
+		baseTabunganNasabah("TBG-24", "NSB-001", "SMP-003", 3),
+		baseTabunganNasabah("TBG-25", "NSB-002", "SMP-003", 2.5),
+	)
+	for _, id := range []string{"TBG-21", "TBG-22", "TBG-23", "TBG-24", "TBG-25"} {
+		sk.expectTabunganTersimpan(id, 0)
 	}
-	bank := &models.BankSampah{BankID: "BSI-001", JenisBank: models.BSI}
-	bsuList := []models.BankSampah{{BankID: "BSU-001", NamaBank: "BSU Satu"}}
-	detailPenjualan := []models.DetailPenjualan{
-		{SampahID: "SMP-001", Qty: 10, HargaNasabahSnapshot: 5000},
+	sk.expectHargaNasabah("SMP-001", 3000)
+	sk.expectHargaNasabah("SMP-002", 1500)
+	expectTxRollback(dbMock)
+
+	result, err := svc.Submit("PJL-001", "BSM-001", "ADM-001")
+
+	assert.Nil(t, result)
+	var se *services.ServiceError
+	if assert.ErrorAs(t, err, &se) {
+		assert.Equal(t, 422, se.Code)
+		assert.Equal(t, "Stok tabungan nasabah tidak mencukupi", se.Message)
+		assert.Equal(t, map[string]interface{}{"sampah_id": "SMP-003", "kurang_qty": 2.5}, se.Data)
 	}
-	// 6kg nasabah BSI, 4kg nasabah BSU
-	tabunganNasabah := []models.TabunganSampah{
-		baseTabunganNasabah("TBG-BSI", "NSB-BSI", "SMP-001", 6),
-		baseTabunganNasabah("TBG-BSU-NSB", "NSB-BSU", "SMP-001", 4),
-	}
-	// stok fisik BSU: 4kg
-	tabunganBSU := []models.TabunganSampah{
-		baseTabunganBSU("TBG-BSU-STK", "BSU-001", "SMP-001", 4),
-	}
-
-	repo.On("GetPenjualanWithReward", "PJL-002", "BSI-001").Return(penjualan, nil)
-	repo.On("GetBankByID", "BSI-001").Return(bank, nil)
-	repo.On("GetBSUList", mock.Anything, "BSI-001").Return(bsuList, nil)
-	repo.On("GetDetailPenjualan", mock.Anything, "PJL-002").Return(detailPenjualan, nil)
-	repo.On("GetTabunganNasabah", mock.Anything, "SMP-001", []string{"BSI-001", "BSU-001"}).Return(tabunganNasabah, nil)
-	repo.On("GetTabunganBSU", mock.Anything, "SMP-001", []string{"BSU-001"}).Return(tabunganBSU, nil)
-	repo.On("SaveTabungan", mock.Anything, mock.Anything).Return(nil)
-	repo.On("UpsertSchemaHargaNasabah", mock.Anything, "SMP-001", float64(5000), models.SatuanRewardEnumRp, "ADM-001").Return(nil)
-	repo.On("CreateBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreatePerhitunganSisa", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreatePenerimaBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreateDetailBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreatePencairanTabungan", mock.Anything, mock.Anything).Return(nil)
-	repo.On("UpdateSaldoRekening", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-	repo.On("GetNasabahWithUser", "NSB-BSI").Return(&models.Nasabah{NasabahID: "NSB-BSI", User: models.User{UserID: "USR-1"}}, nil)
-	repo.On("GetNasabahWithUser", "NSB-BSU").Return(&models.Nasabah{NasabahID: "NSB-BSU", User: models.User{UserID: "USR-2"}}, nil)
-	repo.On("UpdatePenjualanStatus", mock.Anything, mock.Anything, models.BagiHasilBerhasil).Return(nil)
-
-	expectTx(dbMock)
-
-	result, err := svc.Submit("PJL-002", "BSI-001", "ADM-001")
-
-	assert.NoError(t, err)
-	assert.NotNil(t, result)
-	// total distribusi: (6+4) * 5000 = 50000
-	assert.Equal(t, float64(50000), result.TotalDistribusiNasabah)
-	assert.Equal(t, float64(150000), result.SisaBagiHasil)
-	assert.Len(t, result.NasabahNotifs, 2)
-	// CreatePerhitunganSisa dipanggil 1x untuk BSU stok 4kg
-	repo.AssertNumberOfCalls(t, "CreatePerhitunganSisa", 1)
-	repo.AssertExpectations(t)
+	sk.repo.AssertNotCalled(t, "UpsertSchemaHargaNasabah", mock.Anything, "SMP-003", mock.Anything, mock.Anything, mock.Anything)
+	sk.repo.AssertNotCalled(t, "CreateBagiHasil", mock.Anything, mock.Anything)
+	sk.repo.AssertNotCalled(t, "CreatePenerimaBagiHasil", mock.Anything, mock.Anything)
+	sk.repo.AssertNotCalled(t, "UpdateSaldoRekening", mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	sk.repo.AssertNotCalled(t, "UpdatePenjualanStatus", mock.Anything, mock.Anything, mock.Anything)
+	sk.repo.AssertExpectations(t)
+	assert.NoError(t, dbMock.ExpectationsWereMet())
 }
 
-// ── Tests: BSM saldo bank diupdate ───────────────────────────────────────────
-
 func TestSubmitBagiHasil_BSM_SisaMasukSaldoBank(t *testing.T) {
-	// BSM selalu dapat sisa bagi hasil → UpdateSaldoRekening dipanggil untuk bank juga
 	gdb, dbMock := newTestDB(t)
 	repo := new(mocks.MockBagiHasilRepo)
 	svc := services.NewBagiHasilServiceWithRepo(gdb, repo)
 
 	bank := &models.BankSampah{BankID: "BSM-001", JenisBank: models.BSM}
-	// nasabah hanya dapat 30000 dari total 100000 → sisa 70000 masuk bank
 	detailPenjualan := []models.DetailPenjualan{
 		{SampahID: "SMP-001", Qty: 6, HargaNasabahSnapshot: 5000},
 	}
@@ -308,117 +353,15 @@ func TestSubmitBagiHasil_BSM_SisaMasukSaldoBank(t *testing.T) {
 	repo.On("GetNasabahWithUser", "NSB-001").Return(&models.Nasabah{NasabahID: "NSB-001", User: models.User{UserID: "USR-1"}}, nil)
 	repo.On("UpdatePenjualanStatus", mock.Anything, mock.Anything, models.BagiHasilBerhasil).Return(nil)
 
-	expectTx(dbMock)
+	expectTx(dbMock, 1)
 
 	result, err := svc.Submit("PJL-001", "BSM-001", "ADM-001")
 
 	assert.NoError(t, err)
-	assert.Equal(t, float64(30000), result.TotalDistribusiNasabah) // 6 * 5000
+	assert.Equal(t, float64(30000), result.TotalDistribusiNasabah)
 	assert.Equal(t, float64(70000), result.SisaBagiHasil)
-	// UpdateSaldoRekening: 1x nasabah + 1x bank (sisa)
 	repo.AssertNumberOfCalls(t, "UpdateSaldoRekening", 2)
 }
-
-func TestSubmitBagiHasil_BSI_Uang_SisaTidakMasukBank(t *testing.T) {
-	// BSI dengan reward Uang → bankGetsSisa = false → saldo bank tidak diupdate
-	gdb, dbMock := newTestDB(t)
-	repo := new(mocks.MockBagiHasilRepo)
-	svc := services.NewBagiHasilServiceWithRepo(gdb, repo)
-
-	r := models.Reward{RewardID: 1, NamaReward: models.RewardEnumUang}
-	penjualan := &models.Penjualan{
-		PenjualanID:     "PJL-001",
-		BankID:          "BSI-001",
-		TotalPenjualan:  100000,
-		SatuanReward:    models.SatuanRewardEnumRp,
-		RewardID:        1,
-		Reward:          r,
-		StatusBagiHasil: models.BagiHasilPending,
-	}
-	bank := &models.BankSampah{BankID: "BSI-001", JenisBank: models.BSI}
-	detailPenjualan := []models.DetailPenjualan{
-		{SampahID: "SMP-001", Qty: 5, HargaNasabahSnapshot: 5000},
-	}
-	tabungan := []models.TabunganSampah{
-		baseTabunganNasabah("TBG-001", "NSB-001", "SMP-001", 5),
-	}
-
-	repo.On("GetPenjualanWithReward", "PJL-001", "BSI-001").Return(penjualan, nil)
-	repo.On("GetBankByID", "BSI-001").Return(bank, nil)
-	repo.On("GetBSUList", mock.Anything, "BSI-001").Return([]models.BankSampah{}, nil)
-	repo.On("GetDetailPenjualan", mock.Anything, "PJL-001").Return(detailPenjualan, nil)
-	repo.On("GetTabunganNasabah", mock.Anything, "SMP-001", []string{"BSI-001"}).Return(tabungan, nil)
-	repo.On("SaveTabungan", mock.Anything, mock.Anything).Return(nil)
-	repo.On("UpsertSchemaHargaNasabah", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreateBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreatePenerimaBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreateDetailBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreatePencairanTabungan", mock.Anything, mock.Anything).Return(nil)
-	repo.On("UpdateSaldoRekening", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-	repo.On("GetNasabahWithUser", "NSB-001").Return(&models.Nasabah{NasabahID: "NSB-001", User: models.User{UserID: "USR-1"}}, nil)
-	repo.On("UpdatePenjualanStatus", mock.Anything, mock.Anything, models.BagiHasilBerhasil).Return(nil)
-
-	expectTx(dbMock)
-
-	result, err := svc.Submit("PJL-001", "BSI-001", "ADM-001")
-
-	assert.NoError(t, err)
-	assert.Equal(t, float64(75000), result.SisaBagiHasil) // 100000 - 25000
-	// hanya 1x UpdateSaldoRekening untuk nasabah, bank tidak dapat sisa
-	repo.AssertNumberOfCalls(t, "UpdateSaldoRekening", 1)
-}
-
-func TestSubmitBagiHasil_BSI_Sembako_SisaMasukBank(t *testing.T) {
-	// BSI dengan reward Sembako → bankGetsSisa = true
-	gdb, dbMock := newTestDB(t)
-	repo := new(mocks.MockBagiHasilRepo)
-	svc := services.NewBagiHasilServiceWithRepo(gdb, repo)
-
-	r := models.Reward{RewardID: 2, NamaReward: models.RewardEnumSembako}
-	penjualan := &models.Penjualan{
-		PenjualanID:     "PJL-001",
-		BankID:          "BSI-001",
-		TotalPenjualan:  1000,
-		SatuanReward:    models.SatuanRewardEnumPoin,
-		RewardID:        2,
-		Reward:          r,
-		StatusBagiHasil: models.BagiHasilPending,
-	}
-	bank := &models.BankSampah{BankID: "BSI-001", JenisBank: models.BSI}
-	detailPenjualan := []models.DetailPenjualan{
-		{SampahID: "SMP-001", Qty: 4, HargaNasabahSnapshot: 10},
-	}
-	tabungan := []models.TabunganSampah{
-		baseTabunganNasabah("TBG-001", "NSB-001", "SMP-001", 4),
-	}
-
-	repo.On("GetPenjualanWithReward", "PJL-001", "BSI-001").Return(penjualan, nil)
-	repo.On("GetBankByID", "BSI-001").Return(bank, nil)
-	repo.On("GetBSUList", mock.Anything, "BSI-001").Return([]models.BankSampah{}, nil)
-	repo.On("GetDetailPenjualan", mock.Anything, "PJL-001").Return(detailPenjualan, nil)
-	repo.On("GetTabunganNasabah", mock.Anything, "SMP-001", []string{"BSI-001"}).Return(tabungan, nil)
-	repo.On("SaveTabungan", mock.Anything, mock.Anything).Return(nil)
-	repo.On("UpsertSchemaHargaNasabah", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreateBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreatePenerimaBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreateDetailBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreatePencairanTabungan", mock.Anything, mock.Anything).Return(nil)
-	repo.On("UpdateSaldoRekening", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-	repo.On("GetNasabahWithUser", "NSB-001").Return(&models.Nasabah{NasabahID: "NSB-001", User: models.User{UserID: "USR-1"}}, nil)
-	repo.On("UpdatePenjualanStatus", mock.Anything, mock.Anything, models.BagiHasilBerhasil).Return(nil)
-
-	expectTx(dbMock)
-
-	result, err := svc.Submit("PJL-001", "BSI-001", "ADM-001")
-
-	assert.NoError(t, err)
-	assert.Equal(t, float64(40), result.TotalDistribusiNasabah) // 4 * 10
-	assert.Equal(t, float64(960), result.SisaBagiHasil)
-	// 1x nasabah + 1x bank (sisa)
-	repo.AssertNumberOfCalls(t, "UpdateSaldoRekening", 2)
-}
-
-// ── Tests: BSM multiple sampah ────────────────────────────────────────────────
 
 func TestSubmitBagiHasil_BSM_MultipleSampah(t *testing.T) {
 	gdb, dbMock := newTestDB(t)
@@ -426,7 +369,6 @@ func TestSubmitBagiHasil_BSM_MultipleSampah(t *testing.T) {
 	svc := services.NewBagiHasilServiceWithRepo(gdb, repo)
 
 	bank := &models.BankSampah{BankID: "BSM-001", JenisBank: models.BSM}
-	// dua jenis sampah dalam satu penjualan
 	detailPenjualan := []models.DetailPenjualan{
 		{SampahID: "SMP-001", Qty: 5, HargaNasabahSnapshot: 2000},
 		{SampahID: "SMP-002", Qty: 3, HargaNasabahSnapshot: 3000},
@@ -456,22 +398,105 @@ func TestSubmitBagiHasil_BSM_MultipleSampah(t *testing.T) {
 	repo.On("GetNasabahWithUser", "NSB-B").Return(&models.Nasabah{NasabahID: "NSB-B", User: models.User{UserID: "USR-B"}}, nil)
 	repo.On("UpdatePenjualanStatus", mock.Anything, mock.Anything, models.BagiHasilBerhasil).Return(nil)
 
-	expectTx(dbMock)
+	expectTx(dbMock, 2)
 
 	result, err := svc.Submit("PJL-001", "BSM-001", "ADM-001")
 
 	assert.NoError(t, err)
-	// NSB-A: 5*2000=10000, NSB-B: 3*3000=9000 → total 19000
 	assert.Equal(t, float64(19000), result.TotalDistribusiNasabah)
 	assert.Equal(t, float64(31000), result.SisaBagiHasil)
-	// GetTabunganNasabah dipanggil 2x (per sampah)
 	repo.AssertNumberOfCalls(t, "GetTabunganNasabah", 2)
 }
 
-// ── Tests: partial FIFO ───────────────────────────────────────────────────────
+func TestSubmitBagiHasil_BSM_EmpatSampahLimaNasabah(t *testing.T) {
+	gdb, dbMock := newTestDB(t)
+
+	penjualan := basePenjualan(models.BagiHasilPending)
+	penjualan.TotalPenjualan = 169000
+	sk := skenarioBaruBSM(penjualan, []models.DetailPenjualan{
+		{SampahID: "SMP-001", Qty: 16, HargaNasabahSnapshot: 3000},
+		{SampahID: "SMP-002", Qty: 20, HargaNasabahSnapshot: 1500},
+		{SampahID: "SMP-003", Qty: 7.5, HargaNasabahSnapshot: 4000},
+		{SampahID: "SMP-004", Qty: 11, HargaNasabahSnapshot: 2000},
+	})
+	svc := services.NewBagiHasilServiceWithRepo(gdb, sk.repo)
+
+	sk.sediakanTabungan("SMP-001",
+		baseTabunganNasabah("TBG-01", "NSB-001", "SMP-001", 5),
+		baseTabunganNasabah("TBG-02", "NSB-002", "SMP-001", 3.5),
+		baseTabunganNasabah("TBG-03", "NSB-001", "SMP-001", 2.5),
+		baseTabunganNasabah("TBG-04", "NSB-004", "SMP-001", 5),
+	)
+	sk.sediakanTabungan("SMP-002",
+		baseTabunganNasabah("TBG-05", "NSB-003", "SMP-002", 8),
+		baseTabunganNasabah("TBG-06", "NSB-005", "SMP-002", 12),
+	)
+	sk.sediakanTabungan("SMP-003",
+		baseTabunganNasabah("TBG-07", "NSB-002", "SMP-003", 4),
+		baseTabunganNasabah("TBG-08", "NSB-003", "SMP-003", 3.5),
+	)
+	sk.sediakanTabungan("SMP-004",
+		baseTabunganNasabah("TBG-09", "NSB-001", "SMP-004", 6),
+		baseTabunganNasabah("TBG-10", "NSB-005", "SMP-004", 5),
+	)
+
+	for _, id := range []string{"TBG-01", "TBG-02", "TBG-03", "TBG-04", "TBG-05",
+		"TBG-06", "TBG-07", "TBG-08", "TBG-09", "TBG-10"} {
+		sk.expectTabunganTersimpan(id, 0)
+	}
+	sk.expectHargaNasabah("SMP-001", 3000)
+	sk.expectHargaNasabah("SMP-002", 1500)
+	sk.expectHargaNasabah("SMP-003", 4000)
+	sk.expectHargaNasabah("SMP-004", 2000)
+	sk.expectBagiHasil(169000, 130000, 39000)
+
+	sk.expectNasabahMenerima("NSB-001", 2, 34500)
+	sk.expectDetail("NSB-001", "SMP-001", 7.5, 3000, 22500)
+	sk.expectDetail("NSB-001", "SMP-004", 6, 2000, 12000)
+	sk.expectPencairan("NSB-001", "TBG-01", 5)
+	sk.expectPencairan("NSB-001", "TBG-03", 2.5)
+	sk.expectPencairan("NSB-001", "TBG-09", 6)
+
+	sk.expectNasabahMenerima("NSB-002", 2, 26500)
+	sk.expectDetail("NSB-002", "SMP-001", 3.5, 3000, 10500)
+	sk.expectDetail("NSB-002", "SMP-003", 4, 4000, 16000)
+	sk.expectPencairan("NSB-002", "TBG-02", 3.5)
+	sk.expectPencairan("NSB-002", "TBG-07", 4)
+
+	sk.expectNasabahMenerima("NSB-003", 2, 26000)
+	sk.expectDetail("NSB-003", "SMP-002", 8, 1500, 12000)
+	sk.expectDetail("NSB-003", "SMP-003", 3.5, 4000, 14000)
+	sk.expectPencairan("NSB-003", "TBG-05", 8)
+	sk.expectPencairan("NSB-003", "TBG-08", 3.5)
+
+	sk.expectNasabahMenerima("NSB-004", 1, 15000)
+	sk.expectDetail("NSB-004", "SMP-001", 5, 3000, 15000)
+	sk.expectPencairan("NSB-004", "TBG-04", 5)
+
+	sk.expectNasabahMenerima("NSB-005", 2, 28000)
+	sk.expectDetail("NSB-005", "SMP-002", 12, 1500, 18000)
+	sk.expectDetail("NSB-005", "SMP-004", 5, 2000, 10000)
+	sk.expectPencairan("NSB-005", "TBG-06", 12)
+	sk.expectPencairan("NSB-005", "TBG-10", 5)
+
+	sk.expectSisaMasukBank(39000)
+	sk.expectPenjualanSelesai()
+	expectTxBagiHasil(dbMock, "PJL-001", 5)
+
+	result, err := svc.Submit("PJL-001", "BSM-001", "ADM-001")
+
+	assert.NoError(t, err)
+	assert.Equal(t, float64(169000), result.GrossBank)
+	assert.Equal(t, float64(130000), result.TotalDistribusiNasabah)
+	assert.Equal(t, float64(39000), result.SisaBagiHasil)
+	assert.Equal(t, map[string]float64{
+		"NSB-001": 34500, "NSB-002": 26500, "NSB-003": 26000, "NSB-004": 15000, "NSB-005": 28000,
+	}, totalNotifPerNasabah(result.NasabahNotifs))
+	sk.repo.AssertExpectations(t)
+	assert.NoError(t, dbMock.ExpectationsWereMet())
+}
 
 func TestSubmitBagiHasil_PartialFIFO(t *testing.T) {
-	// tabungan NSB-A punya 20kg, penjualan hanya 8kg → sisa 12kg tetap di tabungan
 	gdb, dbMock := newTestDB(t)
 	repo := new(mocks.MockBagiHasilRepo)
 	svc := services.NewBagiHasilServiceWithRepo(gdb, repo)
@@ -491,7 +516,7 @@ func TestSubmitBagiHasil_PartialFIFO(t *testing.T) {
 	repo.On("GetDetailPenjualan", mock.Anything, "PJL-001").Return(detailPenjualan, nil)
 	repo.On("GetTabunganNasabah", mock.Anything, "SMP-001", []string{"BSM-001"}).Return(tabungan, nil)
 	repo.On("SaveTabungan", mock.Anything, mock.MatchedBy(func(t *models.TabunganSampah) bool {
-		return t.SisaQty == 12 // 20 - 8 = 12 tersisa
+		return t.SisaQty == 12
 	})).Return(nil)
 	repo.On("UpsertSchemaHargaNasabah", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 	repo.On("CreateBagiHasil", mock.Anything, mock.Anything).Return(nil)
@@ -502,354 +527,94 @@ func TestSubmitBagiHasil_PartialFIFO(t *testing.T) {
 	repo.On("GetNasabahWithUser", "NSB-001").Return(&models.Nasabah{NasabahID: "NSB-001", User: models.User{UserID: "USR-1"}}, nil)
 	repo.On("UpdatePenjualanStatus", mock.Anything, mock.Anything, models.BagiHasilBerhasil).Return(nil)
 
-	expectTx(dbMock)
+	expectTx(dbMock, 1)
 
 	result, err := svc.Submit("PJL-001", "BSM-001", "ADM-001")
 
 	assert.NoError(t, err)
-	assert.Equal(t, float64(8000), result.TotalDistribusiNasabah) // 8 * 1000
+	assert.Equal(t, float64(8000), result.TotalDistribusiNasabah)
 	repo.AssertExpectations(t)
 }
 
-// ── Tests: kerugian angkut BSU ────────────────────────────────────────────────
-
-func TestSubmitBagiHasil_BSI_KerugianAngkutBSU(t *testing.T) {
-	// Nasabah BSU setor 10kg → tabungan nasabah 10kg
-	// Pengangkutan sah hanya 8kg → tabungan BSU (bank_sampah) 8kg
-	// CreatePerhitunganSisa hanya untuk 8kg (bukan 10kg)
+func TestSubmitBagiHasil_PartialFIFO_TigaSampah(t *testing.T) {
 	gdb, dbMock := newTestDB(t)
-	repo := new(mocks.MockBagiHasilRepo)
-	svc := services.NewBagiHasilServiceWithRepo(gdb, repo)
 
-	r := baseReward()
-	penjualan := &models.Penjualan{
-		PenjualanID:     "PJL-001",
-		BankID:          "BSI-001",
-		TotalPenjualan:  50000,
-		SatuanReward:    models.SatuanRewardEnumRp,
-		RewardID:        1,
-		Reward:          r,
-		StatusBagiHasil: models.BagiHasilPending,
-	}
-	bank := &models.BankSampah{BankID: "BSI-001", JenisBank: models.BSI}
-	bsuList := []models.BankSampah{{BankID: "BSU-001", NamaBank: "BSU Satu"}}
-	detailPenjualan := []models.DetailPenjualan{
-		{SampahID: "SMP-001", Qty: 10, HargaNasabahSnapshot: 2000},
-	}
-	// FIFO nasabah: 10kg dari nasabah BSU (karena nasabah BSU lebih tua)
-	tabunganNasabah := []models.TabunganSampah{
-		baseTabunganNasabah("TBG-NSB", "NSB-BSU", "SMP-001", 10),
-	}
-	// stok fisik BSU hanya 8kg (kerugian 2kg saat angkut)
-	tabunganBSU := []models.TabunganSampah{
-		baseTabunganBSU("TBG-STK", "BSU-001", "SMP-001", 8),
-	}
+	penjualan := basePenjualan(models.BagiHasilPending)
+	penjualan.TotalPenjualan = 68500
+	sk := skenarioBaruBSM(penjualan, []models.DetailPenjualan{
+		{SampahID: "SMP-001", Qty: 9, HargaNasabahSnapshot: 3000},
+		{SampahID: "SMP-002", Qty: 10, HargaNasabahSnapshot: 1500},
+		{SampahID: "SMP-003", Qty: 2.5, HargaNasabahSnapshot: 4000},
+	})
+	svc := services.NewBagiHasilServiceWithRepo(gdb, sk.repo)
 
-	repo.On("GetPenjualanWithReward", "PJL-001", "BSI-001").Return(penjualan, nil)
-	repo.On("GetBankByID", "BSI-001").Return(bank, nil)
-	repo.On("GetBSUList", mock.Anything, "BSI-001").Return(bsuList, nil)
-	repo.On("GetDetailPenjualan", mock.Anything, "PJL-001").Return(detailPenjualan, nil)
-	repo.On("GetTabunganNasabah", mock.Anything, "SMP-001", []string{"BSI-001", "BSU-001"}).Return(tabunganNasabah, nil)
-	repo.On("GetTabunganBSU", mock.Anything, "SMP-001", []string{"BSU-001"}).Return(tabunganBSU, nil)
-	repo.On("SaveTabungan", mock.Anything, mock.Anything).Return(nil)
-	repo.On("UpsertSchemaHargaNasabah", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreateBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	// CreatePerhitunganSisa hanya 1x dengan qty 8 (bukan 10)
-	repo.On("CreatePerhitunganSisa", mock.Anything, mock.MatchedBy(func(ps *models.PerhitunganSisa) bool {
-		return ps.QtyDipakai == 8 && ps.NilaiDipakai == 16000 // 8 * 2000
-	})).Return(nil)
-	repo.On("CreatePenerimaBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreateDetailBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreatePencairanTabungan", mock.Anything, mock.Anything).Return(nil)
-	repo.On("UpdateSaldoRekening", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-	repo.On("GetNasabahWithUser", "NSB-BSU").Return(&models.Nasabah{NasabahID: "NSB-BSU", User: models.User{UserID: "USR-1"}}, nil)
-	repo.On("UpdatePenjualanStatus", mock.Anything, mock.Anything, models.BagiHasilBerhasil).Return(nil)
+	sisaPenjualanLalu := baseTabunganNasabah("TBG-11", "NSB-001", "SMP-001", 4)
+	sisaPenjualanLalu.Qty = 10
+	sk.sediakanTabungan("SMP-001",
+		sisaPenjualanLalu,
+		baseTabunganNasabah("TBG-12", "NSB-002", "SMP-001", 3),
+		baseTabunganNasabah("TBG-13", "NSB-001", "SMP-001", 6),
+		baseTabunganNasabah("TBG-14", "NSB-003", "SMP-001", 5),
+	)
+	sk.sediakanTabungan("SMP-002",
+		baseTabunganNasabah("TBG-15", "NSB-002", "SMP-002", 7.5),
+		baseTabunganNasabah("TBG-16", "NSB-004", "SMP-002", 6),
+		baseTabunganNasabah("TBG-17", "NSB-005", "SMP-002", 4),
+	)
+	sk.sediakanTabungan("SMP-003",
+		baseTabunganNasabah("TBG-18", "NSB-003", "SMP-003", 4),
+		baseTabunganNasabah("TBG-19", "NSB-005", "SMP-003", 3),
+	)
 
-	expectTx(dbMock)
+	sk.expectTabunganTersimpan("TBG-11", 0)
+	sk.expectTabunganTersimpan("TBG-12", 0)
+	sk.expectTabunganTersimpan("TBG-13", 4)
+	sk.expectTabunganTersimpan("TBG-15", 0)
+	sk.expectTabunganTersimpan("TBG-16", 3.5)
+	sk.expectTabunganTersimpan("TBG-18", 1.5)
+	sk.expectHargaNasabah("SMP-001", 3000)
+	sk.expectHargaNasabah("SMP-002", 1500)
+	sk.expectHargaNasabah("SMP-003", 4000)
+	sk.expectBagiHasil(68500, 52000, 16500)
 
-	_, err := svc.Submit("PJL-001", "BSI-001", "ADM-001")
+	sk.expectNasabahMenerima("NSB-001", 1, 18000)
+	sk.expectDetail("NSB-001", "SMP-001", 6, 3000, 18000)
+	sk.expectPencairan("NSB-001", "TBG-11", 4)
+	sk.expectPencairan("NSB-001", "TBG-13", 2)
+
+	sk.expectNasabahMenerima("NSB-002", 2, 20250)
+	sk.expectDetail("NSB-002", "SMP-001", 3, 3000, 9000)
+	sk.expectDetail("NSB-002", "SMP-002", 7.5, 1500, 11250)
+	sk.expectPencairan("NSB-002", "TBG-12", 3)
+	sk.expectPencairan("NSB-002", "TBG-15", 7.5)
+
+	sk.expectNasabahMenerima("NSB-003", 1, 10000)
+	sk.expectDetail("NSB-003", "SMP-003", 2.5, 4000, 10000)
+	sk.expectPencairan("NSB-003", "TBG-18", 2.5)
+
+	sk.expectNasabahMenerima("NSB-004", 1, 3750)
+	sk.expectDetail("NSB-004", "SMP-002", 2.5, 1500, 3750)
+	sk.expectPencairan("NSB-004", "TBG-16", 2.5)
+
+	sk.expectSisaMasukBank(16500)
+	sk.expectPenjualanSelesai()
+	expectTxBagiHasil(dbMock, "PJL-001", 4)
+
+	result, err := svc.Submit("PJL-001", "BSM-001", "ADM-001")
 
 	assert.NoError(t, err)
-	repo.AssertExpectations(t)
+	assert.Equal(t, float64(68500), result.GrossBank)
+	assert.Equal(t, float64(52000), result.TotalDistribusiNasabah)
+	assert.Equal(t, float64(16500), result.SisaBagiHasil)
+	assert.Equal(t, map[string]float64{
+		"NSB-001": 18000, "NSB-002": 20250, "NSB-003": 10000, "NSB-004": 3750,
+	}, totalNotifPerNasabah(result.NasabahNotifs))
+	sk.repo.AssertNotCalled(t, "GetNasabahWithUser", "NSB-005")
+	sk.repo.AssertExpectations(t)
+	assert.NoError(t, dbMock.ExpectationsWereMet())
 }
 
-// ── Tests: BSI multiple BSU ───────────────────────────────────────────────────
-
-func TestSubmitBagiHasil_BSI_MultipleBSU(t *testing.T) {
-	gdb, dbMock := newTestDB(t)
-	repo := new(mocks.MockBagiHasilRepo)
-	svc := services.NewBagiHasilServiceWithRepo(gdb, repo)
-
-	r := baseReward()
-	penjualan := &models.Penjualan{
-		PenjualanID:     "PJL-001",
-		BankID:          "BSI-001",
-		TotalPenjualan:  100000,
-		SatuanReward:    models.SatuanRewardEnumRp,
-		RewardID:        1,
-		Reward:          r,
-		StatusBagiHasil: models.BagiHasilPending,
-	}
-	bank := &models.BankSampah{BankID: "BSI-001", JenisBank: models.BSI}
-	bsuList := []models.BankSampah{
-		{BankID: "BSU-001", NamaBank: "BSU Satu"},
-		{BankID: "BSU-002", NamaBank: "BSU Dua"},
-	}
-	detailPenjualan := []models.DetailPenjualan{
-		{SampahID: "SMP-001", Qty: 10, HargaNasabahSnapshot: 3000},
-	}
-	tabunganNasabah := []models.TabunganSampah{
-		baseTabunganNasabah("TBG-N1", "NSB-BSU1", "SMP-001", 6),
-		baseTabunganNasabah("TBG-N2", "NSB-BSU2", "SMP-001", 4),
-	}
-	// stok fisik: BSU-001 6kg, BSU-002 4kg
-	tabunganBSU := []models.TabunganSampah{
-		baseTabunganBSU("TBG-S1", "BSU-001", "SMP-001", 6),
-		baseTabunganBSU("TBG-S2", "BSU-002", "SMP-001", 4),
-	}
-
-	repo.On("GetPenjualanWithReward", "PJL-001", "BSI-001").Return(penjualan, nil)
-	repo.On("GetBankByID", "BSI-001").Return(bank, nil)
-	repo.On("GetBSUList", mock.Anything, "BSI-001").Return(bsuList, nil)
-	repo.On("GetDetailPenjualan", mock.Anything, "PJL-001").Return(detailPenjualan, nil)
-	repo.On("GetTabunganNasabah", mock.Anything, "SMP-001", []string{"BSI-001", "BSU-001", "BSU-002"}).Return(tabunganNasabah, nil)
-	repo.On("GetTabunganBSU", mock.Anything, "SMP-001", []string{"BSU-001", "BSU-002"}).Return(tabunganBSU, nil)
-	repo.On("SaveTabungan", mock.Anything, mock.Anything).Return(nil)
-	repo.On("UpsertSchemaHargaNasabah", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreateBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreatePerhitunganSisa", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreatePenerimaBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreateDetailBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreatePencairanTabungan", mock.Anything, mock.Anything).Return(nil)
-	repo.On("UpdateSaldoRekening", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-	repo.On("GetNasabahWithUser", "NSB-BSU1").Return(&models.Nasabah{NasabahID: "NSB-BSU1", User: models.User{UserID: "USR-1"}}, nil)
-	repo.On("GetNasabahWithUser", "NSB-BSU2").Return(&models.Nasabah{NasabahID: "NSB-BSU2", User: models.User{UserID: "USR-2"}}, nil)
-	repo.On("UpdatePenjualanStatus", mock.Anything, mock.Anything, models.BagiHasilBerhasil).Return(nil)
-
-	expectTx(dbMock)
-
-	result, err := svc.Submit("PJL-001", "BSI-001", "ADM-001")
-
-	assert.NoError(t, err)
-	assert.Equal(t, float64(30000), result.TotalDistribusiNasabah) // 10 * 3000
-	// CreatePerhitunganSisa 2x: satu untuk BSU-001, satu untuk BSU-002
-	repo.AssertNumberOfCalls(t, "CreatePerhitunganSisa", 2)
-	repo.AssertExpectations(t)
-}
-
-// ── Tests: BSI banyak BSU, tiap BSU banyak nasabah ───────────────────────────
-
-func TestSubmitBagiHasil_BSI_DuaBSU_BanyakNasabah(t *testing.T) {
-	// Skenario:
-	//   BSI-001 punya 2 BSU (BSU-001, BSU-002)
-	//   BSU-001: NSB-A1 (3kg), NSB-A2 (5kg) — stok fisik 6kg (kerugian 2kg)
-	//   BSU-002: NSB-B1 (4kg), NSB-B2 (4kg) — stok fisik 8kg (pas)
-	//   BSI direct: NSB-BSI (4kg)
-	//   Penjualan: SMP-001, 20kg, harga 1500, total penjualan 80000
-	//
-	// Ekspektasi:
-	//   SaveTabungan 7x     (5 nasabah + 2 BSU physical)
-	//   CreatePerhitunganSisa 2x  (TBG-S1 qty=6, TBG-S2 qty=8)
-	//   CreatePencairanTabungan 5x (satu per nasabah tabungan)
-	//   UpdateSaldoRekening 5x   (BSI reward Uang → bankGetsSisa=false)
-	//   NasabahNotifs 5 entries
-
-	gdb, dbMock := newTestDB(t)
-	repo := new(mocks.MockBagiHasilRepo)
-	svc := services.NewBagiHasilServiceWithRepo(gdb, repo)
-
-	r := baseReward() // RewardEnumUang
-	penjualan := &models.Penjualan{
-		PenjualanID:     "PJL-001",
-		BankID:          "BSI-001",
-		TotalPenjualan:  80000,
-		SatuanReward:    models.SatuanRewardEnumRp,
-		RewardID:        1,
-		Reward:          r,
-		StatusBagiHasil: models.BagiHasilPending,
-	}
-	bank := &models.BankSampah{BankID: "BSI-001", JenisBank: models.BSI}
-	bsuList := []models.BankSampah{
-		{BankID: "BSU-001", NamaBank: "BSU Satu"},
-		{BankID: "BSU-002", NamaBank: "BSU Dua"},
-	}
-	detailPenjualan := []models.DetailPenjualan{
-		{SampahID: "SMP-001", Qty: 20, HargaNasabahSnapshot: 1500},
-	}
-
-	// FIFO nasabah diurutkan created_at ASC (oldest first)
-	t0 := time.Now()
-	tabunganNasabah := []models.TabunganSampah{
-		{TabunganID: "TBG-BSI-N", NasabahID: ptrStr("NSB-BSI"), SampahID: "SMP-001", Entitas: models.EntitasNasabah, Qty: 4, SisaQty: 4, CreatedAt: t0.Add(-5 * time.Hour)},
-		{TabunganID: "TBG-A1-N", NasabahID: ptrStr("NSB-A1"), SampahID: "SMP-001", Entitas: models.EntitasNasabah, Qty: 3, SisaQty: 3, CreatedAt: t0.Add(-4 * time.Hour)},
-		{TabunganID: "TBG-A2-N", NasabahID: ptrStr("NSB-A2"), SampahID: "SMP-001", Entitas: models.EntitasNasabah, Qty: 5, SisaQty: 5, CreatedAt: t0.Add(-3 * time.Hour)},
-		{TabunganID: "TBG-B1-N", NasabahID: ptrStr("NSB-B1"), SampahID: "SMP-001", Entitas: models.EntitasNasabah, Qty: 4, SisaQty: 4, CreatedAt: t0.Add(-2 * time.Hour)},
-		{TabunganID: "TBG-B2-N", NasabahID: ptrStr("NSB-B2"), SampahID: "SMP-001", Entitas: models.EntitasNasabah, Qty: 4, SisaQty: 4, CreatedAt: t0.Add(-1 * time.Hour)},
-	}
-	// Stok fisik BSU (bank_sampah):
-	// BSU-001: 6kg (< 8kg nasabah → kerugian 2kg ditanggung BSU-001)
-	// BSU-002: 8kg (pas dengan total nasabah BSU-002)
-	tabunganBSU := []models.TabunganSampah{
-		{TabunganID: "TBG-S1", BankID: ptrStr("BSU-001"), SampahID: "SMP-001", Entitas: models.EntitasBankSampah, Qty: 6, SisaQty: 6, CreatedAt: t0.Add(-4 * time.Hour)},
-		{TabunganID: "TBG-S2", BankID: ptrStr("BSU-002"), SampahID: "SMP-001", Entitas: models.EntitasBankSampah, Qty: 8, SisaQty: 8, CreatedAt: t0.Add(-2 * time.Hour)},
-	}
-
-	repo.On("GetPenjualanWithReward", "PJL-001", "BSI-001").Return(penjualan, nil)
-	repo.On("GetBankByID", "BSI-001").Return(bank, nil)
-	repo.On("GetBSUList", mock.Anything, "BSI-001").Return(bsuList, nil)
-	repo.On("GetDetailPenjualan", mock.Anything, "PJL-001").Return(detailPenjualan, nil)
-	repo.On("GetTabunganNasabah", mock.Anything, "SMP-001", []string{"BSI-001", "BSU-001", "BSU-002"}).Return(tabunganNasabah, nil)
-	repo.On("GetTabunganBSU", mock.Anything, "SMP-001", []string{"BSU-001", "BSU-002"}).Return(tabunganBSU, nil)
-	repo.On("SaveTabungan", mock.Anything, mock.Anything).Return(nil)
-	repo.On("UpsertSchemaHargaNasabah", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreateBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	// PerhitunganSisa harus mencerminkan stok fisik, bukan stok nasabah
-	repo.On("CreatePerhitunganSisa", mock.Anything, mock.MatchedBy(func(ps *models.PerhitunganSisa) bool {
-		return ps.TabunganID == "TBG-S1" && ps.QtyDipakai == 6 && ps.NilaiDipakai == 9000 // 6*1500
-	})).Return(nil)
-	repo.On("CreatePerhitunganSisa", mock.Anything, mock.MatchedBy(func(ps *models.PerhitunganSisa) bool {
-		return ps.TabunganID == "TBG-S2" && ps.QtyDipakai == 8 && ps.NilaiDipakai == 12000 // 8*1500
-	})).Return(nil)
-	repo.On("CreatePenerimaBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreateDetailBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreatePencairanTabungan", mock.Anything, mock.Anything).Return(nil)
-	repo.On("UpdateSaldoRekening", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-	repo.On("GetNasabahWithUser", "NSB-BSI").Return(&models.Nasabah{NasabahID: "NSB-BSI", User: models.User{UserID: "USR-0"}}, nil)
-	repo.On("GetNasabahWithUser", "NSB-A1").Return(&models.Nasabah{NasabahID: "NSB-A1", User: models.User{UserID: "USR-1"}}, nil)
-	repo.On("GetNasabahWithUser", "NSB-A2").Return(&models.Nasabah{NasabahID: "NSB-A2", User: models.User{UserID: "USR-2"}}, nil)
-	repo.On("GetNasabahWithUser", "NSB-B1").Return(&models.Nasabah{NasabahID: "NSB-B1", User: models.User{UserID: "USR-3"}}, nil)
-	repo.On("GetNasabahWithUser", "NSB-B2").Return(&models.Nasabah{NasabahID: "NSB-B2", User: models.User{UserID: "USR-4"}}, nil)
-	repo.On("UpdatePenjualanStatus", mock.Anything, mock.Anything, models.BagiHasilBerhasil).Return(nil)
-
-	expectTx(dbMock)
-
-	result, err := svc.Submit("PJL-001", "BSI-001", "ADM-001")
-
-	assert.NoError(t, err)
-	assert.NotNil(t, result)
-	assert.Equal(t, float64(30000), result.TotalDistribusiNasabah) // 20 * 1500
-	assert.Equal(t, float64(50000), result.SisaBagiHasil)          // 80000 - 30000
-	assert.Len(t, result.NasabahNotifs, 5)
-
-	// 5 nasabah tabungan + 2 BSU physical tabungan = 7 SaveTabungan
-	repo.AssertNumberOfCalls(t, "SaveTabungan", 7)
-	// 2 BSU physical entries → 2 PerhitunganSisa (nilai mencerminkan kerugian BSU-001)
-	repo.AssertNumberOfCalls(t, "CreatePerhitunganSisa", 2)
-	// Satu PencairanTabungan per nasabah tabungan yang dikonsumsi
-	repo.AssertNumberOfCalls(t, "CreatePencairanTabungan", 5)
-	// BSI uang → bankGetsSisa=false → hanya nasabah (5x)
-	repo.AssertNumberOfCalls(t, "UpdateSaldoRekening", 5)
-	repo.AssertExpectations(t)
-}
-
-// ── Tests: BSI banyak BSU, banyak nasabah, dua jenis sampah ──────────────────
-
-func TestSubmitBagiHasil_BSI_DuaBSU_DuaSampah(t *testing.T) {
-	// Seperti test sebelumnya tapi ada dua jenis sampah.
-	// SMP-001: 10kg harga 2000 — NSB-A1 (4kg, BSU-001), NSB-B1 (6kg, BSU-002)
-	// SMP-002: 6kg  harga 3000 — NSB-A2 (3kg, BSU-001), NSB-B2 (3kg, BSU-002)
-	// BSU-001 stok: SMP-001=4kg, SMP-002=3kg (pas)
-	// BSU-002 stok: SMP-001=5kg (< 6kg → kerugian 1kg), SMP-002=3kg (pas)
-	// TotalPenjualan: 100000
-
-	gdb, dbMock := newTestDB(t)
-	repo := new(mocks.MockBagiHasilRepo)
-	svc := services.NewBagiHasilServiceWithRepo(gdb, repo)
-
-	r := baseReward()
-	penjualan := &models.Penjualan{
-		PenjualanID:     "PJL-001",
-		BankID:          "BSI-001",
-		TotalPenjualan:  100000,
-		SatuanReward:    models.SatuanRewardEnumRp,
-		RewardID:        1,
-		Reward:          r,
-		StatusBagiHasil: models.BagiHasilPending,
-	}
-	bank := &models.BankSampah{BankID: "BSI-001", JenisBank: models.BSI}
-	bsuList := []models.BankSampah{
-		{BankID: "BSU-001"}, {BankID: "BSU-002"},
-	}
-	detailPenjualan := []models.DetailPenjualan{
-		{SampahID: "SMP-001", Qty: 10, HargaNasabahSnapshot: 2000},
-		{SampahID: "SMP-002", Qty: 6, HargaNasabahSnapshot: 3000},
-	}
-
-	tabSmp1 := []models.TabunganSampah{
-		baseTabunganNasabah("TBG-A1-1", "NSB-A1", "SMP-001", 4),
-		baseTabunganNasabah("TBG-B1-1", "NSB-B1", "SMP-001", 6),
-	}
-	tabSmp2 := []models.TabunganSampah{
-		baseTabunganNasabah("TBG-A2-2", "NSB-A2", "SMP-002", 3),
-		baseTabunganNasabah("TBG-B2-2", "NSB-B2", "SMP-002", 3),
-	}
-	bsuTabSmp1 := []models.TabunganSampah{
-		{TabunganID: "TBG-S1-1", BankID: ptrStr("BSU-001"), SampahID: "SMP-001", Entitas: models.EntitasBankSampah, Qty: 4, SisaQty: 4},
-		{TabunganID: "TBG-S2-1", BankID: ptrStr("BSU-002"), SampahID: "SMP-001", Entitas: models.EntitasBankSampah, Qty: 5, SisaQty: 5}, // kerugian 1kg
-	}
-	bsuTabSmp2 := []models.TabunganSampah{
-		{TabunganID: "TBG-S1-2", BankID: ptrStr("BSU-001"), SampahID: "SMP-002", Entitas: models.EntitasBankSampah, Qty: 3, SisaQty: 3},
-		{TabunganID: "TBG-S2-2", BankID: ptrStr("BSU-002"), SampahID: "SMP-002", Entitas: models.EntitasBankSampah, Qty: 3, SisaQty: 3},
-	}
-
-	repo.On("GetPenjualanWithReward", "PJL-001", "BSI-001").Return(penjualan, nil)
-	repo.On("GetBankByID", "BSI-001").Return(bank, nil)
-	repo.On("GetBSUList", mock.Anything, "BSI-001").Return(bsuList, nil)
-	repo.On("GetDetailPenjualan", mock.Anything, "PJL-001").Return(detailPenjualan, nil)
-	repo.On("GetTabunganNasabah", mock.Anything, "SMP-001", []string{"BSI-001", "BSU-001", "BSU-002"}).Return(tabSmp1, nil)
-	repo.On("GetTabunganNasabah", mock.Anything, "SMP-002", []string{"BSI-001", "BSU-001", "BSU-002"}).Return(tabSmp2, nil)
-	repo.On("GetTabunganBSU", mock.Anything, "SMP-001", []string{"BSU-001", "BSU-002"}).Return(bsuTabSmp1, nil)
-	repo.On("GetTabunganBSU", mock.Anything, "SMP-002", []string{"BSU-001", "BSU-002"}).Return(bsuTabSmp2, nil)
-	repo.On("SaveTabungan", mock.Anything, mock.Anything).Return(nil)
-	repo.On("UpsertSchemaHargaNasabah", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreateBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	// SMP-001: BSU-001=4kg*2000=8000, BSU-002=5kg*2000=10000
-	repo.On("CreatePerhitunganSisa", mock.Anything, mock.MatchedBy(func(ps *models.PerhitunganSisa) bool {
-		return ps.TabunganID == "TBG-S1-1" && ps.QtyDipakai == 4 && ps.NilaiDipakai == 8000
-	})).Return(nil)
-	repo.On("CreatePerhitunganSisa", mock.Anything, mock.MatchedBy(func(ps *models.PerhitunganSisa) bool {
-		return ps.TabunganID == "TBG-S2-1" && ps.QtyDipakai == 5 && ps.NilaiDipakai == 10000
-	})).Return(nil)
-	// SMP-002: BSU-001=3kg*3000=9000, BSU-002=3kg*3000=9000
-	repo.On("CreatePerhitunganSisa", mock.Anything, mock.MatchedBy(func(ps *models.PerhitunganSisa) bool {
-		return ps.TabunganID == "TBG-S1-2" && ps.QtyDipakai == 3 && ps.NilaiDipakai == 9000
-	})).Return(nil)
-	repo.On("CreatePerhitunganSisa", mock.Anything, mock.MatchedBy(func(ps *models.PerhitunganSisa) bool {
-		return ps.TabunganID == "TBG-S2-2" && ps.QtyDipakai == 3 && ps.NilaiDipakai == 9000
-	})).Return(nil)
-	repo.On("CreatePenerimaBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreateDetailBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreatePencairanTabungan", mock.Anything, mock.Anything).Return(nil)
-	repo.On("UpdateSaldoRekening", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-	repo.On("GetNasabahWithUser", "NSB-A1").Return(&models.Nasabah{NasabahID: "NSB-A1", User: models.User{UserID: "USR-1"}}, nil)
-	repo.On("GetNasabahWithUser", "NSB-B1").Return(&models.Nasabah{NasabahID: "NSB-B1", User: models.User{UserID: "USR-2"}}, nil)
-	repo.On("GetNasabahWithUser", "NSB-A2").Return(&models.Nasabah{NasabahID: "NSB-A2", User: models.User{UserID: "USR-3"}}, nil)
-	repo.On("GetNasabahWithUser", "NSB-B2").Return(&models.Nasabah{NasabahID: "NSB-B2", User: models.User{UserID: "USR-4"}}, nil)
-	repo.On("UpdatePenjualanStatus", mock.Anything, mock.Anything, models.BagiHasilBerhasil).Return(nil)
-
-	expectTx(dbMock)
-
-	result, err := svc.Submit("PJL-001", "BSI-001", "ADM-001")
-
-	assert.NoError(t, err)
-	// SMP-001: (4+6)*2000=20000, SMP-002: (3+3)*3000=18000 → total 38000
-	assert.Equal(t, float64(38000), result.TotalDistribusiNasabah)
-	assert.Equal(t, float64(62000), result.SisaBagiHasil) // 100000 - 38000
-	assert.Len(t, result.NasabahNotifs, 4)
-
-	// 4 nasabah tabungan (SMP-001: 2, SMP-002: 2) + 4 BSU physical (2 per sampah) = 8x SaveTabungan
-	repo.AssertNumberOfCalls(t, "SaveTabungan", 8)
-	// 4 BSU physical entries (2 sampah × 2 BSU) → 4x CreatePerhitunganSisa
-	repo.AssertNumberOfCalls(t, "CreatePerhitunganSisa", 4)
-	// 4 nasabah tabungan dikonsumsi → 4x PencairanTabungan
-	repo.AssertNumberOfCalls(t, "CreatePencairanTabungan", 4)
-	repo.AssertExpectations(t)
-}
-
-// ── Tests: edge cases ─────────────────────────────────────────────────────────
-
-func TestSubmitBagiHasil_SkipItemHargaNol(t *testing.T) {
-	// item dengan HargaNasabahSnapshot=0 dilewati, tidak mengurangi tabungan
+func TestSubmitBagiHasil_TolakItemHargaNol(t *testing.T) {
 	gdb, dbMock := newTestDB(t)
 	repo := new(mocks.MockBagiHasilRepo)
 	svc := services.NewBagiHasilServiceWithRepo(gdb, repo)
@@ -857,7 +622,7 @@ func TestSubmitBagiHasil_SkipItemHargaNol(t *testing.T) {
 	bank := &models.BankSampah{BankID: "BSM-001", JenisBank: models.BSM}
 	detailPenjualan := []models.DetailPenjualan{
 		{SampahID: "SMP-001", Qty: 5, HargaNasabahSnapshot: 1000},
-		{SampahID: "SMP-002", Qty: 3, HargaNasabahSnapshot: 0}, // dilewati
+		{SampahID: "SMP-002", Qty: 3, HargaNasabahSnapshot: 0},
 	}
 	tabungan := []models.TabunganSampah{
 		baseTabunganNasabah("TBG-001", "NSB-001", "SMP-001", 5),
@@ -868,25 +633,21 @@ func TestSubmitBagiHasil_SkipItemHargaNol(t *testing.T) {
 	repo.On("GetPenjualanWithReward", "PJL-001", "BSM-001").Return(penjualan, nil)
 	repo.On("GetBankByID", "BSM-001").Return(bank, nil)
 	repo.On("GetDetailPenjualan", mock.Anything, "PJL-001").Return(detailPenjualan, nil)
-	repo.On("GetTabunganNasabah", mock.Anything, "SMP-001", []string{"BSM-001"}).Return(tabungan, nil)
-	repo.On("SaveTabungan", mock.Anything, mock.Anything).Return(nil)
-	repo.On("UpsertSchemaHargaNasabah", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreateBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreatePenerimaBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreateDetailBagiHasil", mock.Anything, mock.Anything).Return(nil)
-	repo.On("CreatePencairanTabungan", mock.Anything, mock.Anything).Return(nil)
-	repo.On("UpdateSaldoRekening", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-	repo.On("GetNasabahWithUser", "NSB-001").Return(&models.Nasabah{NasabahID: "NSB-001", User: models.User{UserID: "USR-1"}}, nil)
-	repo.On("UpdatePenjualanStatus", mock.Anything, mock.Anything, models.BagiHasilBerhasil).Return(nil)
+	repo.On("GetTabunganNasabah", mock.Anything, "SMP-001", []string{"BSM-001"}).Return(tabungan, nil).Maybe()
+	repo.On("SaveTabungan", mock.Anything, mock.Anything).Return(nil).Maybe()
+	repo.On("UpsertSchemaHargaNasabah", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(nil).Maybe()
 
-	expectTx(dbMock)
+	dbMock.ExpectBegin()
+	dbMock.ExpectRollback()
 
 	result, err := svc.Submit("PJL-001", "BSM-001", "ADM-001")
 
-	assert.NoError(t, err)
-	assert.Equal(t, float64(5000), result.TotalDistribusiNasabah) // hanya SMP-001
-	// GetTabunganNasabah hanya dipanggil 1x (SMP-002 dilewati karena harga=0)
-	repo.AssertNumberOfCalls(t, "GetTabunganNasabah", 1)
+	assert.Error(t, err)
+	assert.Nil(t, result)
+	assert.Contains(t, err.Error(), "SMP-002")
+	repo.AssertNotCalled(t, "UpdatePenjualanStatus", mock.Anything, mock.Anything, mock.Anything)
+	assert.NoError(t, dbMock.ExpectationsWereMet())
 }
 
 func TestSubmitBagiHasil_SaveTabunganError_Rollback(t *testing.T) {
@@ -914,11 +675,8 @@ func TestSubmitBagiHasil_SaveTabunganError_Rollback(t *testing.T) {
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "Gagal update tabungan")
-	// CreateBagiHasil tidak pernah dipanggil karena rollback
 	repo.AssertNotCalled(t, "CreateBagiHasil")
 }
-
-// ── Tests: BSI FIFO konsumsi dari dua tabungan ────────────────────────────────
 
 func TestSubmitBagiHasil_FIFODuaTabungan(t *testing.T) {
 	gdb, dbMock := newTestDB(t)
@@ -929,8 +687,6 @@ func TestSubmitBagiHasil_FIFODuaTabungan(t *testing.T) {
 	detailPenjualan := []models.DetailPenjualan{
 		{SampahID: "SMP-001", Qty: 15, HargaNasabahSnapshot: 1000},
 	}
-	// dua nasabah: NSB-A punya 10kg (lebih tua), NSB-B punya 10kg
-	// FIFO: ambil 10kg dari NSB-A dulu, sisanya 5kg dari NSB-B
 	tabungan := []models.TabunganSampah{
 		baseTabunganNasabah("TBG-A", "NSB-A", "SMP-001", 10),
 		baseTabunganNasabah("TBG-B", "NSB-B", "SMP-001", 10),
@@ -956,16 +712,13 @@ func TestSubmitBagiHasil_FIFODuaTabungan(t *testing.T) {
 	repo.On("GetNasabahWithUser", "NSB-B").Return(nasabahB, nil)
 	repo.On("UpdatePenjualanStatus", mock.Anything, mock.Anything, models.BagiHasilBerhasil).Return(nil)
 
-	expectTx(dbMock)
+	expectTx(dbMock, 2)
 
 	result, err := svc.Submit("PJL-001", "BSM-001", "ADM-001")
 
 	assert.NoError(t, err)
-	// total: 15 * 1000 = 15000
 	assert.Equal(t, float64(15000), result.TotalDistribusiNasabah)
-	// dua nasabah dapat notif
 	assert.Len(t, result.NasabahNotifs, 2)
-	// SaveTabungan dipanggil 2x (dua tabungan dikonsumsi)
 	repo.AssertNumberOfCalls(t, "SaveTabungan", 2)
 	repo.AssertExpectations(t)
 }

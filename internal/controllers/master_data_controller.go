@@ -18,9 +18,6 @@ func NewMasterDataController(db *gorm.DB) *MasterDataController {
 	return &MasterDataController{DB: db}
 }
 
-// ─── Master Sampah ───────────────────────────────────────────────────────────
-
-// GET /master/sampah?q=&page=1&limit=20
 func (mc *MasterDataController) GetAllMasterSampah(c *gin.Context) {
 	q := c.Query("q")
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -55,7 +52,6 @@ func (mc *MasterDataController) GetAllMasterSampah(c *gin.Context) {
 	})
 }
 
-// POST /master/sampah
 func (mc *MasterDataController) CreateMasterSampah(c *gin.Context) {
 	var req struct {
 		NamaSampah string            `json:"nama_sampah" binding:"required"`
@@ -86,7 +82,6 @@ func (mc *MasterDataController) CreateMasterSampah(c *gin.Context) {
 	})
 }
 
-// PATCH /master/sampah/:sarok_id
 func (mc *MasterDataController) UpdateMasterSampah(c *gin.Context) {
 	sarokID, err := strconv.Atoi(c.Param("sarok_id"))
 	if err != nil {
@@ -131,7 +126,6 @@ func (mc *MasterDataController) UpdateMasterSampah(c *gin.Context) {
 	})
 }
 
-// DELETE /master/sampah/:sarok_id
 func (mc *MasterDataController) DeleteMasterSampah(c *gin.Context) {
 	sarokID, err := strconv.Atoi(c.Param("sarok_id"))
 	if err != nil {
@@ -160,9 +154,6 @@ func (mc *MasterDataController) DeleteMasterSampah(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Data sampah berhasil dihapus"})
 }
 
-// GET /master/sampah/statistik
-// Rata-rata harga nasabah per jenis sampah, dipisah per jenis reward (Rp / poin)
-// Query params (opsional): bulan_mulai, tahun_mulai, bulan_selesai, tahun_selesai
 func (mc *MasterDataController) GetStatistikSampah(c *gin.Context) {
 	type StatistikSampahItem struct {
 		SarokID       int     `gorm:"column:sarok_id"        json:"sarok_id"`
@@ -238,8 +229,6 @@ func (mc *MasterDataController) GetStatistikSampah(c *gin.Context) {
 	})
 }
 
-// GET /master/sampah/favorit?limit=10
-// Query params (opsional): bulan_mulai, tahun_mulai, bulan_selesai, tahun_selesai
 func (mc *MasterDataController) GetFavoritSampah(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
 	if limit < 1 || limit > 100 {
@@ -319,8 +308,6 @@ func (mc *MasterDataController) GetFavoritSampah(c *gin.Context) {
 	})
 }
 
-// GET /master/sampah/per-kategori
-// Semua kategori sampah beserta daftar master sampah yang masuk kategori itu
 func (mc *MasterDataController) GetSampahPerKategori(c *gin.Context) {
 	type SampahRow struct {
 		KategoriID int    `gorm:"column:kategori_id"`
@@ -390,10 +377,7 @@ func (mc *MasterDataController) GetSampahPerKategori(c *gin.Context) {
 	})
 }
 
-// ─── Master Sembako ──────────────────────────────────────────────────────────
-
-// GET /master/sembako?q=&page=1&limit=20
-func (mc *MasterDataController) GetAllMasterSembako(c *gin.Context) {
+func (mc *MasterDataController) GetAllMasterBarang(c *gin.Context) {
 	q := c.Query("q")
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
@@ -405,7 +389,7 @@ func (mc *MasterDataController) GetAllMasterSembako(c *gin.Context) {
 	}
 	offset := (page - 1) * limit
 
-	db := mc.DB.Model(&models.Sembako{})
+	db := mc.DB.Model(&models.Barang{})
 	if q != "" {
 		db = db.Where("nama_barang ILIKE ?", "%"+q+"%")
 	}
@@ -413,9 +397,9 @@ func (mc *MasterDataController) GetAllMasterSembako(c *gin.Context) {
 	var total int64
 	db.Count(&total)
 
-	var results []models.Sembako
+	var results []models.Barang
 	if err := db.Offset(offset).Limit(limit).Order("nama_barang ASC").Find(&results).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data sembako"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data barang"})
 		return
 	}
 
@@ -427,8 +411,7 @@ func (mc *MasterDataController) GetAllMasterSembako(c *gin.Context) {
 	})
 }
 
-// POST /master/sembako
-func (mc *MasterDataController) CreateMasterSembako(c *gin.Context) {
+func (mc *MasterDataController) CreateMasterBarang(c *gin.Context) {
 	var req struct {
 		NamaBarang string `json:"nama_barang" binding:"required"`
 	}
@@ -437,31 +420,30 @@ func (mc *MasterDataController) CreateMasterSembako(c *gin.Context) {
 		return
 	}
 
-	sembako := models.Sembako{
+	barang := models.Barang{
 		NamaBarang: req.NamaBarang,
 	}
-	if err := mc.DB.Create(&sembako).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat data sembako"})
+	if err := mc.DB.Create(&barang).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat data barang"})
 		return
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"message": "Data sembako berhasil dibuat",
-		"data":    sembako,
+		"message": "Data barang berhasil dibuat",
+		"data":    barang,
 	})
 }
 
-// PATCH /master/sembako/:barang_id
-func (mc *MasterDataController) UpdateMasterSembako(c *gin.Context) {
+func (mc *MasterDataController) UpdateMasterBarang(c *gin.Context) {
 	barangID, err := strconv.Atoi(c.Param("barang_id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "barang_id tidak valid"})
 		return
 	}
 
-	var sembako models.Sembako
-	if err := mc.DB.First(&sembako, barangID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Data sembako tidak ditemukan"})
+	var barang models.Barang
+	if err := mc.DB.First(&barang, barangID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Data barang tidak ditemukan"})
 		return
 	}
 
@@ -478,50 +460,47 @@ func (mc *MasterDataController) UpdateMasterSembako(c *gin.Context) {
 		return
 	}
 
-	sembako.NamaBarang = req.NamaBarang
-	if err := mc.DB.Save(&sembako).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengupdate data sembako"})
+	barang.NamaBarang = req.NamaBarang
+	if err := mc.DB.Save(&barang).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengupdate data barang"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Data sembako berhasil diupdate",
-		"data":    sembako,
+		"message": "Data barang berhasil diupdate",
+		"data":    barang,
 	})
 }
 
-// DELETE /master/sembako/:barang_id
-func (mc *MasterDataController) DeleteMasterSembako(c *gin.Context) {
+func (mc *MasterDataController) DeleteMasterBarang(c *gin.Context) {
 	barangID, err := strconv.Atoi(c.Param("barang_id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "barang_id tidak valid"})
 		return
 	}
 
-	var sembako models.Sembako
-	if err := mc.DB.First(&sembako, barangID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Data sembako tidak ditemukan"})
+	var barang models.Barang
+	if err := mc.DB.First(&barang, barangID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Data barang tidak ditemukan"})
 		return
 	}
 
 	var usedCount int64
-	mc.DB.Model(&models.KatalogSembako{}).Where("barang_id = ?", barangID).Count(&usedCount)
+	mc.DB.Model(&models.KatalogBarang{}).Where("barang_id = ?", barangID).Count(&usedCount)
 	if usedCount > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "Data sembako tidak dapat dihapus karena sudah digunakan dalam katalog"})
+		c.JSON(http.StatusConflict, gin.H{"error": "Data barang tidak dapat dihapus karena sudah digunakan dalam katalog"})
 		return
 	}
 
-	if err := mc.DB.Delete(&sembako).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghapus data sembako"})
+	if err := mc.DB.Delete(&barang).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghapus data barang"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Data sembako berhasil dihapus"})
+	c.JSON(http.StatusOK, gin.H{"message": "Data barang berhasil dihapus"})
 }
 
-// GET /master/sembako/favorit?limit=10
-// Query params (opsional): bulan_mulai, tahun_mulai, bulan_selesai, tahun_selesai
-func (mc *MasterDataController) GetFavoritSembako(c *gin.Context) {
+func (mc *MasterDataController) GetFavoritBarang(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
 	if limit < 1 || limit > 100 {
 		limit = 10
@@ -554,7 +533,7 @@ func (mc *MasterDataController) GetFavoritSembako(c *gin.Context) {
 		filterTanggal = true
 	}
 
-	type FavoritSembakoItem struct {
+	type FavoritBarangItem struct {
 		BarangID      int     `gorm:"column:barang_id"      json:"barang_id"`
 		NamaBarang    string  `gorm:"column:nama_barang"    json:"nama_barang"`
 		TotalQty      float64 `gorm:"column:total_qty"      json:"total_qty"`
@@ -564,9 +543,9 @@ func (mc *MasterDataController) GetFavoritSembako(c *gin.Context) {
 	}
 
 	dateFilter := ""
-	args := []interface{}{models.StatusPenarikanBerhasil}
+	args := []interface{}{models.StatusPenarikanCompleted}
 	if filterTanggal {
-		dateFilter = "AND p.created_at >= ? AND p.created_at < ?"
+		dateFilter = "AND rpc.created_at >= ? AND rpc.created_at < ?"
 		args = append(args, startDate, endDate)
 	}
 	args = append(args, limit)
@@ -579,56 +558,55 @@ func (mc *MasterDataController) GetFavoritSembako(c *gin.Context) {
 			SUM(dps.subtotal_poin)       AS total_poin,
 			COUNT(DISTINCT p.nasabah_id) AS jumlah_nasabah,
 			COUNT(dps.penarikan_id)      AS jumlah_tukar
-		FROM detail_penarikan_sembako dps
+		FROM detail_penarikan_barang dps
 		JOIN penarikan p        ON p.penarikan_id  = dps.penarikan_id
-		JOIN katalog_sembako ks ON ks.sembako_id   = dps.sembako_id
-		JOIN sembako s          ON s.barang_id     = ks.barang_id
+		JOIN katalog_barang ks ON ks.produk_id   = dps.produk_id
+		JOIN barang s          ON s.barang_id     = ks.barang_id
+		JOIN riwayat_penarikan rpc ON rpc.penarikan_id = p.penarikan_id AND rpc.status_penarikan = 'pending'
 		WHERE p.status_penarikan = ? ` + dateFilter + `
 		GROUP BY s.barang_id, s.nama_barang
 		ORDER BY total_qty DESC
 		LIMIT ?
 	`
 
-	var results []FavoritSembakoItem
+	var results []FavoritBarangItem
 	if err := mc.DB.Raw(query, args...).Scan(&results).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data favorit sembako: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data favorit barang: " + err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Sembako favorit nasabah berhasil diambil",
+		"message": "Barang favorit nasabah berhasil diambil",
 		"data":    results,
 	})
 }
 
-// GET /master/sembako/statistik
-// Rata-rata nilai poin per jenis barang sembako (dari katalog_sembako semua bank)
-func (mc *MasterDataController) GetStatistikSembako(c *gin.Context) {
-	type StatistikSembakoItem struct {
+func (mc *MasterDataController) GetStatistikBarang(c *gin.Context) {
+	type StatistikBarangItem struct {
 		BarangID      int     `gorm:"column:barang_id"      json:"barang_id"`
 		NamaBarang    string  `gorm:"column:nama_barang"    json:"nama_barang"`
 		RataRataPoin  float64 `gorm:"column:rata_rata_poin" json:"rata_rata_poin"`
 		JumlahKatalog int64   `gorm:"column:jumlah_katalog" json:"jumlah_katalog"`
 	}
 
-	var results []StatistikSembakoItem
+	var results []StatistikBarangItem
 	if err := mc.DB.Raw(`
 		SELECT
 			s.barang_id,
 			s.nama_barang,
 			COALESCE(AVG(ks.nilai_poin), 0) AS rata_rata_poin,
-			COUNT(ks.sembako_id)            AS jumlah_katalog
-		FROM sembako s
-		LEFT JOIN katalog_sembako ks ON ks.barang_id = s.barang_id
+			COUNT(ks.produk_id)            AS jumlah_katalog
+		FROM barang s
+		LEFT JOIN katalog_barang ks ON ks.barang_id = s.barang_id
 		GROUP BY s.barang_id, s.nama_barang
 		ORDER BY s.nama_barang ASC
 	`).Scan(&results).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil statistik sembako: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil statistik barang: " + err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Statistik sembako berhasil diambil",
+		"message": "Statistik barang berhasil diambil",
 		"data":    results,
 	})
 }

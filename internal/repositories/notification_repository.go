@@ -46,7 +46,6 @@ func (r *notifikasiRepository) FindByID(notifikasiID string) (*models.Notifikasi
 	return &notif, nil
 }
 
-// FindByUserID returns paginated notifications for a user filtered by role target, newest first.
 func (r *notifikasiRepository) FindByUserID(userID, roleTarget string, limit, offset int) ([]models.Notifikasi, int64, error) {
 	var notifs []models.Notifikasi
 	var total int64

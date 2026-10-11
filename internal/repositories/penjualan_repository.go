@@ -1,6 +1,8 @@
 package repositories
 
 import (
+	"time"
+
 	"enviroo-be/internal/models"
 
 	"gorm.io/gorm"
@@ -26,16 +28,14 @@ func (r *PenjualanRepo) GetRewardByID(db *gorm.DB, rewardID int) (*models.Reward
 	return &reward, err
 }
 
-// GetPersenNasabah returns the bagi-hasil percentage for the bank+reward combination.
-// Returns 0 if no active nilai_reward_bank record is found (graceful default).
-func (r *PenjualanRepo) GetPersenNasabah(db *gorm.DB, bankID string, rewardID int) float64 {
+func (r *PenjualanRepo) GetPersenNasabah(db *gorm.DB, bankID string, rewardID int) (float64, error) {
 	var nilai models.NilaiRewardBank
-	err := db.Where("bank_id = ? AND reward_id = ? AND level_user = ? AND is_active = true",
+	err := db.Where("bank_id = ? AND reward_id = ? AND level_user = ?",
 		bankID, rewardID, models.LevelNasabah).First(&nilai).Error
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return nilai.PersenBagiHasil
+	return nilai.PersenBagiHasil, nil
 }
 
 func (r *PenjualanRepo) GetKatalogSampah(db *gorm.DB, sampahID string) (*models.KatalogSampah, error) {
@@ -84,7 +84,7 @@ func (r *PenjualanRepo) CreateDetailPenjualan(db *gorm.DB, details []models.Deta
 
 func (r *PenjualanRepo) GetPenjualan(penjualanID string) (*models.Penjualan, error) {
 	var p models.Penjualan
-	err := r.DB.Preload("BankSampah").Preload("Reward").
+	err := r.DB.Preload("BankSampah").Preload("Reward").Preload("MitraPengepul").
 		Where("penjualan_id = ?", penjualanID).First(&p).Error
 	return &p, err
 }
@@ -104,11 +104,40 @@ func (r *PenjualanRepo) GetAdminNama(adminID string) string {
 	return nama
 }
 
-func (r *PenjualanRepo) GetDistinctMitra(bankID string) ([]string, error) {
-	var names []string
-	err := r.DB.Table("penjualan").
-		Select("DISTINCT identitas_pembeli").
-		Where("bank_id = ? AND identitas_pembeli IS NOT NULL AND identitas_pembeli != ''", bankID).
-		Pluck("identitas_pembeli", &names).Error
-	return names, err
+type RiwayatPenjualanRow struct {
+	PenjualanID     string                     `gorm:"column:penjualan_id"`
+	MitraID         string                     `gorm:"column:mitra_id"`
+	NamaMitra       string                     `gorm:"column:nama_mitra"`
+	TotalItem       int                        `gorm:"column:total_item"`
+	TotalPenjualan  float64                    `gorm:"column:total_penjualan"`
+	NamaReward      string                     `gorm:"column:nama_reward"`
+	SatuanReward    models.SatuanRewardEnum    `gorm:"column:satuan_reward"`
+	BuktiFoto       string                     `gorm:"column:bukti_foto"`
+	CreatedAt       time.Time                  `gorm:"column:created_at"`
+	AdminName       string                     `gorm:"column:admin_name"`
+	StatusBagiHasil models.StatusBagiHasilEnum `gorm:"column:status_bagi_hasil"`
+}
+
+func (r *PenjualanRepo) GetRiwayatPenjualan(bankID string, start, end *time.Time) ([]RiwayatPenjualanRow, error) {
+	q := r.DB.Table("penjualan").
+		Select(`penjualan.penjualan_id, penjualan.mitra_id, mitra_pengepul.nama_mitra,
+		        penjualan.total_item, penjualan.total_penjualan, penjualan.satuan_reward,
+		        penjualan.bukti_foto, penjualan.created_at, penjualan.status_bagi_hasil,
+		        users.nama as admin_name, reward.nama_reward as nama_reward`).
+		Joins("LEFT JOIN admin ON penjualan.sold_by = admin.admin_id").
+		Joins("LEFT JOIN users ON admin.user_id = users.user_id").
+		Joins("LEFT JOIN reward ON penjualan.reward_id = reward.reward_id").
+		Joins("LEFT JOIN mitra_pengepul ON penjualan.mitra_id = mitra_pengepul.mitra_id").
+		Where("penjualan.bank_id = ?", bankID)
+
+	if start != nil {
+		q = q.Where("penjualan.created_at >= ?", *start)
+	}
+	if end != nil {
+		q = q.Where("penjualan.created_at <= ?", *end)
+	}
+
+	rows := []RiwayatPenjualanRow{}
+	err := q.Order("penjualan.created_at DESC").Find(&rows).Error
+	return rows, err
 }

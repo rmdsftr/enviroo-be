@@ -19,7 +19,7 @@ go.work
 go.work.sum
 
 # Environment variables
-.env
+.env*
 
 # IDEs
 .vscode/
@@ -47,11 +47,10 @@ enviroo-be
 enviroo-be.exe
 
 # Firebase / GCP credentials
-*.json
 internal/config/*.json
 
-# Docker
-.dockerignore
+# Database schema
+enviroo.sql
 
 # SSL/TLS certificates
 *.pem

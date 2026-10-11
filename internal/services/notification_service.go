@@ -6,67 +6,65 @@ import (
 	"log"
 	"time"
 
+	"enviroo-be/internal/adapters/fcm"
 	"enviroo-be/internal/models"
 	"enviroo-be/internal/repositories"
-	"enviroo-be/pkg/utils"
+	"enviroo-be/internal/utils"
 
 	"github.com/google/uuid"
 )
 
-// NotifikasiService menangani logika bisnis notifikasi:
-//   - menyimpan ke database
-//   - mengirim push notification via FCM
 type NotifikasiService interface {
-	// Kirim & simpan notifikasi ke satu user
 	Kirim(ctx context.Context, req KirimNotifRequest) error
 
-	// Ambil daftar notifikasi user berdasarkan role target (paginasi)
 	GetByUser(ctx context.Context, userID, roleTarget string, page, limit int) (*NotifListResponse, error)
 
-	// Tandai satu notifikasi sebagai sudah dibaca
 	BacaNotif(ctx context.Context, notifikasiID, userID string) error
 
-	// Tandai semua notifikasi user (sesuai role target) sebagai sudah dibaca
 	BacaSemua(ctx context.Context, userID, roleTarget string) error
 
-	// Jumlah notifikasi belum dibaca sesuai role target
 	JumlahBelumDibaca(ctx context.Context, userID, roleTarget string) (int64, error)
 
-	// Hapus satu notifikasi milik user
 	Hapus(ctx context.Context, notifikasiID, userID string) error
 
-	// ---- Helper per-fitur ----
 	NotifSetoranBerhasil(ctx context.Context, userID, fcmToken string, totalJenisSampah int, namaBank string, refID string) error
 	NotifBagiHasilDiterima(ctx context.Context, userID, fcmToken string, pesanNilai string, namaBSU string, namaBSI string, refID string) error
 	NotifBagiHasilNasabahDiterima(ctx context.Context, userID, fcmToken string, pesanNilai string, refID string) error
 	NotifPenarikanBerhasil(ctx context.Context, userID, fcmToken string, pesanNilai string, refID string) error
-	NotifPenarikanDitolak(ctx context.Context, userID, fcmToken string, refID string, alasan string) error
+	NotifPenarikanDitolak(ctx context.Context, userID, fcmToken string, refID string) error
+	NotifPenarikanDisetujui(ctx context.Context, userID, fcmToken string, pesanDeadlineJemput string, refID string) error
+	NotifPenarikanRequestExpired(ctx context.Context, userID, fcmToken string, pesanNilai string, refID string) error
+	NotifPenarikanRequestExpiredAdmin(ctx context.Context, userID, fcmToken string, namaNasabah string, pesanNilai string, refID string) error
+	NotifPenarikanPickupExpired(ctx context.Context, userID, fcmToken string, pesanNilai string, refID string) error
+	NotifPenarikanPickupExpiredAdmin(ctx context.Context, userID, fcmToken string, namaNasabah string, pesanNilai string, refID string) error
 	NotifJatuhTempo(ctx context.Context, userID, fcmToken string, hariLagi int, refID string) error
 	NotifAkunDiverifikasi(ctx context.Context, userID, fcmToken string) error
 	NotifPengajuanDiterima(ctx context.Context, userID, fcmToken string, refID string) error
 	NotifPengajuanDitolak(ctx context.Context, userID, fcmToken string, refID string, alasan string) error
 	NotifPengangkutanBerhasil(ctx context.Context, userID, fcmToken string, totalJenisSampah int, namaBSI string, refID string) error
-	NotifDistribusiSembakoBerhasil(ctx context.Context, userID, fcmToken string, namaBSU string, totalJenisSembako int, namaBSI string, refID string) error
+	NotifDistribusiBarangBerhasil(ctx context.Context, userID, fcmToken string, namaBSU string, totalJenisBarang int, namaBSI string, refID string) error
 	NotifPengajuanPenarikan(ctx context.Context, userID, fcmToken string, namaNasabah string, pesanNilai string, refID string) error
-	NotifReminderPenimbangan(ctx context.Context, userID, fcmToken string, namaBank string, jamMulai string, jamSelesai string, refID string) error
 	NotifReminderPengangkutan(ctx context.Context, userID, fcmToken string, namaBSU string, namaBSI string, jamMulai string, jamSelesai string, refID string) error
 	NotifReminderPenimbanganH1(ctx context.Context, userID, fcmToken string, namaBank string, jamMulai string, jamSelesai string, refID string) error
+	NotifReminderPenimbanganAdminH1(ctx context.Context, userID, fcmToken string, namaBank string, jamMulai string, jamSelesai string, refID string) error
 	NotifReminderPengangkutanH1(ctx context.Context, userID, fcmToken string, namaBSU string, namaBSI string, jamMulai string, jamSelesai string, refID string) error
+	NotifPembatalanPenimbangan(ctx context.Context, userID, fcmToken string, tanggalSesi time.Time, jamMulai string, jamSelesai string, refID string) error
+	NotifPembatalanPenimbanganAdmin(ctx context.Context, userID, fcmToken string, tanggalSesi time.Time, jamMulai string, jamSelesai string, refID string) error
+	NotifSesiPenimbanganDibuka(ctx context.Context, userID, fcmToken string, refID string) error
+	NotifSesiPenimbanganDitutup(ctx context.Context, userID, fcmToken string, refID string) error
 	NotifRequestPengangkutan(ctx context.Context, userID, fcmToken string, namaBSU string, refID string) error
 }
 
-// KirimNotifRequest adalah parameter umum untuk mengirim notifikasi.
 type KirimNotifRequest struct {
 	UserID     string
-	FCMToken   string // boleh kosong jika hanya simpan ke DB
-	RoleTarget string // "nasabah" atau "admin"
+	FCMToken   string
+	RoleTarget string
 
 	Judul   string
 	Pesan   string
 	RefID   *string
 	RefType *string
 
-	// Data tambahan untuk deep-link di Flutter
 	ExtraData map[string]string
 }
 
@@ -78,26 +76,19 @@ type NotifListResponse struct {
 	TotalHalaman int
 }
 
-// ----------------------------------------------------------------
-
 type notifikasiService struct {
-	repo repositories.NotifikasiRepository
-	fcm  *utils.FCMClient // boleh nil jika FCM tidak dikonfigurasi
+	repo      repositories.NotifikasiRepository
+	fcmClient *fcm.Client
 }
 
 func NewNotifikasiService(
 	repo repositories.NotifikasiRepository,
-	fcm *utils.FCMClient,
+	fcmClient *fcm.Client,
 ) NotifikasiService {
-	return &notifikasiService{repo: repo, fcm: fcm}
+	return &notifikasiService{repo: repo, fcmClient: fcmClient}
 }
 
-// ----------------------------------------------------------------
-// Core
-// ----------------------------------------------------------------
-
 func (s *notifikasiService) Kirim(ctx context.Context, req KirimNotifRequest) error {
-	// 1. Simpan ke database
 	notif := &models.Notifikasi{
 		NotifikasiID: uuid.New().String(),
 		UserID:       req.UserID,
@@ -113,8 +104,7 @@ func (s *notifikasiService) Kirim(ctx context.Context, req KirimNotifRequest) er
 		return fmt.Errorf("gagal simpan notifikasi: %w", err)
 	}
 
-	// 2. Kirim push notification (opsional — jika FCM tersedia & token ada)
-	if s.fcm != nil && req.FCMToken != "" {
+	if s.fcmClient != nil && req.FCMToken != "" {
 		data := map[string]string{
 			"notifikasi_id": notif.NotifikasiID,
 		}
@@ -128,14 +118,13 @@ func (s *notifikasiService) Kirim(ctx context.Context, req KirimNotifRequest) er
 			data[k] = v
 		}
 
-		_, err := s.fcm.SendToDevice(ctx, utils.FCMPayload{
+		_, err := s.fcmClient.SendToDevice(ctx, fcm.Payload{
 			Token: req.FCMToken,
 			Title: req.Judul,
 			Body:  req.Pesan,
 			Data:  data,
 		})
 		if err != nil {
-			// Jangan gagalkan seluruh flow hanya karena FCM error
 			log.Printf("[NotifikasiService] FCM gagal untuk user %s: %v", req.UserID, err)
 		}
 	}
@@ -187,10 +176,6 @@ func (s *notifikasiService) Hapus(ctx context.Context, notifikasiID, userID stri
 	return s.repo.Delete(notifikasiID, userID)
 }
 
-// ----------------------------------------------------------------
-// Helper per-fitur
-// ----------------------------------------------------------------
-
 func ptr(s string) *string { return &s }
 
 func (s *notifikasiService) NotifSetoranBerhasil(ctx context.Context, userID, fcmToken string, totalJenisSampah int, namaBank string, refID string) error {
@@ -241,13 +226,73 @@ func (s *notifikasiService) NotifPenarikanBerhasil(ctx context.Context, userID, 
 	})
 }
 
-func (s *notifikasiService) NotifPenarikanDitolak(ctx context.Context, userID, fcmToken string, refID string, alasan string) error {
+func (s *notifikasiService) NotifPenarikanDitolak(ctx context.Context, userID, fcmToken string, refID string) error {
 	return s.Kirim(ctx, KirimNotifRequest{
 		UserID:     userID,
 		FCMToken:   fcmToken,
 		RoleTarget: "nasabah",
 		Judul:      "Penarikan Ditolak ❌",
-		Pesan:      fmt.Sprintf("Permintaan penarikanmu ditolak. Alasan: %s", alasan),
+		Pesan:      "Maaf, pengajuan penarikan tidak disetujui oleh pihak bank sampah.",
+		RefID:      ptr(refID),
+		RefType:    ptr("penarikan"),
+	})
+}
+
+func (s *notifikasiService) NotifPenarikanDisetujui(ctx context.Context, userID, fcmToken string, pesanDeadlineJemput string, refID string) error {
+	return s.Kirim(ctx, KirimNotifRequest{
+		UserID:     userID,
+		FCMToken:   fcmToken,
+		RoleTarget: "nasabah",
+		Judul:      "Penarikan Disetujui ✅",
+		Pesan:      fmt.Sprintf("Pengajuan penarikan telah disetujui, silahkan jemput sebelum %s.", pesanDeadlineJemput),
+		RefID:      ptr(refID),
+		RefType:    ptr("penarikan"),
+	})
+}
+
+func (s *notifikasiService) NotifPenarikanRequestExpired(ctx context.Context, userID, fcmToken string, pesanNilai string, refID string) error {
+	return s.Kirim(ctx, KirimNotifRequest{
+		UserID:     userID,
+		FCMToken:   fcmToken,
+		RoleTarget: "nasabah",
+		Judul:      "Pengajuan Penarikan Kadaluarsa ⏰",
+		Pesan:      fmt.Sprintf("Pengajuanmu senilai %s kadaluarsa karena tidak dikonfirmasi tepat waktu. Saldo telah dikembalikan.", pesanNilai),
+		RefID:      ptr(refID),
+		RefType:    ptr("penarikan"),
+	})
+}
+
+func (s *notifikasiService) NotifPenarikanRequestExpiredAdmin(ctx context.Context, userID, fcmToken string, namaNasabah string, pesanNilai string, refID string) error {
+	return s.Kirim(ctx, KirimNotifRequest{
+		UserID:     userID,
+		FCMToken:   fcmToken,
+		RoleTarget: "admin",
+		Judul:      "Pengajuan Penarikan Kadaluarsa ⏰",
+		Pesan:      fmt.Sprintf("Pengajuan penarikan %s dari %s kadaluarsa karena tidak dikonfirmasi tepat waktu.", pesanNilai, namaNasabah),
+		RefID:      ptr(refID),
+		RefType:    ptr("penarikan"),
+	})
+}
+
+func (s *notifikasiService) NotifPenarikanPickupExpired(ctx context.Context, userID, fcmToken string, pesanNilai string, refID string) error {
+	return s.Kirim(ctx, KirimNotifRequest{
+		UserID:     userID,
+		FCMToken:   fcmToken,
+		RoleTarget: "nasabah",
+		Judul:      "Batas Penjemputan Terlewat ⏰",
+		Pesan:      fmt.Sprintf("Penjemputan penarikanmu senilai %s terlewat batas waktu. Saldo telah dikembalikan.", pesanNilai),
+		RefID:      ptr(refID),
+		RefType:    ptr("penarikan"),
+	})
+}
+
+func (s *notifikasiService) NotifPenarikanPickupExpiredAdmin(ctx context.Context, userID, fcmToken string, namaNasabah string, pesanNilai string, refID string) error {
+	return s.Kirim(ctx, KirimNotifRequest{
+		UserID:     userID,
+		FCMToken:   fcmToken,
+		RoleTarget: "admin",
+		Judul:      "Batas Penjemputan Terlewat ⏰",
+		Pesan:      fmt.Sprintf("Penjemputan penarikan %s oleh %s terlewat batas waktu.", pesanNilai, namaNasabah),
 		RefID:      ptr(refID),
 		RefType:    ptr("penarikan"),
 	})
@@ -311,15 +356,15 @@ func (s *notifikasiService) NotifPengangkutanBerhasil(ctx context.Context, userI
 	})
 }
 
-func (s *notifikasiService) NotifDistribusiSembakoBerhasil(ctx context.Context, userID, fcmToken string, namaBSU string, totalJenisSembako int, namaBSI string, refID string) error {
+func (s *notifikasiService) NotifDistribusiBarangBerhasil(ctx context.Context, userID, fcmToken string, namaBSU string, totalJenisBarang int, namaBSI string, refID string) error {
 	return s.Kirim(ctx, KirimNotifRequest{
 		UserID:     userID,
 		FCMToken:   fcmToken,
 		RoleTarget: "admin",
-		Judul:      "Distribusi Sembako Berhasil 🛒",
-		Pesan:      fmt.Sprintf("%s baru saja menerima %d sembako dari %s.", namaBSU, totalJenisSembako, namaBSI),
+		Judul:      "Distribusi Barang Berhasil 🛒",
+		Pesan:      fmt.Sprintf("%s baru saja menerima %d barang dari %s.", namaBSU, totalJenisBarang, namaBSI),
 		RefID:      ptr(refID),
-		RefType:    ptr("distribusi_sembako"),
+		RefType:    ptr("distribusi_barang"),
 	})
 }
 
@@ -335,25 +380,13 @@ func (s *notifikasiService) NotifPengajuanPenarikan(ctx context.Context, userID,
 	})
 }
 
-func (s *notifikasiService) NotifReminderPenimbangan(ctx context.Context, userID, fcmToken string, namaBank string, jamMulai string, jamSelesai string, refID string) error {
-	return s.Kirim(ctx, KirimNotifRequest{
-		UserID:     userID,
-		FCMToken:   fcmToken,
-		RoleTarget: "admin",
-		Judul:      "Jadwal Penimbangan Hari Ini ⚖️",
-		Pesan:      fmt.Sprintf("Jangan lupa! Hari ini ada penimbangan sampah di %s mulai pukul %s - %s.", namaBank, jamMulai, jamSelesai),
-		RefID:      ptr(refID),
-		RefType:    ptr("jadwal_penimbangan"),
-	})
-}
-
 func (s *notifikasiService) NotifReminderPengangkutan(ctx context.Context, userID, fcmToken string, namaBSU string, namaBSI string, jamMulai string, jamSelesai string, refID string) error {
 	return s.Kirim(ctx, KirimNotifRequest{
 		UserID:     userID,
 		FCMToken:   fcmToken,
 		RoleTarget: "admin",
 		Judul:      "Jadwal Pengangkutan Sampah Hari Ini 🚛",
-		Pesan:      fmt.Sprintf("Hari ini ada jadwal pengangkutan sampah dari %s ke %s pada pukul %s - %s.", namaBSU, namaBSI, jamMulai, jamSelesai),
+		Pesan:      fmt.Sprintf("Hari ini ada jadwal pengangkutan sampah dari %s ke %s pada pukul %s - %s.", namaBSU, namaBSI, utils.FormatJamIndo(jamMulai), utils.FormatJamIndo(jamSelesai)),
 		RefID:      ptr(refID),
 		RefType:    ptr("jadwal_pengangkutan"),
 	})
@@ -363,9 +396,21 @@ func (s *notifikasiService) NotifReminderPenimbanganH1(ctx context.Context, user
 	return s.Kirim(ctx, KirimNotifRequest{
 		UserID:     userID,
 		FCMToken:   fcmToken,
+		RoleTarget: "nasabah",
+		Judul:      "Reminder Jadwal Penimbangan ⏰",
+		Pesan:      fmt.Sprintf("Besok ada jadwal penimbangan sampah di %s mulai pukul %s - %s. Siapkan sampah Anda!", namaBank, utils.FormatJamIndo(jamMulai), utils.FormatJamIndo(jamSelesai)),
+		RefID:      ptr(refID),
+		RefType:    ptr("jadwal_penimbangan"),
+	})
+}
+
+func (s *notifikasiService) NotifReminderPenimbanganAdminH1(ctx context.Context, userID, fcmToken string, namaBank string, jamMulai string, jamSelesai string, refID string) error {
+	return s.Kirim(ctx, KirimNotifRequest{
+		UserID:     userID,
+		FCMToken:   fcmToken,
 		RoleTarget: "admin",
 		Judul:      "Reminder Jadwal Penimbangan ⏰",
-		Pesan:      fmt.Sprintf("Besok ada jadwal penimbangan sampah di %s mulai pukul %s - %s. Siapkan sampah Anda!", namaBank, jamMulai, jamSelesai),
+		Pesan:      fmt.Sprintf("Besok ada jadwal penimbangan sampah di %s mulai pukul %s - %s. Siapkan sesi penimbangannya!", namaBank, utils.FormatJamIndo(jamMulai), utils.FormatJamIndo(jamSelesai)),
 		RefID:      ptr(refID),
 		RefType:    ptr("jadwal_penimbangan"),
 	})
@@ -377,9 +422,59 @@ func (s *notifikasiService) NotifReminderPengangkutanH1(ctx context.Context, use
 		FCMToken:   fcmToken,
 		RoleTarget: "admin",
 		Judul:      "Reminder Jadwal Pengangkutan ⏰",
-		Pesan:      fmt.Sprintf("Besok ada jadwal pengangkutan sampah dari %s ke %s pada pukul %s - %s.", namaBSU, namaBSI, jamMulai, jamSelesai),
+		Pesan:      fmt.Sprintf("Besok ada jadwal pengangkutan sampah dari %s ke %s pada pukul %s - %s.", namaBSU, namaBSI, utils.FormatJamIndo(jamMulai), utils.FormatJamIndo(jamSelesai)),
 		RefID:      ptr(refID),
 		RefType:    ptr("jadwal_pengangkutan"),
+	})
+}
+
+func (s *notifikasiService) NotifPembatalanPenimbangan(ctx context.Context, userID, fcmToken string, tanggalSesi time.Time, jamMulai string, jamSelesai string, refID string) error {
+	return s.Kirim(ctx, KirimNotifRequest{
+		UserID:     userID,
+		FCMToken:   fcmToken,
+		RoleTarget: "nasabah",
+		Judul:      "Pembatalan Sesi Penimbangan",
+		Pesan: fmt.Sprintf("Sesi penimbangan pada %s pukul %s - %s WIB dibatalkan petugas. Lihat selengkapnya",
+			utils.FormatTanggalSajaIndo(tanggalSesi), utils.FormatJamIndo(jamMulai), utils.FormatJamIndo(jamSelesai)),
+		RefID:   ptr(refID),
+		RefType: ptr("jadwal_penimbangan"),
+	})
+}
+
+func (s *notifikasiService) NotifPembatalanPenimbanganAdmin(ctx context.Context, userID, fcmToken string, tanggalSesi time.Time, jamMulai string, jamSelesai string, refID string) error {
+	return s.Kirim(ctx, KirimNotifRequest{
+		UserID:     userID,
+		FCMToken:   fcmToken,
+		RoleTarget: "admin",
+		Judul:      "Pembatalan Sesi Penimbangan",
+		Pesan: fmt.Sprintf("Sesi penimbangan pada %s pukul %s - %s WIB dibatalkan petugas. Lihat selengkapnya",
+			utils.FormatTanggalSajaIndo(tanggalSesi), utils.FormatJamIndo(jamMulai), utils.FormatJamIndo(jamSelesai)),
+		RefID:   ptr(refID),
+		RefType: ptr("jadwal_penimbangan"),
+	})
+}
+
+func (s *notifikasiService) NotifSesiPenimbanganDibuka(ctx context.Context, userID, fcmToken string, refID string) error {
+	return s.Kirim(ctx, KirimNotifRequest{
+		UserID:     userID,
+		FCMToken:   fcmToken,
+		RoleTarget: "nasabah",
+		Judul:      "Sesi penimbangan dibuka",
+		Pesan:      "Sesi penimbangan hari ini sudah dibuka petugas. Ayo setor sampahmu ke bank sampah",
+		RefID:      ptr(refID),
+		RefType:    ptr("penimbangan"),
+	})
+}
+
+func (s *notifikasiService) NotifSesiPenimbanganDitutup(ctx context.Context, userID, fcmToken string, refID string) error {
+	return s.Kirim(ctx, KirimNotifRequest{
+		UserID:     userID,
+		FCMToken:   fcmToken,
+		RoleTarget: "nasabah",
+		Judul:      "Sesi penimbangan ditutup",
+		Pesan:      "Petugas sudah menutup sesi penimbangan hari ini. Setor sampahnya di jadwal penimbangan selanjutnya ya",
+		RefID:      ptr(refID),
+		RefType:    ptr("penimbangan"),
 	})
 }
 

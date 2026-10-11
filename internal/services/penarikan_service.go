@@ -2,59 +2,81 @@ package services
 
 import (
 	"context"
+	"encoding/json"
+	"enviroo-be/internal/idgen"
 	"enviroo-be/internal/models"
 	"enviroo-be/internal/repositories"
-	"enviroo-be/pkg/utils"
+	"enviroo-be/internal/utils"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
 )
 
-// ── Repo interface yang dibutuhkan service ─────────────────────────────────
-
 type PenarikanRepoIface interface {
 	FindNasabahAktif(nasabahID string) (*models.Nasabah, error)
+	FindNasabah(tx *gorm.DB, nasabahID string) (*models.Nasabah, error)
+	FindNasabahWithUser(nasabahID string) (*models.Nasabah, error)
+	CountNasabahMilikUser(userID, nasabahID string) (int64, error)
 	FindNasabahByUserID(userID string) (*models.Nasabah, error)
 	FindReward(rewardID int) (*models.Reward, error)
 	FindSaldoRekening(nasabahID string, rewardID int) (*models.SaldoRekening, error)
-	FindSembako(sembakoID, bankID string) (*models.KatalogSembako, error)
-	FindStokSembako(sembakoID, bankID string) (*models.StokSembako, error)
+	FindProduk(produkID, bankID string) (*models.KatalogBarang, error)
+	FindStokBarang(produkID, bankID string) (*models.StokBarang, error)
 	FindPenarikanByID(penarikanID string) (*models.Penarikan, error)
-	FindByNasabahID(nasabahID string, f repositories.PenarikanFilter) ([]models.Penarikan, error)
+	FindRiwayatPenarikan(penarikanID string) ([]repositories.RiwayatPenarikanRow, error)
+	FindByNasabahID(nasabahID string, f repositories.PenarikanFilter) ([]repositories.PenarikanListRow, error)
 	FindByBankID(bankID string, f repositories.PenarikanFilter) ([]models.Penarikan, error)
 	FindAdminsByBankID(bankID string) ([]repositories.AdminInfo, error)
 
 	LockSaldo(tx *gorm.DB, nasabahID string, rewardID int) (*models.SaldoRekening, error)
-	LockSembako(tx *gorm.DB, sembakoID, bankID string) (*models.KatalogSembako, error)
-	LockStok(tx *gorm.DB, sembakoID, bankID string) (*models.StokSembako, error)
+	LockProduk(tx *gorm.DB, produkID, bankID string) (*models.KatalogBarang, error)
+	LockStok(tx *gorm.DB, produkID, bankID string) (*models.StokBarang, error)
 	LockPenarikan(tx *gorm.DB, penarikanID string) (*models.Penarikan, error)
-	FindAdminTx(tx *gorm.DB, userID string) (*models.Admin, error)
-	FindDetailSembako(tx *gorm.DB, penarikanID string) ([]models.DetailPenarikanSembako, error)
+	FindAdminAktif(tx *gorm.DB, userID string) (*models.Admin, error)
+	FindDetailBarang(tx *gorm.DB, penarikanID string) ([]models.DetailPenarikanBarang, error)
 	UpdateSaldo(tx *gorm.DB, saldo *models.SaldoRekening, nominal float64) error
 	CreateRiwayat(tx *gorm.DB, rw *models.RiwayatArusSaldo) error
 	SavePenarikan(tx *gorm.DB, p *models.Penarikan) error
-	SaveDetailSembako(tx *gorm.DB, d *models.DetailPenarikanSembako) error
-	UpdateStok(tx *gorm.DB, sembakoID, bankID string, delta float64) error
+	SaveRiwayatPenarikan(tx *gorm.DB, rw *models.RiwayatPenarikan) error
+	SaveDetailBarang(tx *gorm.DB, d *models.DetailPenarikanBarang) error
+	UpdateStok(tx *gorm.DB, produkID, bankID string, delta float64) error
 	UpdateStatus(tx *gorm.DB, p *models.Penarikan, updates map[string]interface{}) error
 }
 
-// ── Request / Response types ───────────────────────────────────────────────
-
-type SembakoItemReq struct {
-	SembakoID string  `json:"sembako_id" binding:"required"`
-	Qty       float64 `json:"qty"        binding:"required,gt=0"`
+type BarangItemReq struct {
+	ProdukID string  `json:"produk_id" binding:"required"`
+	Qty      float64 `json:"qty"        binding:"required,gt=0"`
 }
 
 type AjukanPenarikanReq struct {
-	RewardID         int              `json:"reward_id"          binding:"required"`
-	NominalPenarikan float64          `json:"nominal_penarikan"`
-	ItemSembako      []SembakoItemReq `json:"item_sembako"`
+	RewardID         int             `json:"reward_id"          binding:"required"`
+	NominalPenarikan float64         `json:"nominal_penarikan"`
+	ItemBarang       []BarangItemReq `json:"item_barang"`
+
+	DeadlineKonfirmasi string  `json:"deadline_konfirmasi"`
+	Catatan            *string `json:"catatan"`
 }
 
-type PreviewSembakoItem struct {
-	SembakoID    string  `json:"sembako_id"`
-	NamaSembako  string  `json:"nama_sembako"`
+type KonfirmasiPenarikanReq struct {
+	Status  string  `json:"status"`
+	Catatan *string `json:"catatan"`
+
+	DeadlineJemput string `json:"deadline_jemput"`
+}
+
+type SelesaiPenarikanReq struct {
+	QRData      string  `json:"qr_data"`
+	NasabahID   string  `json:"nasabah_id"`
+	PenarikanID string  `json:"penarikan_id"`
+	BuktiFoto   string  `json:"bukti_foto"`
+	Catatan     *string `json:"catatan"`
+}
+
+type PreviewBarangItem struct {
+	ProdukID     string  `json:"produk_id"`
+	NamaBarang   string  `json:"nama_barang"`
 	Qty          float64 `json:"qty"`
 	NilaiPoin    float64 `json:"nilai_poin"`
 	SubtotalPoin float64 `json:"subtotal_poin"`
@@ -69,7 +91,7 @@ type PreviewResult struct {
 	NominalPenarikan float64                 `json:"nominal_penarikan"`
 	SaldoSetelah     float64                 `json:"saldo_setelah"`
 	SaldoCukup       bool                    `json:"saldo_cukup"`
-	ItemSembako      []PreviewSembakoItem    `json:"item_sembako,omitempty"`
+	ItemBarang       []PreviewBarangItem     `json:"item_barang,omitempty"`
 }
 
 type AjukanResult struct {
@@ -79,53 +101,68 @@ type AjukanResult struct {
 }
 
 type PenarikanSummary struct {
-	PenarikanID      string                     `json:"penarikan_id"`
-	NasabahID        *string                    `json:"nasabah_id"`
-	NamaNasabah      string                     `json:"nama_nasabah"`
-	BankID           *string                    `json:"bank_id"`
-	NamaBank         string                     `json:"nama_bank"`
-	RewardID         *int                       `json:"reward_id"`
-	NamaReward       string                     `json:"nama_reward"`
-	NominalPenarikan float64                    `json:"nominal_penarikan"`
-	SatuanPenarikan  models.SatuanRewardEnum    `json:"satuan_penarikan"`
-	StatusPenarikan  models.StatusPenarikanEnum `json:"status_penarikan"`
-	KadaluarsaAt     *time.Time                 `json:"kadaluarsa_at"`
-	BuktiFoto        *string                    `json:"bukti_foto"`
-	CreatedAt        time.Time                  `json:"created_at"`
-	UpdatedAt        time.Time                  `json:"updated_at"`
+	PenarikanID        string                     `json:"penarikan_id"`
+	NasabahID          *string                    `json:"nasabah_id"`
+	NamaNasabah        string                     `json:"nama_nasabah"`
+	BankID             *string                    `json:"bank_id"`
+	NamaBank           string                     `json:"nama_bank"`
+	RewardID           *int                       `json:"reward_id"`
+	NamaReward         string                     `json:"nama_reward"`
+	NominalPenarikan   float64                    `json:"nominal_penarikan"`
+	SatuanPenarikan    models.SatuanRewardEnum    `json:"satuan_penarikan"`
+	StatusPenarikan    models.StatusPenarikanEnum `json:"status_penarikan"`
+	DeadlineKonfirmasi *time.Time                 `json:"deadline_konfirmasi"`
+	DeadlineJemput     *time.Time                 `json:"deadline_jemput"`
+	BuktiFoto          *string                    `json:"bukti_foto"`
 }
 
-type DetailSembakoItem struct {
-	SembakoID    string  `json:"sembako_id"`
-	NamaSembako  string  `json:"nama_sembako"`
+type DetailBarangItem struct {
+	ProdukID     string  `json:"produk_id"`
+	NamaBarang   string  `json:"nama_barang"`
 	PhotoURL     *string `json:"photo_url"`
 	Qty          float64 `json:"qty"`
 	NilaiPoin    float64 `json:"nilai_poin"`
 	SubtotalPoin float64 `json:"subtotal_poin"`
 }
 
+type RiwayatPenarikanItem struct {
+	RiwayatPenarikanID string                     `json:"riwayat_penarikan_id"`
+	StatusPenarikan    models.StatusPenarikanEnum `json:"status_penarikan"`
+	Catatan            *string                    `json:"catatan"`
+	CreatedBy          string                     `json:"created_by"`
+	CreatedAt          time.Time                  `json:"created_at"`
+}
+
 type PenarikanDetail struct {
-	PenarikanSummary
-	DetailSembako []DetailSembakoItem `json:"detail_sembako,omitempty"`
+	Header          PenarikanSummary       `json:"header"`
+	Riwayat         []RiwayatPenarikanItem `json:"riwayat"`
+	DetailPenarikan []DetailBarangItem     `json:"detail_penarikan"`
+}
+
+type PenarikanListItem struct {
+	PenarikanID      string                     `json:"penarikan_id"`
+	CreatedAt        *time.Time                 `json:"created_at"`
+	StatusPenarikan  models.StatusPenarikanEnum `json:"status_penarikan"`
+	NominalPenarikan float64                    `json:"nominal_penarikan"`
+	SatuanPenarikan  models.SatuanRewardEnum    `json:"satuan_penarikan"`
+	RewardID         *int                       `json:"reward_id"`
+	NamaReward       string                     `json:"nama_reward"`
 }
 
 type ListPenarikanResult struct {
-	Data []PenarikanSummary `json:"data"`
+	Data []PenarikanListItem `json:"data"`
 }
-
-// ── Service interface ──────────────────────────────────────────────────────
 
 type PenarikanService interface {
 	Preview(nasabahID string, req AjukanPenarikanReq) (*PreviewResult, error)
 	Ajukan(nasabahID string, req AjukanPenarikanReq) (*AjukanResult, error)
-	Konfirmasi(penarikanID, adminUserID, fotoURL string) error
-	Batal(penarikanID, nasabahUserID string) error
+	Konfirmasi(penarikanID, adminUserID string, req KonfirmasiPenarikanReq) error
+	Selesai(adminUserID string, req SelesaiPenarikanReq) error
+	Batal(penarikanID, nasabahUserID, catatan string) error
 	GetList(nasabahID string, f repositories.PenarikanFilter) (*ListPenarikanResult, error)
 	GetListByBank(bankID string, f repositories.PenarikanFilter) ([]PenarikanSummary, error)
 	GetDetail(penarikanID, userID string, role models.RoleAdmin) (*PenarikanDetail, error)
 }
-
-// ── Implementation ─────────────────────────────────────────────────────────
 
 type penarikanService struct {
 	db       *gorm.DB
@@ -137,18 +174,12 @@ func NewPenarikanService(db *gorm.DB, repo PenarikanRepoIface, notifSvc Notifika
 	return &penarikanService{db: db, repo: repo, notifSvc: notifSvc}
 }
 
-// resolveKatalogBankID menentukan bank_id yang dipakai untuk lookup katalog_sembako.
-// BSU tidak punya katalog sendiri — katalog_sembako-nya tersimpan dengan bank_id
-// milik BSI induk (lihat SembakoController.GetSembakoBank), sementara stok tetap
-// per-BSU. Nasabah BSI/BSM pakai bank_id sendiri.
 func resolveKatalogBankID(nasabah *models.Nasabah) string {
 	if nasabah.Bank.JenisBank == models.BSU && nasabah.Bank.ParentBankID != nil {
 		return *nasabah.Bank.ParentBankID
 	}
 	return nasabah.BankID
 }
-
-// ── Preview ────────────────────────────────────────────────────────────────
 
 func (s *penarikanService) Preview(nasabahID string, req AjukanPenarikanReq) (*PreviewResult, error) {
 	nasabah, err := s.repo.FindNasabahAktif(nasabahID)
@@ -171,30 +202,30 @@ func (s *penarikanService) Preview(nasabahID string, req AjukanPenarikanReq) (*P
 	}
 
 	finalNominal := req.NominalPenarikan
-	var itemsSembako []PreviewSembakoItem
+	var itemsBarang []PreviewBarangItem
 
-	if reward.NamaReward == models.RewardEnumSembako {
+	if reward.NamaReward == models.RewardEnumBarang {
 		katalogBankID := resolveKatalogBankID(nasabah)
 		var totalPoin float64
-		for _, item := range req.ItemSembako {
-			sembako, err := s.repo.FindSembako(item.SembakoID, katalogBankID)
+		for _, item := range req.ItemBarang {
+			produk, err := s.repo.FindProduk(item.ProdukID, katalogBankID)
 			if err != nil {
-				return nil, errNotFound("Barang sembako tidak ditemukan: " + item.SembakoID)
+				return nil, errNotFound("Barang produk tidak ditemukan: " + item.ProdukID)
 			}
-			stok, err := s.repo.FindStokSembako(item.SembakoID, nasabah.BankID)
+			stok, err := s.repo.FindStokBarang(item.ProdukID, nasabah.BankID)
 			if err != nil {
-				return nil, errNotFound("Stok sembako tidak ditemukan: " + item.SembakoID)
+				return nil, errNotFound("Stok produk tidak ditemukan: " + item.ProdukID)
 			}
 			if stok.Stok < item.Qty {
-				return nil, errBadRequest("Stok barang '" + sembako.MasterSembako.NamaBarang + "' tidak mencukupi")
+				return nil, errBadRequest("Stok barang '" + produk.MasterBarang.NamaBarang + "' tidak mencukupi")
 			}
-			subtotal := item.Qty * sembako.NilaiPoin
+			subtotal := item.Qty * produk.NilaiPoin
 			totalPoin += subtotal
-			itemsSembako = append(itemsSembako, PreviewSembakoItem{
-				SembakoID:    item.SembakoID,
-				NamaSembako:  sembako.MasterSembako.NamaBarang,
+			itemsBarang = append(itemsBarang, PreviewBarangItem{
+				ProdukID:     item.ProdukID,
+				NamaBarang:   produk.MasterBarang.NamaBarang,
 				Qty:          item.Qty,
-				NilaiPoin:    sembako.NilaiPoin,
+				NilaiPoin:    produk.NilaiPoin,
 				SubtotalPoin: subtotal,
 			})
 		}
@@ -206,17 +237,15 @@ func (s *penarikanService) Preview(nasabahID string, req AjukanPenarikanReq) (*P
 	return &PreviewResult{
 		NasabahID:        nasabahID,
 		NamaReward:       reward.NamaReward,
-		Satuan:           reward.Satuan,
+		Satuan:           string(reward.Satuan),
 		SaldoSekarang:    saldo.NominalSaldo,
 		SatuanSaldo:      saldo.SatuanNominalSaldo,
 		NominalPenarikan: finalNominal,
 		SaldoSetelah:     saldoSetelah,
 		SaldoCukup:       saldoSetelah >= 0,
-		ItemSembako:      itemsSembako,
+		ItemBarang:       itemsBarang,
 	}, nil
 }
-
-// ── Ajukan ─────────────────────────────────────────────────────────────────
 
 func (s *penarikanService) Ajukan(nasabahID string, req AjukanPenarikanReq) (*AjukanResult, error) {
 	nasabah, err := s.repo.FindNasabahAktif(nasabahID)
@@ -233,6 +262,19 @@ func (s *penarikanService) Ajukan(nasabahID string, req AjukanPenarikanReq) (*Aj
 		return nil, err
 	}
 
+	if err := validateNoDuplicateBarang(req.ItemBarang); err != nil {
+		return nil, err
+	}
+
+	deadlineKonfirmasi, err := validateDeadline(req.DeadlineKonfirmasi, "deadline_konfirmasi")
+	if err != nil {
+		return nil, err
+	}
+
+	if req.Catatan != nil && len(*req.Catatan) > 255 {
+		return nil, errBadRequest("catatan maksimal 255 karakter")
+	}
+
 	var penarikanID string
 	var finalNominal float64
 
@@ -243,29 +285,29 @@ func (s *penarikanService) Ajukan(nasabahID string, req AjukanPenarikanReq) (*Aj
 		}
 
 		nominalTx := req.NominalPenarikan
-		var itemsToSave []models.DetailPenarikanSembako
+		var itemsToSave []models.DetailPenarikanBarang
 
-		if reward.NamaReward == models.RewardEnumSembako {
+		if reward.NamaReward == models.RewardEnumBarang {
 			katalogBankID := resolveKatalogBankID(nasabah)
 			var totalPoin float64
-			for _, item := range req.ItemSembako {
-				sembako, err := s.repo.LockSembako(tx, item.SembakoID, katalogBankID)
+			for _, item := range req.ItemBarang {
+				produk, err := s.repo.LockProduk(tx, item.ProdukID, katalogBankID)
 				if err != nil {
-					return errNotFound("Barang sembako tidak ditemukan: " + item.SembakoID)
+					return errNotFound("Barang produk tidak ditemukan: " + item.ProdukID)
 				}
-				stok, err := s.repo.LockStok(tx, item.SembakoID, nasabah.BankID)
+				stok, err := s.repo.LockStok(tx, item.ProdukID, nasabah.BankID)
 				if err != nil {
-					return errNotFound("Stok sembako tidak ditemukan: " + item.SembakoID)
+					return errNotFound("Stok produk tidak ditemukan: " + item.ProdukID)
 				}
 				if stok.Stok < item.Qty {
-					return errBadRequest("Stok barang '" + sembako.MasterSembako.NamaBarang + "' tidak mencukupi")
+					return errBadRequest("Stok barang '" + produk.MasterBarang.NamaBarang + "' tidak mencukupi")
 				}
-				subtotal := item.Qty * sembako.NilaiPoin
+				subtotal := item.Qty * produk.NilaiPoin
 				totalPoin += subtotal
-				itemsToSave = append(itemsToSave, models.DetailPenarikanSembako{
-					SembakoID:    item.SembakoID,
+				itemsToSave = append(itemsToSave, models.DetailPenarikanBarang{
+					ProdukID:     item.ProdukID,
 					Qty:          item.Qty,
-					NilaiPoin:    sembako.NilaiPoin,
+					NilaiPoin:    produk.NilaiPoin,
 					SubtotalPoin: subtotal,
 				})
 			}
@@ -283,42 +325,60 @@ func (s *penarikanService) Ajukan(nasabahID string, req AjukanPenarikanReq) (*Aj
 			return err
 		}
 
+		riwayatSaldoID, err := idgen.GenerateRiwayatSaldoID(tx, saldo.RekeningID)
+		if err != nil {
+			return errInternal("Gagal generate riwayat saldo ID: " + err.Error())
+		}
 		if err := s.repo.CreateRiwayat(tx, &models.RiwayatArusSaldo{
-			RiwayatSaldoID: utils.GenerateID("RS"),
+			RiwayatSaldoID: riwayatSaldoID,
 			RekeningID:     &saldo.RekeningID,
 			NominalSebelum: saldoSebelum,
 			NominalSesudah: saldoSesudah,
 			CreatedBy:      &nasabahID,
+			Keterangan:     "Pengajuan penarikan",
 		}); err != nil {
 			return err
 		}
 
-		penarikanID = utils.GenerateID("RDM")
-		now := time.Now()
-		kadaluarsa := now.Add(2 * time.Hour)
+		penarikanID, err = idgen.GeneratePenarikanID(tx, req.RewardID, nasabahID)
+		if err != nil {
+			return errInternal("Gagal generate penarikan ID: " + err.Error())
+		}
 
 		p := &models.Penarikan{
-			PenarikanID:      penarikanID,
-			NasabahID:        &nasabahID,
-			BankID:           &nasabah.BankID,
-			RewardID:         &req.RewardID,
-			NominalPenarikan: nominalTx,
-			SatuanPenarikan:  models.SatuanRewardEnum(reward.Satuan),
-			StatusPenarikan:  models.StatusPenarikanPending,
-			KadaluarsaAt:     &kadaluarsa,
-			CreatedAt:        now,
-			CreatedBy:        &nasabahID,
+			PenarikanID:        penarikanID,
+			NasabahID:          &nasabahID,
+			BankID:             &nasabah.BankID,
+			RewardID:           &req.RewardID,
+			NominalPenarikan:   nominalTx,
+			SatuanPenarikan:    models.SatuanRewardEnum(reward.Satuan),
+			StatusPenarikan:    models.StatusPenarikanPending,
+			DeadlineKonfirmasi: &deadlineKonfirmasi,
 		}
 		if err := s.repo.SavePenarikan(tx, p); err != nil {
 			return err
 		}
 
+		riwayatID, err := idgen.GenerateRiwayatPenarikanID(tx, penarikanID)
+		if err != nil {
+			return errInternal("Gagal generate riwayat penarikan ID: " + err.Error())
+		}
+		if err := s.repo.SaveRiwayatPenarikan(tx, &models.RiwayatPenarikan{
+			RiwayatPenarikanID: riwayatID,
+			PenarikanID:        penarikanID,
+			StatusPenarikan:    models.StatusPenarikanPending,
+			Catatan:            req.Catatan,
+			CreatedBy:          &nasabah.UserID,
+		}); err != nil {
+			return err
+		}
+
 		for i := range itemsToSave {
 			itemsToSave[i].PenarikanID = penarikanID
-			if err := s.repo.SaveDetailSembako(tx, &itemsToSave[i]); err != nil {
+			if err := s.repo.SaveDetailBarang(tx, &itemsToSave[i]); err != nil {
 				return err
 			}
-			if err := s.repo.UpdateStok(tx, itemsToSave[i].SembakoID, nasabah.BankID, -itemsToSave[i].Qty); err != nil {
+			if err := s.repo.UpdateStok(tx, itemsToSave[i].ProdukID, nasabah.BankID, -itemsToSave[i].Qty); err != nil {
 				return err
 			}
 		}
@@ -331,7 +391,6 @@ func (s *penarikanService) Ajukan(nasabahID string, req AjukanPenarikanReq) (*Aj
 		return nil, err
 	}
 
-	// Notifikasi ke semua admin bank (fire-and-forget)
 	snapshotBankID := nasabah.BankID
 	snapshotNasabahID := nasabahID
 	snapshotPenarikanID := penarikanID
@@ -339,9 +398,8 @@ func (s *penarikanService) Ajukan(nasabahID string, req AjukanPenarikanReq) (*Aj
 	snapshotSatuan := models.SatuanRewardEnum(reward.Satuan)
 
 	go func() {
-		var nas models.Nasabah
-		// Preload user untuk ambil nama nasabah
-		if err := s.db.Preload("User").Where("nasabah_id = ?", snapshotNasabahID).First(&nas).Error; err != nil {
+		nas, err := s.repo.FindNasabahWithUser(snapshotNasabahID)
+		if err != nil {
 			return
 		}
 		pesanNilai := FormatPenarikanNilai(snapshotNominal, snapshotSatuan)
@@ -366,16 +424,38 @@ func (s *penarikanService) Ajukan(nasabahID string, req AjukanPenarikanReq) (*Aj
 	}, nil
 }
 
-// ── Konfirmasi ─────────────────────────────────────────────────────────────
+func (s *penarikanService) Konfirmasi(penarikanID, adminUserID string, req KonfirmasiPenarikanReq) error {
+	status := models.StatusPenarikanEnum(req.Status)
+	if status != models.StatusPenarikanApproved && status != models.StatusPenarikanRejected {
+		return errBadRequest("status harus 'approved' atau 'rejected'")
+	}
 
-func (s *penarikanService) Konfirmasi(penarikanID, adminUserID, fotoURL string) error {
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		admin, err := s.repo.FindAdminTx(tx, adminUserID)
+	if status == models.StatusPenarikanRejected && (req.Catatan == nil || strings.TrimSpace(*req.Catatan) == "") {
+		return errBadRequest("catatan wajib diisi untuk penolakan")
+	}
+	if req.Catatan != nil && len(*req.Catatan) > 255 {
+		return errBadRequest("catatan maksimal 255 karakter")
+	}
+
+	var deadlineJemput time.Time
+	if status == models.StatusPenarikanApproved {
+		var err error
+		deadlineJemput, err = validateDeadline(req.DeadlineJemput, "deadline_jemput")
 		if err != nil {
-			return errForbidden("Hanya admin/petugas yang dapat melakukan konfirmasi")
+			return err
+		}
+	}
+
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		admin, err := s.repo.FindAdminAktif(tx, adminUserID)
+		if err != nil {
+			return errForbidden("Hanya petugas yang dapat melakukan konfirmasi")
 		}
 		if admin.BankID == nil {
 			return errForbidden("Admin tidak terhubung ke bank manapun")
+		}
+		if admin.Role != models.PetugasBSI && admin.Role != models.PetugasBSM && admin.Role != models.PetugasBSU {
+			return errForbidden("Hanya petugas yang dapat melakukan konfirmasi")
 		}
 
 		p, err := s.repo.LockPenarikan(tx, penarikanID)
@@ -387,10 +467,8 @@ func (s *penarikanService) Konfirmasi(penarikanID, adminUserID, fotoURL string) 
 			return errForbidden("Tidak memiliki akses untuk mengkonfirmasi penarikan ini")
 		}
 
-		// Cegah petugas melayani penarikan miliknya sendiri sebagai nasabah
 		if p.NasabahID != nil {
-			var nasabah models.Nasabah
-			if err := tx.Where("nasabah_id = ?", *p.NasabahID).First(&nasabah).Error; err == nil {
+			if nasabah, err := s.repo.FindNasabah(tx, *p.NasabahID); err == nil {
 				if nasabah.UserID == adminUserID {
 					return errForbidden("Petugas tidak boleh melayani penarikan saldo nasabah sendiri")
 				}
@@ -404,19 +482,234 @@ func (s *penarikanService) Konfirmasi(penarikanID, adminUserID, fotoURL string) 
 			)
 		}
 
-		return s.repo.UpdateStatus(tx, p, map[string]interface{}{
-			"status_penarikan": models.StatusPenarikanBerhasil,
-			"bukti_foto":       fotoURL,
-			"updated_at":       time.Now(),
-			"updated_by":       admin.AdminID,
-		})
+		if p.DeadlineKonfirmasi != nil && time.Now().After(*p.DeadlineKonfirmasi) {
+			return errConflict("Batas waktu konfirmasi untuk penarikan ini sudah lewat", nil)
+		}
+
+		updates := map[string]interface{}{
+			"status_penarikan": status,
+		}
+		if status == models.StatusPenarikanApproved {
+			updates["deadline_jemput"] = deadlineJemput
+		}
+		if err := s.repo.UpdateStatus(tx, p, updates); err != nil {
+			return err
+		}
+
+		riwayatID, err := idgen.GenerateRiwayatPenarikanID(tx, penarikanID)
+		if err != nil {
+			return errInternal("Gagal generate riwayat penarikan ID: " + err.Error())
+		}
+		if err := s.repo.SaveRiwayatPenarikan(tx, &models.RiwayatPenarikan{
+			RiwayatPenarikanID: riwayatID,
+			PenarikanID:        penarikanID,
+			StatusPenarikan:    status,
+			Catatan:            req.Catatan,
+			CreatedBy:          &adminUserID,
+		}); err != nil {
+			return err
+		}
+
+		if status == models.StatusPenarikanRejected {
+			if p.NasabahID == nil || p.RewardID == nil {
+				return errInternal("Data penarikan ini tidak valid")
+			}
+
+			saldo, err := s.repo.LockSaldo(tx, *p.NasabahID, *p.RewardID)
+			if err != nil {
+				return errNotFound("Rekening saldo untuk reward ini tidak ditemukan")
+			}
+			saldoSebelum := saldo.NominalSaldo
+			saldoSesudah := saldoSebelum + p.NominalPenarikan
+
+			if err := s.repo.UpdateSaldo(tx, saldo, saldoSesudah); err != nil {
+				return err
+			}
+			riwayatSaldoID, err := idgen.GenerateRiwayatSaldoID(tx, saldo.RekeningID)
+			if err != nil {
+				return err
+			}
+			if err := s.repo.CreateRiwayat(tx, &models.RiwayatArusSaldo{
+				RiwayatSaldoID: riwayatSaldoID,
+				RekeningID:     &saldo.RekeningID,
+				NominalSebelum: saldoSebelum,
+				NominalSesudah: saldoSesudah,
+				CreatedBy:      &admin.AdminID,
+				Keterangan:     "Pengembalian saldo",
+			}); err != nil {
+				return err
+			}
+
+			if p.Reward != nil && p.Reward.NamaReward == models.RewardEnumBarang {
+				if p.BankID == nil {
+					return errInternal("Data bank pada penarikan ini tidak valid")
+				}
+				details, err := s.repo.FindDetailBarang(tx, p.PenarikanID)
+				if err != nil {
+					return err
+				}
+				for _, d := range details {
+					if err := s.repo.UpdateStok(tx, d.ProdukID, *p.BankID, d.Qty); err != nil {
+						return err
+					}
+				}
+			}
+		}
+
+		return nil
 	})
 
 	if err != nil {
 		return err
 	}
 
-	// Notifikasi ke nasabah (fire-and-forget)
+	snapshotPenarikanID := penarikanID
+	snapshotStatus := status
+	snapshotDeadlineJemput := deadlineJemput
+
+	go func() {
+		p, err := s.repo.FindPenarikanByID(snapshotPenarikanID)
+		if err != nil || p.NasabahID == nil || p.Nasabah == nil {
+			return
+		}
+
+		if snapshotStatus == models.StatusPenarikanApproved {
+			pesanDeadline := utils.FormatTanggalIndo(snapshotDeadlineJemput)
+			if err := s.notifSvc.NotifPenarikanDisetujui(
+				context.Background(),
+				p.Nasabah.User.UserID,
+				p.Nasabah.User.FCMToken,
+				pesanDeadline,
+				snapshotPenarikanID,
+			); err != nil {
+				fmt.Printf("[Notif] Gagal kirim notif penarikan disetujui ke user %s: %v\n", p.Nasabah.User.UserID, err)
+			}
+			return
+		}
+
+		if err := s.notifSvc.NotifPenarikanDitolak(
+			context.Background(),
+			p.Nasabah.User.UserID,
+			p.Nasabah.User.FCMToken,
+			snapshotPenarikanID,
+		); err != nil {
+			fmt.Printf("[Notif] Gagal kirim notif penarikan ditolak ke user %s: %v\n", p.Nasabah.User.UserID, err)
+		}
+	}()
+
+	return nil
+}
+
+func (s *penarikanService) Selesai(adminUserID string, req SelesaiPenarikanReq) error {
+	nasabahID := req.NasabahID
+	penarikanID := req.PenarikanID
+	buktiFoto := req.BuktiFoto
+
+	if req.QRData != "" {
+		var payload struct {
+			Type        string `json:"type"`
+			NasabahID   string `json:"nasabah_id"`
+			PenarikanID string `json:"penarikan_id"`
+		}
+		if err := json.Unmarshal([]byte(req.QRData), &payload); err != nil {
+			return errBadRequest("Format QR code tidak valid")
+		}
+		if payload.Type != "ENVIROO-PENARIKAN" {
+			return errBadRequest("QR code bukan milik aplikasi ini")
+		}
+		nasabahID = payload.NasabahID
+		penarikanID = payload.PenarikanID
+		buktiFoto = ""
+	} else {
+		if buktiFoto == "" {
+			return errBadRequest("Bukti foto wajib diunggah jika tidak menggunakan QR code")
+		}
+		if req.Catatan == nil || strings.TrimSpace(*req.Catatan) == "" {
+			return errBadRequest("Catatan wajib diisi jika tidak menggunakan QR code")
+		}
+	}
+
+	if nasabahID == "" || penarikanID == "" {
+		return errBadRequest("nasabah_id dan penarikan_id wajib diisi")
+	}
+
+	if req.Catatan != nil && len(*req.Catatan) > 255 {
+		return errBadRequest("catatan maksimal 255 karakter")
+	}
+
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		admin, err := s.repo.FindAdminAktif(tx, adminUserID)
+		if err != nil {
+			return errForbidden("Hanya petugas yang dapat menyelesaikan penarikan")
+		}
+		if admin.BankID == nil {
+			return errForbidden("Admin tidak terhubung ke bank manapun")
+		}
+		if admin.Role != models.PetugasBSI && admin.Role != models.PetugasBSM && admin.Role != models.PetugasBSU {
+			return errForbidden("Hanya petugas yang dapat menyelesaikan penarikan")
+		}
+
+		p, err := s.repo.LockPenarikan(tx, penarikanID)
+		if err != nil {
+			return errNotFound("Penarikan tidak ditemukan")
+		}
+
+		if p.BankID == nil || *p.BankID != *admin.BankID {
+			return errForbidden("Tidak memiliki akses untuk menyelesaikan penarikan ini")
+		}
+
+		if p.NasabahID == nil || *p.NasabahID != nasabahID {
+			return errBadRequest("Nasabah tidak sesuai dengan penarikan ini")
+		}
+
+		if nasabah, err := s.repo.FindNasabah(tx, nasabahID); err == nil {
+			if nasabah.UserID == adminUserID {
+				return errForbidden("Petugas tidak boleh melayani penarikan saldo nasabah sendiri")
+			}
+		}
+
+		if p.StatusPenarikan != models.StatusPenarikanApproved {
+			return errConflict(
+				"Penarikan tidak dapat diselesaikan, status saat ini: "+string(p.StatusPenarikan),
+				nil,
+			)
+		}
+
+		if p.DeadlineJemput != nil && time.Now().After(*p.DeadlineJemput) {
+			return errConflict("Batas waktu penjemputan untuk penarikan ini sudah lewat", nil)
+		}
+
+		updates := map[string]interface{}{
+			"status_penarikan": models.StatusPenarikanCompleted,
+		}
+		if buktiFoto != "" {
+			updates["bukti_foto"] = buktiFoto
+		}
+		if err := s.repo.UpdateStatus(tx, p, updates); err != nil {
+			return err
+		}
+
+		riwayatID, err := idgen.GenerateRiwayatPenarikanID(tx, penarikanID)
+		if err != nil {
+			return errInternal("Gagal generate riwayat penarikan ID: " + err.Error())
+		}
+		if err := s.repo.SaveRiwayatPenarikan(tx, &models.RiwayatPenarikan{
+			RiwayatPenarikanID: riwayatID,
+			PenarikanID:        penarikanID,
+			StatusPenarikan:    models.StatusPenarikanCompleted,
+			Catatan:            req.Catatan,
+			CreatedBy:          &adminUserID,
+		}); err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
 	snapshotPenarikanID := penarikanID
 	go func() {
 		p, err := s.repo.FindPenarikanByID(snapshotPenarikanID)
@@ -438,9 +731,11 @@ func (s *penarikanService) Konfirmasi(penarikanID, adminUserID, fotoURL string) 
 	return nil
 }
 
-// ── Batal ──────────────────────────────────────────────────────────────────
+func (s *penarikanService) Batal(penarikanID, nasabahUserID, catatan string) error {
+	if len(catatan) > 255 {
+		return errBadRequest("catatan maksimal 255 karakter")
+	}
 
-func (s *penarikanService) Batal(penarikanID, nasabahUserID string) error {
 	nasabah, err := s.repo.FindNasabahByUserID(nasabahUserID)
 	if err != nil {
 		return errForbidden("Hanya nasabah yang dapat membatalkan pengajuan")
@@ -460,17 +755,32 @@ func (s *penarikanService) Batal(penarikanID, nasabahUserID string) error {
 		}
 
 		if err := s.repo.UpdateStatus(tx, p, map[string]interface{}{
-			"status_penarikan": models.StatusPenarikanDibatalkan,
-			"updated_at":       time.Now(),
-			"updated_by":       nasabahID,
+			"status_penarikan": models.StatusPenarikanCanceled,
 		}); err != nil {
 			return err
 		}
 
-		// Kembalikan saldo
+		riwayatID, err := idgen.GenerateRiwayatPenarikanID(tx, penarikanID)
+		if err != nil {
+			return errInternal("Gagal generate riwayat penarikan ID: " + err.Error())
+		}
+		if err := s.repo.SaveRiwayatPenarikan(tx, &models.RiwayatPenarikan{
+			RiwayatPenarikanID: riwayatID,
+			PenarikanID:        penarikanID,
+			StatusPenarikan:    models.StatusPenarikanCanceled,
+			Catatan:            &catatan,
+			CreatedBy:          &nasabahUserID,
+		}); err != nil {
+			return err
+		}
+
+		if p.RewardID == nil {
+			return errInternal("Data reward pada penarikan ini tidak valid")
+		}
+
 		saldo, err := s.repo.LockSaldo(tx, nasabahID, *p.RewardID)
 		if err != nil {
-			return err
+			return errNotFound("Rekening saldo untuk reward ini tidak ditemukan")
 		}
 		saldoSebelum := saldo.NominalSaldo
 		saldoSesudah := saldoSebelum + p.NominalPenarikan
@@ -478,24 +788,31 @@ func (s *penarikanService) Batal(penarikanID, nasabahUserID string) error {
 		if err := s.repo.UpdateSaldo(tx, saldo, saldoSesudah); err != nil {
 			return err
 		}
+		riwayatSaldoID, err := idgen.GenerateRiwayatSaldoID(tx, saldo.RekeningID)
+		if err != nil {
+			return err
+		}
 		if err := s.repo.CreateRiwayat(tx, &models.RiwayatArusSaldo{
-			RiwayatSaldoID: utils.GenerateID("RS"),
+			RiwayatSaldoID: riwayatSaldoID,
 			RekeningID:     &saldo.RekeningID,
 			NominalSebelum: saldoSebelum,
 			NominalSesudah: saldoSesudah,
 			CreatedBy:      &nasabahID,
+			Keterangan:     "Pengembalian saldo",
 		}); err != nil {
 			return err
 		}
 
-		// Kembalikan stok sembako jika ada
-		if p.Reward != nil && p.Reward.NamaReward == models.RewardEnumSembako {
-			details, err := s.repo.FindDetailSembako(tx, p.PenarikanID)
+		if p.Reward != nil && p.Reward.NamaReward == models.RewardEnumBarang {
+			if p.BankID == nil {
+				return errInternal("Data bank pada penarikan ini tidak valid")
+			}
+			details, err := s.repo.FindDetailBarang(tx, p.PenarikanID)
 			if err != nil {
 				return err
 			}
 			for _, d := range details {
-				if err := s.repo.UpdateStok(tx, d.SembakoID, *p.BankID, d.Qty); err != nil {
+				if err := s.repo.UpdateStok(tx, d.ProdukID, *p.BankID, d.Qty); err != nil {
 					return err
 				}
 			}
@@ -505,20 +822,26 @@ func (s *penarikanService) Batal(penarikanID, nasabahUserID string) error {
 	})
 }
 
-// ── Query ──────────────────────────────────────────────────────────────────
-
 func (s *penarikanService) GetList(nasabahID string, f repositories.PenarikanFilter) (*ListPenarikanResult, error) {
-	list, err := s.repo.FindByNasabahID(nasabahID, f)
+	rows, err := s.repo.FindByNasabahID(nasabahID, f)
 	if err != nil {
 		return nil, errInternal("Gagal mengambil data penarikan")
 	}
 
-	summaries := make([]PenarikanSummary, 0, len(list))
-	for _, p := range list {
-		summaries = append(summaries, mapPenarikanSummary(p))
+	items := make([]PenarikanListItem, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, PenarikanListItem{
+			PenarikanID:      row.PenarikanID,
+			CreatedAt:        row.CreatedAt,
+			StatusPenarikan:  row.StatusPenarikan,
+			NominalPenarikan: row.NominalPenarikan,
+			SatuanPenarikan:  row.SatuanPenarikan,
+			RewardID:         row.RewardID,
+			NamaReward:       row.NamaReward,
+		})
 	}
 
-	return &ListPenarikanResult{Data: summaries}, nil
+	return &ListPenarikanResult{Data: items}, nil
 }
 
 func (s *penarikanService) GetListByBank(bankID string, f repositories.PenarikanFilter) ([]PenarikanSummary, error) {
@@ -539,21 +862,17 @@ func (s *penarikanService) GetDetail(penarikanID, userID string, role models.Rol
 		return nil, errNotFound("Penarikan tidak ditemukan")
 	}
 
-	// Validasi akses
 	if role == models.RoleNasabah {
 		if p.NasabahID == nil {
 			return nil, errForbidden("Anda tidak memiliki akses ke data ini")
 		}
-		var count int64
-		s.db.Model(&models.Nasabah{}).
-			Where("user_id = ? AND nasabah_id = ?", userID, *p.NasabahID).
-			Count(&count)
-		if count == 0 {
+		count, err := s.repo.CountNasabahMilikUser(userID, *p.NasabahID)
+		if err != nil || count == 0 {
 			return nil, errForbidden("Anda tidak memiliki akses ke data ini")
 		}
 	} else if role != models.SuperAdmin {
-		var admin models.Admin
-		if err := s.db.Where("user_id = ?", userID).First(&admin).Error; err != nil {
+		admin, err := s.repo.FindAdminAktif(nil, userID)
+		if err != nil {
 			return nil, errForbidden("Data petugas tidak ditemukan")
 		}
 		if admin.BankID == nil || p.BankID == nil || *admin.BankID != *p.BankID {
@@ -561,54 +880,108 @@ func (s *penarikanService) GetDetail(penarikanID, userID string, role models.Rol
 		}
 	}
 
-	detail := &PenarikanDetail{PenarikanSummary: mapPenarikanSummary(*p)}
+	detail := &PenarikanDetail{
+		Header:          mapPenarikanSummary(*p),
+		DetailPenarikan: []DetailBarangItem{},
+	}
 
-	if len(p.DetailPenarikanSembako) > 0 {
-		items := make([]DetailSembakoItem, 0, len(p.DetailPenarikanSembako))
-		for _, d := range p.DetailPenarikanSembako {
-			item := DetailSembakoItem{
-				SembakoID:    d.SembakoID,
+	if len(p.DetailPenarikanBarang) > 0 {
+		items := make([]DetailBarangItem, 0, len(p.DetailPenarikanBarang))
+		for _, d := range p.DetailPenarikanBarang {
+			item := DetailBarangItem{
+				ProdukID:     d.ProdukID,
 				Qty:          d.Qty,
 				NilaiPoin:    d.NilaiPoin,
 				SubtotalPoin: d.SubtotalPoin,
 			}
-			if d.KatalogSembako != nil {
-				item.NamaSembako = d.KatalogSembako.MasterSembako.NamaBarang
-				item.PhotoURL = d.KatalogSembako.PhotoURL
+			if d.KatalogBarang != nil {
+				item.NamaBarang = d.KatalogBarang.MasterBarang.NamaBarang
+				item.PhotoURL = d.KatalogBarang.PhotoURL
 			}
 			items = append(items, item)
 		}
-		detail.DetailSembako = items
+		detail.DetailPenarikan = items
 	}
+
+	riwayatRows, err := s.repo.FindRiwayatPenarikan(penarikanID)
+	if err != nil {
+		return nil, errInternal("Gagal mengambil riwayat penarikan")
+	}
+	riwayat := make([]RiwayatPenarikanItem, 0, len(riwayatRows))
+	for _, row := range riwayatRows {
+		createdBy := row.CreatedByRaw
+		if row.CreatedByRaw == "sistem" {
+			createdBy = "Sistem"
+		} else if row.CreatedByNama != nil && *row.CreatedByNama != "" {
+			createdBy = *row.CreatedByNama
+		}
+		riwayat = append(riwayat, RiwayatPenarikanItem{
+			RiwayatPenarikanID: row.RiwayatPenarikanID,
+			StatusPenarikan:    row.StatusPenarikan,
+			Catatan:            row.Catatan,
+			CreatedBy:          createdBy,
+			CreatedAt:          row.CreatedAt,
+		})
+	}
+	detail.Riwayat = riwayat
 
 	return detail, nil
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-
 func validatePenarikanReq(reward *models.Reward, req AjukanPenarikanReq) error {
-	if reward.NamaReward != models.RewardEnumSembako && req.NominalPenarikan <= 0 {
+	if reward.NamaReward != models.RewardEnumBarang && req.NominalPenarikan <= 0 {
 		return errBadRequest("Nominal penarikan harus lebih dari 0")
 	}
-	if reward.NamaReward == models.RewardEnumSembako && len(req.ItemSembako) == 0 {
-		return errBadRequest("Item sembako harus dipilih")
+	if reward.NamaReward == models.RewardEnumBarang && len(req.ItemBarang) == 0 {
+		return errBadRequest("Item produk harus dipilih")
 	}
 	return nil
 }
 
+func validateNoDuplicateBarang(items []BarangItemReq) error {
+	seen := make(map[string]bool, len(items))
+	for _, item := range items {
+		if seen[item.ProdukID] {
+			return errBadRequest("Barang produk duplikat dalam satu pengajuan: " + item.ProdukID)
+		}
+		seen[item.ProdukID] = true
+	}
+	return nil
+}
+
+func validateDeadline(raw, fieldName string) (time.Time, error) {
+	if raw == "" {
+		return time.Time{}, errBadRequest(fieldName + " wajib diisi")
+	}
+
+	deadline, err := utils.ParseFlexibleDate(raw)
+	if err != nil {
+		return time.Time{}, errBadRequest("Format " + fieldName + " tidak valid")
+	}
+
+	now := time.Now()
+	if deadline.Before(now.Add(1 * time.Hour)) {
+		return time.Time{}, errBadRequest(fieldName + " minimal 1 jam dari waktu sekarang")
+	}
+	if deadline.After(now.Add(3 * 24 * time.Hour)) {
+		return time.Time{}, errBadRequest(fieldName + " maksimal 3 hari dari waktu sekarang")
+	}
+
+	return deadline, nil
+}
+
 func mapPenarikanSummary(p models.Penarikan) PenarikanSummary {
 	s := PenarikanSummary{
-		PenarikanID:      p.PenarikanID,
-		NasabahID:        p.NasabahID,
-		BankID:           p.BankID,
-		RewardID:         p.RewardID,
-		NominalPenarikan: p.NominalPenarikan,
-		SatuanPenarikan:  p.SatuanPenarikan,
-		StatusPenarikan:  p.StatusPenarikan,
-		KadaluarsaAt:     p.KadaluarsaAt,
-		BuktiFoto:        p.BuktiFoto,
-		CreatedAt:        p.CreatedAt,
-		UpdatedAt:        p.UpdatedAt,
+		PenarikanID:        p.PenarikanID,
+		NasabahID:          p.NasabahID,
+		BankID:             p.BankID,
+		RewardID:           p.RewardID,
+		NominalPenarikan:   p.NominalPenarikan,
+		SatuanPenarikan:    p.SatuanPenarikan,
+		StatusPenarikan:    p.StatusPenarikan,
+		DeadlineKonfirmasi: p.DeadlineKonfirmasi,
+		DeadlineJemput:     p.DeadlineJemput,
+		BuktiFoto:          p.BuktiFoto,
 	}
 	if p.Nasabah != nil && p.Nasabah.User.UserID != "" {
 		s.NamaNasabah = p.Nasabah.User.Nama
@@ -622,8 +995,6 @@ func mapPenarikanSummary(p models.Penarikan) PenarikanSummary {
 	return s
 }
 
-// FormatPenarikanNilai memformat nilai penarikan sesuai satuannya.
-// Diekspor agar controller dapat memakainya jika diperlukan.
 func FormatPenarikanNilai(nominal float64, satuan models.SatuanRewardEnum) string {
 	switch satuan {
 	case models.SatuanRewardEnumRp:
@@ -634,4 +1005,3 @@ func FormatPenarikanNilai(nominal float64, satuan models.SatuanRewardEnum) strin
 		return fmt.Sprintf("%.2f %s", nominal, satuan)
 	}
 }
-

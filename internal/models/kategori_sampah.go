@@ -4,11 +4,10 @@ import "time"
 
 type KategoriSampah struct {
 	KategoriID int       `gorm:"column:kategori_id;primaryKey;autoIncrement"`
-	Kategori   string    `gorm:"column:kategori;size:255"`
-	CreatedAt  time.Time `gorm:"column:created_at;autoCreateTime"`
-	UpdatedAt  time.Time `gorm:"column:updated_at;autoUpdateTime"`
+	Kategori   string    `gorm:"column:kategori;size:100;not null"`
+	CreatedAt  time.Time `gorm:"column:created_at;autoCreateTime;not null"`
+	UpdatedAt  time.Time `gorm:"column:updated_at;autoUpdateTime;not null"`
 
-	// Relasi (optional, biar bisa preload)
 	KatalogSampah []KatalogSampah `gorm:"foreignKey:KategoriID"`
 }
 

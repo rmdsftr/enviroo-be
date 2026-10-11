@@ -2,6 +2,8 @@ package mocks
 
 import (
 	"enviroo-be/internal/models"
+	"enviroo-be/internal/repositories"
+	"time"
 
 	"github.com/stretchr/testify/mock"
 	"gorm.io/gorm"
@@ -27,9 +29,9 @@ func (m *MockPenjualanRepo) GetRewardByID(db *gorm.DB, rewardID int) (*models.Re
 	return args.Get(0).(*models.Reward), args.Error(1)
 }
 
-func (m *MockPenjualanRepo) GetPersenNasabah(db *gorm.DB, bankID string, rewardID int) float64 {
+func (m *MockPenjualanRepo) GetPersenNasabah(db *gorm.DB, bankID string, rewardID int) (float64, error) {
 	args := m.Called(db, bankID, rewardID)
-	return args.Get(0).(float64)
+	return args.Get(0).(float64), args.Error(1)
 }
 
 func (m *MockPenjualanRepo) GetKatalogSampah(db *gorm.DB, sampahID string) (*models.KatalogSampah, error) {
@@ -107,10 +109,10 @@ func (m *MockPenjualanRepo) GetAdminNama(adminID string) string {
 	return args.String(0)
 }
 
-func (m *MockPenjualanRepo) GetDistinctMitra(bankID string) ([]string, error) {
-	args := m.Called(bankID)
+func (m *MockPenjualanRepo) GetRiwayatPenjualan(bankID string, start, end *time.Time) ([]repositories.RiwayatPenjualanRow, error) {
+	args := m.Called(bankID, start, end)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).([]string), args.Error(1)
+	return args.Get(0).([]repositories.RiwayatPenjualanRow), args.Error(1)
 }

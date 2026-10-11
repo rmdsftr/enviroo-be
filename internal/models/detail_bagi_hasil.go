@@ -1,17 +1,17 @@
 package models
 
 type DetailBagiHasil struct {
-	PenerimaID string `gorm:"column:penerima_id;type:varchar(100);primaryKey" json:"penerima_id"`
-	SampahID   string `gorm:"column:sampah_id;type:varchar(100);primaryKey" json:"sampah_id"`
+	PenerimaID string `gorm:"column:penerima_id;type:varchar(22);primaryKey" json:"penerima_id"`
+	SampahID   string `gorm:"column:sampah_id;type:varchar(13);primaryKey" json:"sampah_id"`
 
-	Qty float64 `gorm:"column:qty;type:decimal(20,4)" json:"qty"`
+	Qty float64 `gorm:"column:qty;type:decimal(20,4);not null" json:"qty"`
 
-	HargaItem float64 `gorm:"column:harga_item;type:decimal(20,4)" json:"harga_item"`
+	HargaItem float64 `gorm:"column:harga_item;type:decimal(20,4);not null" json:"harga_item"`
 
-	SubtotalHarga float64 `gorm:"column:subtotal_harga;type:decimal(20,4)" json:"subtotal_harga"`
+	SubtotalHarga float64 `gorm:"column:subtotal_harga;type:decimal(20,4);not null" json:"subtotal_harga"`
 
-	PenerimaBagiHasil *PenerimaBagiHasil `gorm:"foreignKey:PenerimaID;references:PenerimaID"`
-	KatalogSampah     *KatalogSampah     `gorm:"foreignKey:SampahID;references:SampahID"`
+	PenerimaBagiHasil *PenerimaBagiHasil `gorm:"foreignKey:PenerimaID;references:PenerimaID;constraint:OnDelete:CASCADE"`
+	KatalogSampah     *KatalogSampah     `gorm:"foreignKey:SampahID;references:SampahID;constraint:OnDelete:RESTRICT"`
 }
 
 func (DetailBagiHasil) TableName() string {

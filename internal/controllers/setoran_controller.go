@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"enviroo-be/internal/services"
-	"enviroo-be/pkg/storage"
+	"enviroo-be/internal/adapters/storage"
 
 	"github.com/gin-gonic/gin"
 )
@@ -19,7 +19,6 @@ func NewSetoranController(svc services.SetoranService, cfStorage *storage.Cloudf
 	return &SetoranController{Svc: svc, CFStorage: cfStorage}
 }
 
-// POST /setoran/verifikasi
 func (sc *SetoranController) VerifikasiSetoranNasabah(c *gin.Context) {
 	var body struct {
 		QRData  string `json:"qr_data"  binding:"required"`
@@ -34,7 +33,6 @@ func (sc *SetoranController) VerifikasiSetoranNasabah(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// POST /setoran/preview/:penimbangan_id/:nasabah_id
 func (sc *SetoranController) PreviewSetoranNasabah(c *gin.Context) {
 	penimbanganID := c.Param("penimbangan_id")
 	nasabahID := c.Param("nasabah_id")
@@ -59,7 +57,6 @@ func (sc *SetoranController) PreviewSetoranNasabah(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Preview setoran berhasil dihitung", "data": result})
 }
 
-// POST /setoran/input/:penimbangan_id/:nasabah_id/:admin_id
 func (sc *SetoranController) InputSetoranNasabah(c *gin.Context) {
 	penimbanganID := c.Param("penimbangan_id")
 	nasabahID := c.Param("nasabah_id")
@@ -112,7 +109,6 @@ func (sc *SetoranController) InputSetoranNasabah(c *gin.Context) {
 	})
 }
 
-// GET /setoran/detail/:setoran_id
 func (sc *SetoranController) DetailSetoranNasabah(c *gin.Context) {
 	setoranID := c.Param("setoran_id")
 
@@ -127,7 +123,6 @@ func (sc *SetoranController) DetailSetoranNasabah(c *gin.Context) {
 	})
 }
 
-// GET /setoran/riwayat/:nasabah_id
 func (sc *SetoranController) ListRiwayatSetoranNasabah(c *gin.Context) {
 	nasabahID := c.Param("nasabah_id")
 	startDate := c.Query("start_date")

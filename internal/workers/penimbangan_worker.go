@@ -4,17 +4,18 @@ import (
 	"log"
 	"time"
 
-	"gorm.io/gorm"
+	"enviroo-be/internal/services"
 )
 
 type PenimbanganWorker struct {
-	DB     *gorm.DB
-	stopCh chan struct{}
+	Svc       services.PenimbanganService
+	stopCh    chan struct{}
+	lastSweep time.Time
 }
 
-func NewPenimbanganWorker(db *gorm.DB) *PenimbanganWorker {
+func NewPenimbanganWorker(svc services.PenimbanganService) *PenimbanganWorker {
 	return &PenimbanganWorker{
-		DB:     db,
+		Svc:    svc,
 		stopCh: make(chan struct{}),
 	}
 }
@@ -22,13 +23,37 @@ func NewPenimbanganWorker(db *gorm.DB) *PenimbanganWorker {
 func (w *PenimbanganWorker) Start() {
 	go func() {
 		log.Println("[PenimbanganWorker] Worker started")
-		ticker := time.NewTicker(30 * time.Minute)
-		defer ticker.Stop()
+		expiryTicker := time.NewTicker(30 * time.Minute)
+		defer expiryTicker.Stop()
+
+		pendingTicker := time.NewTicker(1 * time.Minute)
+		defer pendingTicker.Stop()
+
+		const jedaSapuan = 10 * time.Minute
+
+		jamBuatSesi := w.Svc.JamBuatSesiPending()
 
 		for {
 			select {
-			case <-ticker.C:
-				w.tutupSesiKedaluwarsa()
+			case <-expiryTicker.C:
+				_, _ = w.Svc.TutupSesiTerlewat()
+
+			case <-pendingTicker.C:
+				now := time.Now()
+				if now.Hour() < jamBuatSesi || now.Sub(w.lastSweep) < jedaSapuan {
+					continue
+				}
+
+				dibuat, sukses := w.Svc.BuatSesiPendingBesok(now)
+				if sukses {
+					w.lastSweep = now
+				} else {
+					log.Printf("[PenimbanganWorker] Ada kegagalan saat bikin sesi pending, bakal dicoba lagi menit berikutnya")
+				}
+				if dibuat > 0 {
+					log.Printf("[PenimbanganWorker] %d sesi pending H-1 dibuat (%s)", dibuat, now.Format("2006-01-02 15:04"))
+				}
+
 			case <-w.stopCh:
 				log.Println("[PenimbanganWorker] Worker stopped")
 				return
@@ -39,28 +64,4 @@ func (w *PenimbanganWorker) Start() {
 
 func (w *PenimbanganWorker) Stop() {
 	close(w.stopCh)
-}
-
-// tutupSesiKedaluwarsa menutup sesi penimbangan yang masih aktif
-// namun sudah melewati 2 jam setelah jam_selesai jadwalnya.
-func (w *PenimbanganWorker) tutupSesiKedaluwarsa() {
-	result := w.DB.Exec(`
-		UPDATE penimbangan p
-		SET status_penimbangan = 'selesai',
-		    ended_at            = NOW()
-		FROM jadwal j
-		WHERE j.jadwal_id              = p.jadwal_id
-		  AND p.status_penimbangan     = 'aktif'
-		  AND (DATE(p.started_at) || ' ' || j.jam_selesai)::timestamp
-		      + INTERVAL '2 hours'     < NOW()
-	`)
-
-	if result.Error != nil {
-		log.Printf("[PenimbanganWorker] Gagal menutup sesi kedaluwarsa: %v", result.Error)
-		return
-	}
-
-	if result.RowsAffected > 0 {
-		log.Printf("[PenimbanganWorker] %d sesi penimbangan ditutup otomatis", result.RowsAffected)
-	}
 }

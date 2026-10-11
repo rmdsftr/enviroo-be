@@ -6,11 +6,8 @@ import (
 
 	"enviroo-be/internal/models"
 
-	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
-
-// ── Row types ──────────────────────────────────────────────────────────────
 
 type ListJadwalRow struct {
 	BsuID             string `json:"bsu_id"              gorm:"column:bsu_id"`
@@ -76,8 +73,6 @@ type PengangkutanAdminUser struct {
 	FCMToken string `gorm:"column:fcm_token"`
 }
 
-// ── Repo ───────────────────────────────────────────────────────────────────
-
 type PengangkutanRepo struct {
 	db *gorm.DB
 }
@@ -86,7 +81,12 @@ func NewPengangkutanRepo(db *gorm.DB) *PengangkutanRepo {
 	return &PengangkutanRepo{db: db}
 }
 
-// ── Non-tx reads ───────────────────────────────────────────────────────────
+func (r *PengangkutanRepo) conn(tx *gorm.DB) *gorm.DB {
+	if tx != nil {
+		return tx
+	}
+	return r.db
+}
 
 func (r *PengangkutanRepo) GetJadwalHariIni(bsiID string, todayHari models.HariEnum, mingguKe int, todayDate string) ([]ListJadwalRow, error) {
 	var rows []ListJadwalRow
@@ -102,7 +102,7 @@ func (r *PengangkutanRepo) GetJadwalHariIni(bsiID string, todayHari models.HariE
 			WHERE pengangkutan_id = ps.pengangkutan_id
 		)`).
 		Where("j.bank_id = ? AND j.jenis_jadwal = ? AND j.is_active = ? AND ("+
-			"(j.is_rutin = true AND j.hari = ? AND (j.minggu_ke = ? OR j.minggu_ke = 0)) OR "+
+			"(j.is_rutin = true AND j.hari = ? AND j.minggu_ke = ?) OR "+
 			"(j.is_rutin = false AND j.tanggal = ?))",
 			bsiID, models.JadwalPengangkutan, true, todayHari, mingguKe, todayDate).
 		Find(&rows).Error
@@ -131,7 +131,7 @@ func (r *PengangkutanRepo) FindBSUAktifByParent(bsuID, bsiID string) (*models.Ba
 func (r *PengangkutanRepo) FindJadwalStart(bsiID, bsuID string, todayHari models.HariEnum, mingguKe int, todayDate string) (*models.Jadwal, error) {
 	var j models.Jadwal
 	err := r.db.Where("bank_id = ? AND target_bank_id = ? AND jenis_jadwal = ? AND ("+
-		"(is_rutin = true AND hari = ? AND (minggu_ke = ? OR minggu_ke = 0)) OR "+
+		"(is_rutin = true AND hari = ? AND minggu_ke = ?) OR "+
 		"(is_rutin = false AND tanggal = ?))",
 		bsiID, bsuID, models.JadwalPengangkutan, todayHari, mingguKe, todayDate).First(&j).Error
 	return &j, err
@@ -145,9 +145,9 @@ func (r *PengangkutanRepo) GetListByBSU(bsuID, startDate, endDate string) ([]Pen
 	return r.applyDateFilter(r.listBaseQuery().Where("ps.bsu_id = ?", bsuID), startDate, endDate)
 }
 
-func (r *PengangkutanRepo) FindPengangkutan(pengangkutanID string) (*models.PengangkutanSampah, error) {
+func (r *PengangkutanRepo) FindPengangkutan(tx *gorm.DB, pengangkutanID string) (*models.PengangkutanSampah, error) {
 	var p models.PengangkutanSampah
-	err := r.db.Where("pengangkutan_id = ?", pengangkutanID).First(&p).Error
+	err := r.conn(tx).Where("pengangkutan_id = ?", pengangkutanID).First(&p).Error
 	return &p, err
 }
 
@@ -157,7 +157,6 @@ func (r *PengangkutanRepo) FindAdminByBank(adminID, bankID string) (*models.Admi
 	return &a, err
 }
 
-// FindLastRiwayat menerima *gorm.DB agar bisa dipakai di dalam maupun luar transaksi.
 func (r *PengangkutanRepo) FindLastRiwayat(db *gorm.DB, pengangkutanID string) (*models.RiwayatPengangkutan, error) {
 	var rw models.RiwayatPengangkutan
 	err := db.Where("pengangkutan_id = ?", pengangkutanID).Order("changed_at DESC").First(&rw).Error
@@ -168,11 +167,10 @@ func (r *PengangkutanRepo) SetAdminBSI(db *gorm.DB, pgk *models.PengangkutanSamp
 	return db.Model(pgk).Update("admin_bsi_id", adminID).Error
 }
 
-// CheckJadwalConflict mengembalikan true jika ada jadwal yang bertabrakan.
 func (r *PengangkutanRepo) CheckJadwalConflict(bsiID, bsuID string, reqHari models.HariEnum, mingguKe int, reqDateStr, jamMulai, jamSelesai string) (bool, error) {
 	var j models.Jadwal
 	err := r.db.Where("bank_id = ? AND target_bank_id = ? AND jenis_jadwal = ? AND is_active = ? AND ("+
-		"(is_rutin = true AND hari = ? AND (minggu_ke = ? OR minggu_ke = 0)) OR "+
+		"(is_rutin = true AND hari = ? AND minggu_ke = ?) OR "+
 		"(is_rutin = false AND tanggal = ?)"+
 		") AND jam_mulai < ? AND jam_selesai > ?",
 		bsiID, bsuID, models.JadwalPengangkutan, true, reqHari, mingguKe, reqDateStr, jamSelesai, jamMulai).First(&j).Error
@@ -194,7 +192,7 @@ func (r *PengangkutanRepo) FindBSUList(bsiID string) ([]models.BankSampah, error
 	return list, err
 }
 
-func (r *PengangkutanRepo) FindJadwal(jadwalID uuid.UUID) (*models.Jadwal, error) {
+func (r *PengangkutanRepo) FindJadwal(jadwalID string) (*models.Jadwal, error) {
 	var j models.Jadwal
 	err := r.db.Where("jadwal_id = ?", jadwalID).First(&j).Error
 	return &j, err
@@ -258,7 +256,6 @@ func (r *PengangkutanRepo) GetRiwayatDetail(pengangkutanID string) ([]RiwayatDet
 	return rows, err
 }
 
-// FindAdminsByBank mengambil semua admin suatu bank (tanpa filter status).
 func (r *PengangkutanRepo) FindAdminsByBank(bankID string) ([]PengangkutanAdminUser, error) {
 	var users []PengangkutanAdminUser
 	err := r.db.Table("admin").
@@ -269,7 +266,6 @@ func (r *PengangkutanRepo) FindAdminsByBank(bankID string) ([]PengangkutanAdminU
 	return users, err
 }
 
-// FindAdminsBankAktif mengambil admin aktif suatu bank.
 func (r *PengangkutanRepo) FindAdminsBankAktif(bankID string) ([]PengangkutanAdminUser, error) {
 	var users []PengangkutanAdminUser
 	err := r.db.Table("admin").
@@ -295,8 +291,6 @@ func (r *PengangkutanRepo) FindKatalogWithAll(sampahID string) (*models.KatalogS
 	return &k, err
 }
 
-// ── Tx methods (caller menyediakan *gorm.DB) ──────────────────────────────
-
 func (r *PengangkutanRepo) CreatePengangkutan(tx *gorm.DB, p *models.PengangkutanSampah) error {
 	return tx.Create(p).Error
 }
@@ -317,7 +311,6 @@ func (r *PengangkutanRepo) CreateDetailPengangkutan(tx *gorm.DB, d *models.Detai
 	return tx.Create(d).Error
 }
 
-// DecrStokBSU mengurangi stok BSU; mengembalikan error jika stok tidak cukup.
 func (r *PengangkutanRepo) DecrStokBSU(tx *gorm.DB, bankID, sampahID string, qty float64) error {
 	var stok models.StokSampah
 	if err := tx.Where("bank_id = ? AND sampah_id = ?", bankID, sampahID).First(&stok).Error; err != nil {
@@ -329,7 +322,6 @@ func (r *PengangkutanRepo) DecrStokBSU(tx *gorm.DB, bankID, sampahID string, qty
 	return tx.Model(&stok).Update("stok", gorm.Expr("stok - ?", qty)).Error
 }
 
-// UpsertStokBSI menambah stok BSI; membuat baris baru jika belum ada.
 func (r *PengangkutanRepo) UpsertStokBSI(tx *gorm.DB, bankID, sampahID string, qty float64) error {
 	var stok models.StokSampah
 	res := tx.Where("bank_id = ? AND sampah_id = ?", bankID, sampahID).First(&stok)
@@ -352,8 +344,6 @@ func (r *PengangkutanRepo) FindKatalogTx(tx *gorm.DB, sampahID string) (*models.
 func (r *PengangkutanRepo) CreateTabunganSampah(tx *gorm.DB, t *models.TabunganSampah) error {
 	return tx.Create(t).Error
 }
-
-// ── Private query helpers ──────────────────────────────────────────────────
 
 func (r *PengangkutanRepo) listBaseQuery() *gorm.DB {
 	return r.db.Table("pengangkutan_sampah ps").

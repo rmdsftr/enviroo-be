@@ -15,12 +15,10 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 )
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
 func setoranNasabahAktif() *models.Nasabah {
 	return &models.Nasabah{
 		NasabahID:     "NSB-001",
-		BankID:        "BSI-001",
+		BankID:        "BSM-001",
 		UserID:        "USR-NSB-001",
 		StatusNasabah: models.Aktif,
 		User:          models.User{UserID: "USR-NSB-001", Nama: "Budi Nasabah"},
@@ -28,12 +26,12 @@ func setoranNasabahAktif() *models.Nasabah {
 }
 
 func setoranAdmin() *models.Admin {
-	bID := "BSI-001"
+	bID := "BSM-001"
 	return &models.Admin{AdminID: "ADM-001", BankID: &bID, UserID: "USR-ADM-001"}
 }
 
 func setoranPenimbangan() *models.Penimbangan {
-	bID := "BSI-001"
+	bID := "BSM-001"
 	return &models.Penimbangan{
 		PenimbanganID:     "PNB-001",
 		BankID:            &bID,
@@ -47,10 +45,12 @@ func newSetoranSvc(t *testing.T) (sqlmock.Sqlmock, *mocks.MockSetoranRepo, *mock
 	repo := new(mocks.MockSetoranRepo)
 	notif := new(mocks.MockNotifSvc)
 	svc := services.NewSetoranService(gdb, repo, notif)
+
+	repo.On("InsentifSampahDilayani", mock.Anything, mock.Anything, mock.Anything).
+		Return(true, nil).Maybe()
+
 	return dbMock, repo, notif, svc
 }
-
-// ── Verifikasi ────────────────────────────────────────────────────────────────
 
 func TestVerifikasiSetoran_FormatQRTidakValid(t *testing.T) {
 	_, _, _, svc := newSetoranSvc(t)
@@ -102,7 +102,7 @@ func TestVerifikasiSetoran_ConflictOfInterest(t *testing.T) {
 	qr := `{"type":"ENVIROO-SETORAN","nasabah_id":"NSB-001","penimbangan_id":"PNB-001"}`
 	nasabah := setoranNasabahAktif()
 	nasabah.UserID = "USR-SAMA"
-	bID := "BSI-001"
+	bID := "BSM-001"
 	admin := &models.Admin{AdminID: "ADM-001", BankID: &bID, UserID: "USR-SAMA"}
 	repo.On("FindNasabahAktifWithUser", "NSB-001").Return(nasabah, nil)
 	repo.On("FindAdminAktif", "ADM-001").Return(admin, nil)
@@ -146,9 +146,9 @@ func TestVerifikasiSetoran_BankMismatch(t *testing.T) {
 	_, repo, _, svc := newSetoranSvc(t)
 
 	qr := `{"type":"ENVIROO-SETORAN","nasabah_id":"NSB-001","penimbangan_id":"PNB-001"}`
-	otherBank := "BSI-002"
+	otherBank := "BSM-002"
 	penimbangan := &models.Penimbangan{PenimbanganID: "PNB-001", BankID: &otherBank}
-	repo.On("FindNasabahAktifWithUser", "NSB-001").Return(setoranNasabahAktif(), nil) // BankID = BSI-001
+	repo.On("FindNasabahAktifWithUser", "NSB-001").Return(setoranNasabahAktif(), nil)
 	repo.On("FindAdminAktif", "ADM-001").Return(setoranAdmin(), nil)
 	repo.On("FindPenimbanganAktif", "PNB-001").Return(penimbangan, nil)
 
@@ -175,8 +175,6 @@ func TestVerifikasiSetoran_Sukses(t *testing.T) {
 	assert.Equal(t, "Budi Nasabah", data["nama_nasabah"])
 }
 
-// ── Preview ───────────────────────────────────────────────────────────────────
-
 func TestPreviewSetoran_NasabahTidakDitemukan(t *testing.T) {
 	_, repo, _, svc := newSetoranSvc(t)
 
@@ -187,6 +185,28 @@ func TestPreviewSetoran_NasabahTidakDitemukan(t *testing.T) {
 	assert.Nil(t, result)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "Nasabah")
+}
+
+func TestPreviewSetoran_TolakInsentifTidakDilayani(t *testing.T) {
+	gdb, _ := newTestDB(t)
+	repo := new(mocks.MockSetoranRepo)
+	notif := new(mocks.MockNotifSvc)
+	svc := services.NewSetoranService(gdb, repo, notif)
+
+	repo.On("FindNasabahWithUser", "NSB-001").Return(setoranNasabahAktif(), nil)
+	repo.On("FindKatalogSampah", "SMP-001").Return(&models.KatalogSampah{
+		SampahID: "SMP-001",
+		Sarok:    models.Sampah{NamaSampah: "Botol Plastik", Satuan: models.SatuanKG},
+		Reward:   models.Reward{NamaReward: models.RewardEnumBarang},
+	}, nil)
+	repo.On("InsentifSampahDilayani", mock.Anything, "BSM-001", "SMP-001").Return(false, nil)
+
+	result, err := svc.Preview("PNB-001", "NSB-001", []services.ItemSetoranReq{{SampahID: "SMP-001", Qty: 2}})
+
+	assert.Nil(t, result)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "tidak menerima setoran")
+	assert.Contains(t, err.Error(), "Botol Plastik")
 }
 
 func TestPreviewSetoran_QtyNol(t *testing.T) {
@@ -256,7 +276,7 @@ func TestPreviewSetoran_Sukses_MultipleItem(t *testing.T) {
 	_, repo, _, svc := newSetoranSvc(t)
 
 	katalog1 := &models.KatalogSampah{SampahID: "SMP-001", Sarok: models.Sampah{NamaSampah: "Botol Plastik", Satuan: models.SatuanKG}, Reward: models.Reward{NamaReward: models.RewardEnumUang}}
-	katalog2 := &models.KatalogSampah{SampahID: "SMP-002", Sarok: models.Sampah{NamaSampah: "Kertas", Satuan: models.SatuanKG}, Reward: models.Reward{NamaReward: models.RewardEnumSembako}}
+	katalog2 := &models.KatalogSampah{SampahID: "SMP-002", Sarok: models.Sampah{NamaSampah: "Kertas", Satuan: models.SatuanKG}, Reward: models.Reward{NamaReward: models.RewardEnumBarang}}
 
 	repo.On("FindNasabahWithUser", "NSB-001").Return(setoranNasabahAktif(), nil)
 	repo.On("FindKatalogSampah", "SMP-001").Return(katalog1, nil)
@@ -271,10 +291,8 @@ func TestPreviewSetoran_Sukses_MultipleItem(t *testing.T) {
 	assert.NotNil(t, result)
 	assert.Equal(t, 2, result.TotalItem)
 	assert.Len(t, result.Items, 2)
-	assert.Equal(t, string(models.RewardEnumSembako), result.Items[1].JenisReward)
+	assert.Equal(t, string(models.RewardEnumBarang), result.Items[1].JenisReward)
 }
-
-// ── Input ─────────────────────────────────────────────────────────────────────
 
 func TestInputSetoran_NasabahTidakAktif(t *testing.T) {
 	_, repo, _, svc := newSetoranSvc(t)
@@ -306,7 +324,7 @@ func TestInputSetoran_ConflictOfInterest(t *testing.T) {
 
 	nasabah := setoranNasabahAktif()
 	nasabah.UserID = "USR-SAMA"
-	bID := "BSI-001"
+	bID := "BSM-001"
 	admin := &models.Admin{AdminID: "ADM-001", BankID: &bID, UserID: "USR-SAMA"}
 
 	repo.On("FindNasabahAktifWithUser", "NSB-001").Return(nasabah, nil)
@@ -339,10 +357,10 @@ func TestInputSetoran_PenimbanganTidakDitemukan(t *testing.T) {
 func TestInputSetoran_NasabahBedaBank(t *testing.T) {
 	dbMock, repo, _, svc := newSetoranSvc(t)
 
-	otherBank := "BSI-002"
+	otherBank := "BSM-002"
 	penimbangan := &models.Penimbangan{PenimbanganID: "PNB-001", BankID: &otherBank}
 
-	repo.On("FindNasabahAktifWithUser", "NSB-001").Return(setoranNasabahAktif(), nil) // BankID = BSI-001
+	repo.On("FindNasabahAktifWithUser", "NSB-001").Return(setoranNasabahAktif(), nil)
 	repo.On("FindAdminAktif", "ADM-001").Return(setoranAdmin(), nil)
 	repo.On("FindPenimbanganTx", mock.Anything, "PNB-001").Return(penimbangan, nil)
 
@@ -356,6 +374,34 @@ func TestInputSetoran_NasabahBedaBank(t *testing.T) {
 	assert.Contains(t, err.Error(), "bank sampah ini")
 }
 
+func TestInputSetoran_TolakInsentifTidakDilayani(t *testing.T) {
+	gdb, dbMock := newTestDB(t)
+	repo := new(mocks.MockSetoranRepo)
+	notif := new(mocks.MockNotifSvc)
+	svc := services.NewSetoranService(gdb, repo, notif)
+
+	repo.On("FindNasabahAktifWithUser", "NSB-001").Return(setoranNasabahAktif(), nil)
+	repo.On("FindAdminAktif", "ADM-001").Return(setoranAdmin(), nil)
+	repo.On("FindPenimbanganTx", mock.Anything, "PNB-001").Return(setoranPenimbangan(), nil)
+	repo.On("CreateSetoran", mock.Anything, mock.Anything).Return(nil)
+	repo.On("InsentifSampahDilayani", mock.Anything, "BSM-001", "SMP-001").Return(false, nil)
+
+	dbMock.ExpectBegin()
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"setoran_id"}))
+	dbMock.ExpectRollback()
+
+	result, err := svc.Input("PNB-001", "NSB-001", "ADM-001", "manual", "", []services.ItemSetoranReq{
+		{SampahID: "SMP-001", Qty: 2},
+	})
+
+	assert.Nil(t, result)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "tidak menerima setoran")
+	repo.AssertNotCalled(t, "UpsertStokSampah", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	repo.AssertNotCalled(t, "CreateTabunganSampah", mock.Anything, mock.Anything)
+}
+
 func TestInputSetoran_Sukses_SingleItem(t *testing.T) {
 	dbMock, repo, notif, svc := newSetoranSvc(t)
 
@@ -364,13 +410,17 @@ func TestInputSetoran_Sukses_SingleItem(t *testing.T) {
 	repo.On("FindPenimbanganTx", mock.Anything, "PNB-001").Return(setoranPenimbangan(), nil)
 	repo.On("CreateSetoran", mock.Anything, mock.Anything).Return(nil)
 	repo.On("CreateDetailSetoran", mock.Anything, mock.Anything).Return(nil)
-	repo.On("UpsertStokSampah", mock.Anything, "BSI-001", "SMP-001", float64(2)).Return(nil)
+	repo.On("UpsertStokSampah", mock.Anything, "BSM-001", "SMP-001", float64(2)).Return(nil)
 	repo.On("CreateTabunganSampah", mock.Anything, mock.Anything).Return(nil)
-	repo.On("FindBankSampah", "BSI-001").Return(&models.BankSampah{BankID: "BSI-001", NamaBank: "BSI Utama"}, nil).Maybe()
+	repo.On("FindBankSampah", "BSM-001").Return(&models.BankSampah{BankID: "BSM-001", NamaBank: "BSM Utama"}, nil).Maybe()
 	repo.On("FindNasabahWithUser", "NSB-001").Return(setoranNasabahAktif(), nil).Maybe()
 	notif.On("NotifSetoranBerhasil", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	dbMock.ExpectBegin()
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"setoran_id"}))
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"tabungan_id"}))
 	dbMock.ExpectCommit()
 
 	result, err := svc.Input("PNB-001", "NSB-001", "ADM-001", "manual", "https://bukti.jpg", []services.ItemSetoranReq{
@@ -392,14 +442,20 @@ func TestInputSetoran_Sukses_MultiItem(t *testing.T) {
 	repo.On("FindPenimbanganTx", mock.Anything, "PNB-001").Return(setoranPenimbangan(), nil)
 	repo.On("CreateSetoran", mock.Anything, mock.Anything).Return(nil)
 	repo.On("CreateDetailSetoran", mock.Anything, mock.Anything).Return(nil).Times(2)
-	repo.On("UpsertStokSampah", mock.Anything, "BSI-001", "SMP-001", float64(1)).Return(nil)
-	repo.On("UpsertStokSampah", mock.Anything, "BSI-001", "SMP-002", float64(3)).Return(nil)
+	repo.On("UpsertStokSampah", mock.Anything, "BSM-001", "SMP-001", float64(1)).Return(nil)
+	repo.On("UpsertStokSampah", mock.Anything, "BSM-001", "SMP-002", float64(3)).Return(nil)
 	repo.On("CreateTabunganSampah", mock.Anything, mock.Anything).Return(nil).Times(2)
-	repo.On("FindBankSampah", "BSI-001").Return(&models.BankSampah{BankID: "BSI-001", NamaBank: "BSI Utama"}, nil).Maybe()
+	repo.On("FindBankSampah", "BSM-001").Return(&models.BankSampah{BankID: "BSM-001", NamaBank: "BSM Utama"}, nil).Maybe()
 	repo.On("FindNasabahWithUser", "NSB-001").Return(setoranNasabahAktif(), nil).Maybe()
 	notif.On("NotifSetoranBerhasil", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	dbMock.ExpectBegin()
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"setoran_id"}))
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"tabungan_id"}))
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"tabungan_id"}))
 	dbMock.ExpectCommit()
 
 	result, err := svc.Input("PNB-001", "NSB-001", "ADM-001", "manual", "", []services.ItemSetoranReq{
@@ -413,8 +469,6 @@ func TestInputSetoran_Sukses_MultiItem(t *testing.T) {
 	assert.Equal(t, 2, result.TotalItem)
 	repo.AssertExpectations(t)
 }
-
-// ── GetDetail ─────────────────────────────────────────────────────────────────
 
 func TestGetDetailSetoran_HeaderTidakDitemukan(t *testing.T) {
 	_, repo, _, svc := newSetoranSvc(t)
@@ -469,8 +523,6 @@ func TestGetDetailSetoran_Sukses(t *testing.T) {
 	assert.Equal(t, "Botol Plastik", result.Items[0].NamaSampah)
 	assert.Equal(t, float64(2), result.Items[0].Qty)
 }
-
-// ── GetRiwayat ────────────────────────────────────────────────────────────────
 
 func TestGetRiwayatSetoran_Error(t *testing.T) {
 	_, repo, _, svc := newSetoranSvc(t)

@@ -16,15 +16,15 @@ const (
 )
 
 type Admin struct {
-	AdminID     string     `gorm:"column:admin_id;type:varchar(100);primaryKey"`
-	BankID      *string    `gorm:"column:bank_id;type:varchar(100);uniqueIndex:idx_admin_bank_user"`
-	UserID      string     `gorm:"column:user_id;type:varchar(100);uniqueIndex:idx_admin_bank_user"`
+	AdminID     string     `gorm:"column:admin_id;type:varchar(13);primaryKey"`
+	BankID      *string    `gorm:"column:bank_id;type:varchar(9);uniqueIndex:idx_admin_bank_user"`
+	UserID      string     `gorm:"column:user_id;type:varchar(25);uniqueIndex:idx_admin_bank_user;index"`
 	JoinedAt    time.Time  `gorm:"column:joined_at;autoCreateTime"`
-	Role        RoleAdmin  `gorm:"column:role;type:role_admin_enum"`
-	StatusAdmin StatusAkun `gorm:"column:status_admin;type:status_akun_enum"`
+	Role        RoleAdmin  `gorm:"column:role;type:role_admin_enum;not null"`
+	StatusAdmin StatusAkun `gorm:"column:status_admin;type:status_akun_enum;not null"`
 
-	Bank BankSampah `gorm:"foreignKey:BankID;references:BankID;constraint:OnDelete:CASCADE"`
-	User User       `gorm:"foreignKey:UserID;references:UserID;constraint:OnDelete:CASCADE"`
+	Bank BankSampah `gorm:"foreignKey:BankID;references:BankID;constraint:OnDelete:RESTRICT"`
+	User User       `gorm:"foreignKey:UserID;references:UserID;constraint:OnDelete:RESTRICT"`
 }
 
 func (Admin) TableName() string {

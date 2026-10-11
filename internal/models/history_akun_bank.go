@@ -3,22 +3,21 @@ package models
 import (
 	"time"
 
-	"github.com/google/uuid"
 	"gorm.io/datatypes"
 )
 
 type HistoryAkunBank struct {
-	HistoryBankID uuid.UUID      `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	BankID        string         `gorm:"type:varchar(100);index:idx_history_bank_id"`
-	Action        string         `gorm:"type:varchar(50);check:action IN ('CREATE','UPDATE','DELETE')"`
+	HistoryBankID string         `gorm:"type:varchar(14);primaryKey"`
+	BankID        string         `gorm:"type:varchar(9);not null;index:idx_history_bank_id"`
+	Action        string         `gorm:"type:varchar(10);not null;check:action IN ('CREATE','UPDATE','DELETE')"`
 	OldValue      datatypes.JSON `gorm:"type:jsonb"`
 	NewValue      datatypes.JSON `gorm:"type:jsonb"`
-	Informasi     string         `gorm:"type:text"`
-	Keterangan    string         `gorm:"type:text"`
-	CreatedAt     time.Time      `gorm:"type:timestamp;default:current_timestamp"`
-	CreatedBy     string         `gorm:"type:varchar(100)"`
+	Informasi     string         `gorm:"type:text;not null"`
+	Keterangan    string         `gorm:"type:text;not null"`
+	CreatedAt     time.Time      `gorm:"type:timestamp;not null;default:current_timestamp"`
+	CreatedBy     string         `gorm:"type:varchar(25);not null"`
 
-	Bank  *BankSampah `gorm:"foreignKey:BankID;references:BankID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL"`
+	Bank  *BankSampah `gorm:"foreignKey:BankID;references:BankID;constraint:OnDelete:CASCADE"`
 }
 
 func (HistoryAkunBank) TableName() string {

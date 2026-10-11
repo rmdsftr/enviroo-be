@@ -1,4 +1,4 @@
-package services_test
+﻿package services_test
 
 import (
 	"errors"
@@ -11,28 +11,24 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"gorm.io/gorm"
 )
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-func newPenjualanSvc(t *testing.T) (sqlmock.Sqlmock, *mocks.MockPenjualanRepo, *services.PenjualanService) {
+func newPenjualanSvc(t *testing.T) (sqlmock.Sqlmock, *mocks.MockPenjualanRepo, *mocks.MockMitraRepo, *services.PenjualanService) {
 	t.Helper()
 	gdb, dbMock := newTestDB(t)
 	repo := new(mocks.MockPenjualanRepo)
-	svc := services.NewPenjualanService(gdb, repo)
-	return dbMock, repo, svc
+	mitraRepo := new(mocks.MockMitraRepo)
+	svc := services.NewPenjualanService(gdb, repo, mitraRepo)
+	return dbMock, repo, mitraRepo, svc
 }
 
-func penjualanBankBSI() *models.BankSampah {
-	return &models.BankSampah{BankID: "BSI-001", NamaBank: "BSI Utama", JenisBank: models.BSI}
-}
-
-func penjualanBankBSU() *models.BankSampah {
-	return &models.BankSampah{BankID: "BSU-001", NamaBank: "BSU A", JenisBank: models.BSU}
+func penjualanBankBSM() *models.BankSampah {
+	return &models.BankSampah{BankID: "BSM-001", NamaBank: "BSM Utama", JenisBank: models.BSM}
 }
 
 func rewardUang() *models.Reward {
-	return &models.Reward{RewardID: 1, NamaReward: models.RewardEnumUang, Satuan: string(models.SatuanRewardEnumRp)}
+	return &models.Reward{RewardID: 1, NamaReward: models.RewardEnumUang, Satuan: models.SatuanRewardEnumRp}
 }
 
 func katalogBotol() *models.KatalogSampah {
@@ -44,62 +40,78 @@ func katalogBotol() *models.KatalogSampah {
 }
 
 func stokCukup() *models.StokSampah {
-	return &models.StokSampah{BankID: "BSI-001", SampahID: "SMP-001", Stok: 100}
+	return &models.StokSampah{BankID: "BSM-001", SampahID: "SMP-001", Stok: 100}
 }
 
 func stokKosong() *models.StokSampah {
-	return &models.StokSampah{BankID: "BSI-001", SampahID: "SMP-001", Stok: 0.5}
+	return &models.StokSampah{BankID: "BSM-001", SampahID: "SMP-001", Stok: 0.5}
 }
 
-// ── PreviewPenjualan ──────────────────────────────────────────────────────────
-
 func TestPreviewPenjualan_BankTidakDitemukan(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
+	_, repo, _, svc := newPenjualanSvc(t)
 
-	repo.On("GetBankByID", "BSI-XXX").Return(nil, errors.New("not found"))
+	repo.On("GetBankByID", "BSM-XXX").Return(nil, errors.New("not found"))
 
-	result, err := svc.PreviewPenjualan("BSI-XXX", 1, []services.ItemSampahDijual{{SampahID: "SMP-001", Qty: 1, HargaJual: 5000}})
+	result, err := svc.PreviewPenjualan("BSM-XXX", 1, []services.ItemSampahDijual{{SampahID: "SMP-001", Qty: 1, HargaJual: 5000}})
 
 	assert.Nil(t, result)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "Bank")
 }
 
-func TestPreviewPenjualan_BankBSU(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
-
-	repo.On("GetBankByID", "BSU-001").Return(penjualanBankBSU(), nil)
-
-	result, err := svc.PreviewPenjualan("BSU-001", 1, []services.ItemSampahDijual{{SampahID: "SMP-001", Qty: 1, HargaJual: 5000}})
-
-	assert.Nil(t, result)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "BSU")
-}
-
 func TestPreviewPenjualan_RewardTidakDitemukan(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
+	_, repo, _, svc := newPenjualanSvc(t)
 
-	repo.On("GetBankByID", "BSI-001").Return(penjualanBankBSI(), nil)
-	repo.On("GetPersenNasabah", mock.Anything, "BSI-001", 99).Return(float64(30))
+	repo.On("GetBankByID", "BSM-001").Return(penjualanBankBSM(), nil)
+	repo.On("GetPersenNasabah", mock.Anything, "BSM-001", 99).Return(float64(30), nil)
 	repo.On("GetRewardByID", mock.Anything, 99).Return(nil, errors.New("not found"))
 
-	result, err := svc.PreviewPenjualan("BSI-001", 99, []services.ItemSampahDijual{{SampahID: "SMP-001", Qty: 1, HargaJual: 5000}})
+	result, err := svc.PreviewPenjualan("BSM-001", 99, []services.ItemSampahDijual{{SampahID: "SMP-001", Qty: 1, HargaJual: 5000}})
 
 	assert.Nil(t, result)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "reward")
 }
 
-func TestPreviewPenjualan_SampahTidakDitemukan(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
+func TestPreviewPenjualan_BagiHasilBelumDiatur(t *testing.T) {
+	_, repo, _, svc := newPenjualanSvc(t)
 
-	repo.On("GetBankByID", "BSI-001").Return(penjualanBankBSI(), nil)
-	repo.On("GetPersenNasabah", mock.Anything, "BSI-001", 1).Return(float64(30))
+	repo.On("GetBankByID", "BSM-001").Return(penjualanBankBSM(), nil)
+	repo.On("GetPersenNasabah", mock.Anything, "BSM-001", 1).
+		Return(float64(0), gorm.ErrRecordNotFound)
+
+	result, err := svc.PreviewPenjualan("BSM-001", 1, []services.ItemSampahDijual{{SampahID: "SMP-001", Qty: 1, HargaJual: 5000}})
+
+	assert.Nil(t, result)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "belum mengatur bagi hasil")
+}
+
+func TestSubmitPenjualan_BagiHasilBelumDiatur(t *testing.T) {
+	_, repo, _, svc := newPenjualanSvc(t)
+
+	repo.On("GetBankByID", "BSM-001").Return(penjualanBankBSM(), nil)
+	repo.On("GetRewardByID", mock.Anything, 1).Return(rewardUang(), nil)
+	repo.On("GetPersenNasabah", mock.Anything, "BSM-001", 1).
+		Return(float64(0), gorm.ErrRecordNotFound)
+
+	result, err := svc.SubmitPenjualan("BSM-001", "ADM-001", 1, "MTR-001", "", "",
+		[]services.ItemSampahDijual{{SampahID: "SMP-001", Qty: 1, HargaJual: 5000}})
+
+	assert.Nil(t, result)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "belum mengatur bagi hasil")
+}
+
+func TestPreviewPenjualan_SampahTidakDitemukan(t *testing.T) {
+	_, repo, _, svc := newPenjualanSvc(t)
+
+	repo.On("GetBankByID", "BSM-001").Return(penjualanBankBSM(), nil)
+	repo.On("GetPersenNasabah", mock.Anything, "BSM-001", 1).Return(float64(30), nil)
 	repo.On("GetRewardByID", mock.Anything, 1).Return(rewardUang(), nil)
 	repo.On("GetKatalogSampah", mock.Anything, "SMP-XXX").Return(nil, errors.New("not found"))
 
-	result, err := svc.PreviewPenjualan("BSI-001", 1, []services.ItemSampahDijual{{SampahID: "SMP-XXX", Qty: 1, HargaJual: 5000}})
+	result, err := svc.PreviewPenjualan("BSM-001", 1, []services.ItemSampahDijual{{SampahID: "SMP-XXX", Qty: 1, HargaJual: 5000}})
 
 	assert.Nil(t, result)
 	assert.Error(t, err)
@@ -107,30 +119,30 @@ func TestPreviewPenjualan_SampahTidakDitemukan(t *testing.T) {
 }
 
 func TestPreviewPenjualan_StokTidakAda(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
+	_, repo, _, svc := newPenjualanSvc(t)
 
-	repo.On("GetBankByID", "BSI-001").Return(penjualanBankBSI(), nil)
-	repo.On("GetPersenNasabah", mock.Anything, "BSI-001", 1).Return(float64(30))
+	repo.On("GetBankByID", "BSM-001").Return(penjualanBankBSM(), nil)
+	repo.On("GetPersenNasabah", mock.Anything, "BSM-001", 1).Return(float64(30), nil)
 	repo.On("GetRewardByID", mock.Anything, 1).Return(rewardUang(), nil)
 	repo.On("GetKatalogSampah", mock.Anything, "SMP-001").Return(katalogBotol(), nil)
-	repo.On("GetStokSampah", mock.Anything, "BSI-001", "SMP-001").Return(nil, errors.New("not found"))
+	repo.On("GetStokSampah", mock.Anything, "BSM-001", "SMP-001").Return(nil, errors.New("not found"))
 
-	result, err := svc.PreviewPenjualan("BSI-001", 1, []services.ItemSampahDijual{{SampahID: "SMP-001", Qty: 1, HargaJual: 5000}})
+	result, err := svc.PreviewPenjualan("BSM-001", 1, []services.ItemSampahDijual{{SampahID: "SMP-001", Qty: 1, HargaJual: 5000}})
 
 	assert.Nil(t, result)
 	assert.Error(t, err)
 }
 
 func TestPreviewPenjualan_StokTidakCukup(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
+	_, repo, _, svc := newPenjualanSvc(t)
 
-	repo.On("GetBankByID", "BSI-001").Return(penjualanBankBSI(), nil)
-	repo.On("GetPersenNasabah", mock.Anything, "BSI-001", 1).Return(float64(30))
+	repo.On("GetBankByID", "BSM-001").Return(penjualanBankBSM(), nil)
+	repo.On("GetPersenNasabah", mock.Anything, "BSM-001", 1).Return(float64(30), nil)
 	repo.On("GetRewardByID", mock.Anything, 1).Return(rewardUang(), nil)
 	repo.On("GetKatalogSampah", mock.Anything, "SMP-001").Return(katalogBotol(), nil)
-	repo.On("GetStokSampah", mock.Anything, "BSI-001", "SMP-001").Return(stokKosong(), nil) // stok 0.5
+	repo.On("GetStokSampah", mock.Anything, "BSM-001", "SMP-001").Return(stokKosong(), nil)
 
-	result, err := svc.PreviewPenjualan("BSI-001", 1, []services.ItemSampahDijual{{SampahID: "SMP-001", Qty: 5, HargaJual: 5000}})
+	result, err := svc.PreviewPenjualan("BSM-001", 1, []services.ItemSampahDijual{{SampahID: "SMP-001", Qty: 5, HargaJual: 5000}})
 
 	assert.Nil(t, result)
 	assert.Error(t, err)
@@ -138,86 +150,72 @@ func TestPreviewPenjualan_StokTidakCukup(t *testing.T) {
 }
 
 func TestPreviewPenjualan_Sukses_SingleItem(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
+	_, repo, _, svc := newPenjualanSvc(t)
 
-	repo.On("GetBankByID", "BSI-001").Return(penjualanBankBSI(), nil)
-	repo.On("GetPersenNasabah", mock.Anything, "BSI-001", 1).Return(float64(30))
+	repo.On("GetBankByID", "BSM-001").Return(penjualanBankBSM(), nil)
+	repo.On("GetPersenNasabah", mock.Anything, "BSM-001", 1).Return(float64(30), nil)
 	repo.On("GetRewardByID", mock.Anything, 1).Return(rewardUang(), nil)
 	repo.On("GetKatalogSampah", mock.Anything, "SMP-001").Return(katalogBotol(), nil)
-	repo.On("GetStokSampah", mock.Anything, "BSI-001", "SMP-001").Return(stokCukup(), nil)
+	repo.On("GetStokSampah", mock.Anything, "BSM-001", "SMP-001").Return(stokCukup(), nil)
 
-	result, err := svc.PreviewPenjualan("BSI-001", 1, []services.ItemSampahDijual{
+	result, err := svc.PreviewPenjualan("BSM-001", 1, []services.ItemSampahDijual{
 		{SampahID: "SMP-001", Qty: 2, HargaJual: 5000},
 	})
 
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
-	assert.Equal(t, float64(10000), result.TotalPenjualan) // 2 * 5000
+	assert.Equal(t, float64(10000), result.TotalPenjualan)
 	assert.Equal(t, models.SatuanRewardEnumRp, result.Satuan)
 	assert.Equal(t, float64(30), result.PersenNasabah)
 	assert.Len(t, result.DetailItems, 1)
 	assert.Equal(t, float64(10000), result.DetailItems[0].Subtotal)
-	assert.Equal(t, float64(1500), result.DetailItems[0].HargaNasabahSnapshot) // 5000 * 30% = 1500
+	assert.Equal(t, float64(1500), result.DetailItems[0].HargaNasabahSnapshot)
 }
 
 func TestPreviewPenjualan_Sukses_MultipleItem(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
+	_, repo, _, svc := newPenjualanSvc(t)
 
 	katalog2 := &models.KatalogSampah{SampahID: "SMP-002", RewardID: 1, Sarok: models.Sampah{NamaSampah: "Kertas"}}
-	stok2 := &models.StokSampah{BankID: "BSI-001", SampahID: "SMP-002", Stok: 50}
+	stok2 := &models.StokSampah{BankID: "BSM-001", SampahID: "SMP-002", Stok: 50}
 
-	repo.On("GetBankByID", "BSI-001").Return(penjualanBankBSI(), nil)
-	repo.On("GetPersenNasabah", mock.Anything, "BSI-001", 1).Return(float64(30))
+	repo.On("GetBankByID", "BSM-001").Return(penjualanBankBSM(), nil)
+	repo.On("GetPersenNasabah", mock.Anything, "BSM-001", 1).Return(float64(30), nil)
 	repo.On("GetRewardByID", mock.Anything, 1).Return(rewardUang(), nil)
 	repo.On("GetKatalogSampah", mock.Anything, "SMP-001").Return(katalogBotol(), nil)
 	repo.On("GetKatalogSampah", mock.Anything, "SMP-002").Return(katalog2, nil)
-	repo.On("GetStokSampah", mock.Anything, "BSI-001", "SMP-001").Return(stokCukup(), nil)
-	repo.On("GetStokSampah", mock.Anything, "BSI-001", "SMP-002").Return(stok2, nil)
+	repo.On("GetStokSampah", mock.Anything, "BSM-001", "SMP-001").Return(stokCukup(), nil)
+	repo.On("GetStokSampah", mock.Anything, "BSM-001", "SMP-002").Return(stok2, nil)
 
-	result, err := svc.PreviewPenjualan("BSI-001", 1, []services.ItemSampahDijual{
+	result, err := svc.PreviewPenjualan("BSM-001", 1, []services.ItemSampahDijual{
 		{SampahID: "SMP-001", Qty: 2, HargaJual: 5000},
 		{SampahID: "SMP-002", Qty: 1, HargaJual: 3000},
 	})
 
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
-	assert.Equal(t, float64(13000), result.TotalPenjualan) // 10000 + 3000
+	assert.Equal(t, float64(13000), result.TotalPenjualan)
 	assert.Len(t, result.DetailItems, 2)
 }
 
-// ── SubmitPenjualan ───────────────────────────────────────────────────────────
-
 func TestSubmitPenjualan_BankTidakDitemukan(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
+	_, repo, _, svc := newPenjualanSvc(t)
 
-	repo.On("GetBankByID", "BSI-XXX").Return(nil, errors.New("not found"))
+	repo.On("GetBankByID", "BSM-XXX").Return(nil, errors.New("not found"))
 
-	result, err := svc.SubmitPenjualan("BSI-XXX", "ADM-001", 1, "Pembeli A", "", []services.ItemSampahDijual{{SampahID: "SMP-001", Qty: 1, HargaJual: 5000}})
+	result, err := svc.SubmitPenjualan("BSM-XXX", "ADM-001", 1, "", "Pembeli A", "", []services.ItemSampahDijual{{SampahID: "SMP-001", Qty: 1, HargaJual: 5000}})
 
 	assert.Nil(t, result)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "Bank")
 }
 
-func TestSubmitPenjualan_BankBSU(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
-
-	repo.On("GetBankByID", "BSU-001").Return(penjualanBankBSU(), nil)
-
-	result, err := svc.SubmitPenjualan("BSU-001", "ADM-001", 1, "Pembeli A", "", []services.ItemSampahDijual{{SampahID: "SMP-001", Qty: 1, HargaJual: 5000}})
-
-	assert.Nil(t, result)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "BSU")
-}
-
 func TestSubmitPenjualan_RewardTidakDitemukan(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
+	_, repo, _, svc := newPenjualanSvc(t)
 
-	repo.On("GetBankByID", "BSI-001").Return(penjualanBankBSI(), nil)
+	repo.On("GetBankByID", "BSM-001").Return(penjualanBankBSM(), nil)
 	repo.On("GetRewardByID", mock.Anything, 99).Return(nil, errors.New("not found"))
 
-	result, err := svc.SubmitPenjualan("BSI-001", "ADM-001", 99, "Pembeli A", "", []services.ItemSampahDijual{{SampahID: "SMP-001", Qty: 1, HargaJual: 5000}})
+	result, err := svc.SubmitPenjualan("BSM-001", "ADM-001", 99, "", "Pembeli A", "", []services.ItemSampahDijual{{SampahID: "SMP-001", Qty: 1, HargaJual: 5000}})
 
 	assert.Nil(t, result)
 	assert.Error(t, err)
@@ -225,18 +223,20 @@ func TestSubmitPenjualan_RewardTidakDitemukan(t *testing.T) {
 }
 
 func TestSubmitPenjualan_StokTidakCukup_Rollback(t *testing.T) {
-	dbMock, repo, svc := newPenjualanSvc(t)
+	dbMock, repo, _, svc := newPenjualanSvc(t)
 
-	repo.On("GetBankByID", "BSI-001").Return(penjualanBankBSI(), nil)
+	repo.On("GetBankByID", "BSM-001").Return(penjualanBankBSM(), nil)
 	repo.On("GetRewardByID", mock.Anything, 1).Return(rewardUang(), nil)
-	repo.On("GetPersenNasabah", mock.Anything, "BSI-001", 1).Return(float64(30))
+	repo.On("GetPersenNasabah", mock.Anything, "BSM-001", 1).Return(float64(30), nil)
 	repo.On("GetKatalogSampah", mock.Anything, "SMP-001").Return(katalogBotol(), nil)
-	repo.On("GetStokSampah", mock.Anything, "BSI-001", "SMP-001").Return(stokKosong(), nil) // stok 0.5
+	repo.On("GetStokSampah", mock.Anything, "BSM-001", "SMP-001").Return(stokKosong(), nil)
 
 	dbMock.ExpectBegin()
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"penjualan_id"}))
 	dbMock.ExpectRollback()
 
-	result, err := svc.SubmitPenjualan("BSI-001", "ADM-001", 1, "Pembeli A", "", []services.ItemSampahDijual{
+	result, err := svc.SubmitPenjualan("BSM-001", "ADM-001", 1, "", "Pembeli A", "", []services.ItemSampahDijual{
 		{SampahID: "SMP-001", Qty: 5, HargaJual: 5000},
 	})
 
@@ -246,24 +246,30 @@ func TestSubmitPenjualan_StokTidakCukup_Rollback(t *testing.T) {
 }
 
 func TestSubmitPenjualan_Sukses_SchemaSamHarga(t *testing.T) {
-	dbMock, repo, svc := newPenjualanSvc(t)
+	dbMock, repo, mitraRepo, svc := newPenjualanSvc(t)
 
-	schema := &models.SchemaHargaSampah{SchemaID: 1, SampahID: "SMP-001", LevelUser: models.LevelEksternal, Harga: 5000}
+	schema := &models.SchemaHargaSampah{SchemaID: "1SMP-001", SampahID: "SMP-001", LevelUser: models.LevelEksternal, Harga: 5000}
 
-	repo.On("GetBankByID", "BSI-001").Return(penjualanBankBSI(), nil)
+	repo.On("GetBankByID", "BSM-001").Return(penjualanBankBSM(), nil)
 	repo.On("GetRewardByID", mock.Anything, 1).Return(rewardUang(), nil)
-	repo.On("GetPersenNasabah", mock.Anything, "BSI-001", 1).Return(float64(30))
+	repo.On("GetPersenNasabah", mock.Anything, "BSM-001", 1).Return(float64(30), nil)
 	repo.On("GetKatalogSampah", mock.Anything, "SMP-001").Return(katalogBotol(), nil)
-	repo.On("GetStokSampah", mock.Anything, "BSI-001", "SMP-001").Return(stokCukup(), nil)
-	repo.On("GetSchemaHarga", mock.Anything, "SMP-001", models.LevelEksternal).Return(schema, nil) // harga sama, no update
-	repo.On("DecrStokSampah", mock.Anything, "BSI-001", "SMP-001", float64(98)).Return(nil)        // 100 - 2 = 98
+	repo.On("GetStokSampah", mock.Anything, "BSM-001", "SMP-001").Return(stokCukup(), nil)
+	repo.On("GetSchemaHarga", mock.Anything, "SMP-001", models.LevelEksternal).Return(schema, nil)
+	repo.On("DecrStokSampah", mock.Anything, "BSM-001", "SMP-001", float64(98)).Return(nil)
+	mitraRepo.On("FindByNormalizedName", mock.Anything, "BSM-001", mock.Anything).Return(nil, errors.New("not found"))
+	mitraRepo.On("Create", mock.Anything, mock.Anything).Return(nil)
 	repo.On("CreatePenjualan", mock.Anything, mock.Anything).Return(nil)
 	repo.On("CreateDetailPenjualan", mock.Anything, mock.Anything).Return(nil)
 
 	dbMock.ExpectBegin()
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"penjualan_id"}))
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"mitra_id"}))
 	dbMock.ExpectCommit()
 
-	result, err := svc.SubmitPenjualan("BSI-001", "ADM-001", 1, "Pembeli A", "", []services.ItemSampahDijual{
+	result, err := svc.SubmitPenjualan("BSM-001", "ADM-001", 1, "", "Pembeli A", "", []services.ItemSampahDijual{
 		{SampahID: "SMP-001", Qty: 2, HargaJual: 5000},
 	})
 
@@ -277,23 +283,29 @@ func TestSubmitPenjualan_Sukses_SchemaSamHarga(t *testing.T) {
 }
 
 func TestSubmitPenjualan_Sukses_SchemaBelumAda(t *testing.T) {
-	dbMock, repo, svc := newPenjualanSvc(t)
+	dbMock, repo, mitraRepo, svc := newPenjualanSvc(t)
 
-	repo.On("GetBankByID", "BSI-001").Return(penjualanBankBSI(), nil)
-	repo.On("GetRewardByID", mock.Anything, 1).Return(rewardUang(), nil) // dipanggil 2x: outer + schema creation
-	repo.On("GetPersenNasabah", mock.Anything, "BSI-001", 1).Return(float64(30))
+	repo.On("GetBankByID", "BSM-001").Return(penjualanBankBSM(), nil)
+	repo.On("GetRewardByID", mock.Anything, 1).Return(rewardUang(), nil)
+	repo.On("GetPersenNasabah", mock.Anything, "BSM-001", 1).Return(float64(30), nil)
 	repo.On("GetKatalogSampah", mock.Anything, "SMP-001").Return(katalogBotol(), nil)
-	repo.On("GetStokSampah", mock.Anything, "BSI-001", "SMP-001").Return(stokCukup(), nil)
+	repo.On("GetStokSampah", mock.Anything, "BSM-001", "SMP-001").Return(stokCukup(), nil)
 	repo.On("GetSchemaHarga", mock.Anything, "SMP-001", models.LevelEksternal).Return(nil, errors.New("not found"))
 	repo.On("CreateSchemaHarga", mock.Anything, mock.Anything).Return(nil)
-	repo.On("DecrStokSampah", mock.Anything, "BSI-001", "SMP-001", float64(98)).Return(nil)
+	repo.On("DecrStokSampah", mock.Anything, "BSM-001", "SMP-001", float64(98)).Return(nil)
+	mitraRepo.On("FindByNormalizedName", mock.Anything, "BSM-001", mock.Anything).Return(nil, errors.New("not found"))
+	mitraRepo.On("Create", mock.Anything, mock.Anything).Return(nil)
 	repo.On("CreatePenjualan", mock.Anything, mock.Anything).Return(nil)
 	repo.On("CreateDetailPenjualan", mock.Anything, mock.Anything).Return(nil)
 
 	dbMock.ExpectBegin()
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"penjualan_id"}))
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"mitra_id"}))
 	dbMock.ExpectCommit()
 
-	result, err := svc.SubmitPenjualan("BSI-001", "ADM-001", 1, "Pembeli A", "", []services.ItemSampahDijual{
+	result, err := svc.SubmitPenjualan("BSM-001", "ADM-001", 1, "", "Pembeli A", "", []services.ItemSampahDijual{
 		{SampahID: "SMP-001", Qty: 2, HargaJual: 5000},
 	})
 
@@ -304,26 +316,34 @@ func TestSubmitPenjualan_Sukses_SchemaBelumAda(t *testing.T) {
 }
 
 func TestSubmitPenjualan_Sukses_SchemaBerubahHarga(t *testing.T) {
-	dbMock, repo, svc := newPenjualanSvc(t)
+	dbMock, repo, mitraRepo, svc := newPenjualanSvc(t)
 
-	schema := &models.SchemaHargaSampah{SchemaID: 1, SampahID: "SMP-001", LevelUser: models.LevelEksternal, Harga: 4000}
+	schema := &models.SchemaHargaSampah{SchemaID: "1SMP-001", SampahID: "SMP-001", LevelUser: models.LevelEksternal, Harga: 4000}
 
-	repo.On("GetBankByID", "BSI-001").Return(penjualanBankBSI(), nil)
+	repo.On("GetBankByID", "BSM-001").Return(penjualanBankBSM(), nil)
 	repo.On("GetRewardByID", mock.Anything, 1).Return(rewardUang(), nil)
-	repo.On("GetPersenNasabah", mock.Anything, "BSI-001", 1).Return(float64(30))
+	repo.On("GetPersenNasabah", mock.Anything, "BSM-001", 1).Return(float64(30), nil)
 	repo.On("GetKatalogSampah", mock.Anything, "SMP-001").Return(katalogBotol(), nil)
-	repo.On("GetStokSampah", mock.Anything, "BSI-001", "SMP-001").Return(stokCukup(), nil)
-	repo.On("GetSchemaHarga", mock.Anything, "SMP-001", models.LevelEksternal).Return(schema, nil) // harga lama 4000, baru 5000
+	repo.On("GetStokSampah", mock.Anything, "BSM-001", "SMP-001").Return(stokCukup(), nil)
+	repo.On("GetSchemaHarga", mock.Anything, "SMP-001", models.LevelEksternal).Return(schema, nil)
 	repo.On("CreateHistoryHarga", mock.Anything, mock.Anything).Return(nil)
 	repo.On("UpdateSchemaHarga", mock.Anything, mock.Anything).Return(nil)
-	repo.On("DecrStokSampah", mock.Anything, "BSI-001", "SMP-001", float64(98)).Return(nil)
+	repo.On("DecrStokSampah", mock.Anything, "BSM-001", "SMP-001", float64(98)).Return(nil)
+	mitraRepo.On("FindByNormalizedName", mock.Anything, "BSM-001", mock.Anything).Return(nil, errors.New("not found"))
+	mitraRepo.On("Create", mock.Anything, mock.Anything).Return(nil)
 	repo.On("CreatePenjualan", mock.Anything, mock.Anything).Return(nil)
 	repo.On("CreateDetailPenjualan", mock.Anything, mock.Anything).Return(nil)
 
 	dbMock.ExpectBegin()
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"penjualan_id"}))
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"history_sampah_id"}))
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"mitra_id"}))
 	dbMock.ExpectCommit()
 
-	result, err := svc.SubmitPenjualan("BSI-001", "ADM-001", 1, "Pembeli A", "", []services.ItemSampahDijual{
+	result, err := svc.SubmitPenjualan("BSM-001", "ADM-001", 1, "", "Pembeli A", "", []services.ItemSampahDijual{
 		{SampahID: "SMP-001", Qty: 2, HargaJual: 5000},
 	})
 
@@ -333,10 +353,8 @@ func TestSubmitPenjualan_Sukses_SchemaBerubahHarga(t *testing.T) {
 	repo.AssertExpectations(t)
 }
 
-// ── GetDetail ─────────────────────────────────────────────────────────────────
-
 func TestGetDetailPenjualan_TidakDitemukan(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
+	_, repo, _, svc := newPenjualanSvc(t)
 
 	repo.On("GetPenjualan", "PJL-XXX").Return(nil, errors.New("not found"))
 
@@ -347,29 +365,13 @@ func TestGetDetailPenjualan_TidakDitemukan(t *testing.T) {
 	assert.Contains(t, err.Error(), "penjualan")
 }
 
-func TestGetDetailPenjualan_BankBSU(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
-
-	p := &models.Penjualan{
-		PenjualanID: "PJL-001",
-		BankSampah:  *penjualanBankBSU(),
-	}
-	repo.On("GetPenjualan", "PJL-001").Return(p, nil)
-
-	result, err := svc.GetDetail("PJL-001")
-
-	assert.Nil(t, result)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "BSI dan BSM")
-}
-
 func TestGetDetailPenjualan_DetailItemsGagal(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
+	_, repo, _, svc := newPenjualanSvc(t)
 
 	p := &models.Penjualan{
 		PenjualanID: "PJL-001",
-		BankID:      "BSI-001",
-		BankSampah:  *penjualanBankBSI(),
+		BankID:      "BSM-001",
+		BankSampah:  *penjualanBankBSM(),
 		Reward:      *rewardUang(),
 	}
 	repo.On("GetPenjualan", "PJL-001").Return(p, nil)
@@ -383,19 +385,20 @@ func TestGetDetailPenjualan_DetailItemsGagal(t *testing.T) {
 }
 
 func TestGetDetailPenjualan_Sukses(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
+	_, repo, _, svc := newPenjualanSvc(t)
 
 	p := &models.Penjualan{
 		PenjualanID:      "PJL-001",
-		BankID:           "BSI-001",
-		IdentitasPembeli: "Pembeli A",
+		BankID:           "BSM-001",
+		MitraID:          "MTR-001",
 		TotalItem:        1,
 		TotalPenjualan:   10000,
 		SatuanReward:     models.SatuanRewardEnumRp,
 		SoldBy:           "ADM-001",
 		StatusBagiHasil:  models.BagiHasilPending,
-		BankSampah:       *penjualanBankBSI(),
+		BankSampah:       *penjualanBankBSM(),
 		Reward:           *rewardUang(),
+		MitraPengepul:    models.MitraPengepul{MitraID: "MTR-001", NamaMitra: "Pembeli A"},
 	}
 	details := []models.DetailPenjualan{
 		{
@@ -416,7 +419,7 @@ func TestGetDetailPenjualan_Sukses(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
 	assert.Equal(t, "PJL-001", result.PenjualanID)
-	assert.Equal(t, "Pembeli A", result.IdentitasPembeli)
+	assert.Equal(t, "Pembeli A", result.NamaMitra)
 	assert.Equal(t, float64(10000), result.TotalPenjualan)
 	assert.Equal(t, "Admin Satu", result.AdminName)
 	assert.Len(t, result.ItemsSampah, 1)
@@ -424,95 +427,14 @@ func TestGetDetailPenjualan_Sukses(t *testing.T) {
 	assert.Equal(t, float64(10000), result.ItemsSampah[0].SubtotalPenjualan)
 }
 
-// ── GetMitra ──────────────────────────────────────────────────────────────────
-
-func TestGetMitra_BankTidakDitemukan(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
-
-	repo.On("GetBankByID", "BSI-XXX").Return(nil, errors.New("not found"))
-
-	result, err := svc.GetMitra("BSI-XXX")
-
-	assert.Nil(t, result)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "Bank")
-}
-
-func TestGetMitra_BankBSU(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
-
-	repo.On("GetBankByID", "BSU-001").Return(penjualanBankBSU(), nil)
-
-	result, err := svc.GetMitra("BSU-001")
-
-	assert.Nil(t, result)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "BSI dan BSM")
-}
-
-func TestGetMitra_GetDistinctMitraGagal(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
-
-	repo.On("GetBankByID", "BSI-001").Return(penjualanBankBSI(), nil)
-	repo.On("GetDistinctMitra", "BSI-001").Return(nil, errors.New("db error"))
-
-	result, err := svc.GetMitra("BSI-001")
-
-	assert.Nil(t, result)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "mitra")
-}
-
-func TestGetMitra_Sukses_Deduplicate(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
-
-	// "PT ABC" dan "pt abc" normalizes to same key → hanya satu yang keluar
-	repo.On("GetBankByID", "BSI-001").Return(penjualanBankBSI(), nil)
-	repo.On("GetDistinctMitra", "BSI-001").Return([]string{"PT ABC", "pt abc", "CV XYZ"}, nil)
-
-	result, err := svc.GetMitra("BSI-001")
-
-	assert.NoError(t, err)
-	assert.Len(t, result, 2) // PT ABC (deduplicate) + CV XYZ
-}
-
-func TestGetMitra_Sukses_Terurut(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
-
-	repo.On("GetBankByID", "BSI-001").Return(penjualanBankBSI(), nil)
-	repo.On("GetDistinctMitra", "BSI-001").Return([]string{"Zebra Corp", "Alpha Ltd", "Mitra Jaya"}, nil)
-
-	result, err := svc.GetMitra("BSI-001")
-
-	assert.NoError(t, err)
-	assert.Len(t, result, 3)
-	assert.Equal(t, "Alpha Ltd", result[0].Nama)
-	assert.Equal(t, "Mitra Jaya", result[1].Nama)
-	assert.Equal(t, "Zebra Corp", result[2].Nama)
-}
-
-// ── GetRiwayat (validasi bank saja) ──────────────────────────────────────────
-
 func TestGetRiwayat_BankTidakDitemukan(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
+	_, repo, _, svc := newPenjualanSvc(t)
 
-	repo.On("GetBankByID", "BSI-XXX").Return(nil, errors.New("not found"))
+	repo.On("GetBankByID", "BSM-XXX").Return(nil, errors.New("not found"))
 
-	result, err := svc.GetRiwayat("BSI-XXX", "", "")
+	result, err := svc.GetRiwayat("BSM-XXX", "", "")
 
 	assert.Nil(t, result)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "Bank")
-}
-
-func TestGetRiwayat_BankBSU(t *testing.T) {
-	_, repo, svc := newPenjualanSvc(t)
-
-	repo.On("GetBankByID", "BSU-001").Return(penjualanBankBSU(), nil)
-
-	result, err := svc.GetRiwayat("BSU-001", "", "")
-
-	assert.Nil(t, result)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "BSI dan BSM")
 }

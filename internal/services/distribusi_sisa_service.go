@@ -1,9 +1,10 @@
 package services
 
 import (
+	"enviroo-be/internal/idgen"
 	"enviroo-be/internal/models"
 	"enviroo-be/internal/repositories"
-	"enviroo-be/pkg/utils"
+	"errors"
 	"time"
 
 	"gorm.io/gorm"
@@ -49,8 +50,6 @@ func NewDistribusiSisaServiceWithRepo(db *gorm.DB, repo DistribusiSisaRepoIface)
 	return &DistribusiSisaService{db: db, repo: repo}
 }
 
-// ── Request types ───────────────────────────────────────────────────────────
-
 type AddKonfigurasiReq struct {
 	PorsiBSU       float64 `json:"porsi_bsu" binding:"required,gt=0"`
 	PorsiBSI       float64 `json:"porsi_bsi" binding:"required,gt=0"`
@@ -67,10 +66,8 @@ type SubmitDistribusiReq struct {
 	AdminID string `json:"admin_id" binding:"required"`
 }
 
-// ── Response types ──────────────────────────────────────────────────────────
-
 type KonfigurasiResp struct {
-	SettingID      int64   `json:"setting_id"`
+	SettingID      string  `json:"setting_id"`
 	BankID         string  `json:"bank_id"`
 	NamaBank       string  `json:"nama_bank"`
 	PorsiBSU       float64 `json:"porsi_bsu"`
@@ -114,14 +111,14 @@ type SubmitDistribusiResp struct {
 }
 
 type PenerimaBSIDetailResp struct {
-	PenerimaSisaID  string                    `json:"penerima_sisa_id"`
-	BankID          string                    `json:"bank_id"`
-	NamaBank        string                    `json:"nama_bank"`
-	NominalDiterima float64                   `json:"nominal_diterima"`
-	Porsi           float64                   `json:"porsi"`
-	Transportasi    float64                   `json:"transportasi"`
-	SatuanNominal   string                    `json:"satuan_nominal"`
-	TransportDetail models.TransportDetail    `json:"transport_detail,omitempty"`
+	PenerimaSisaID  string                 `json:"penerima_sisa_id"`
+	BankID          string                 `json:"bank_id"`
+	NamaBank        string                 `json:"nama_bank"`
+	NominalDiterima float64                `json:"nominal_diterima"`
+	Porsi           float64                `json:"porsi"`
+	Transportasi    float64                `json:"transportasi"`
+	SatuanNominal   string                 `json:"satuan_nominal"`
+	TransportDetail models.TransportDetail `json:"transport_detail,omitempty"`
 }
 
 type PenerimaBSUDetailResp struct {
@@ -184,8 +181,6 @@ type DetailBagiHasilBankResp struct {
 	PerhitunganSisa   []PerhitunganResp `json:"perhitungan_sisa"`
 }
 
-// ── Service Methods ──────────────────────────────────────────────────────────
-
 func (s *DistribusiSisaService) GetKonfigurasi(bankID string) (*KonfigurasiResp, error) {
 	bank, err := s.repo.GetBankByID(bankID)
 	if err != nil {
@@ -233,7 +228,13 @@ func (s *DistribusiSisaService) AddKonfigurasi(bankID string, req AddKonfigurasi
 		)
 	}
 
+	settingID, err := idgen.GenerateSettingSisaBagiHasilID(bankID)
+	if err != nil {
+		return nil, errInternal("Gagal generate setting ID: " + err.Error())
+	}
+
 	setting := &models.SettingSisaBagiHasil{
+		SettingID:      settingID,
 		BankID:         bankID,
 		PorsiBSU:       req.PorsiBSU,
 		PorsiBSI:       req.PorsiBSI,
@@ -445,7 +446,7 @@ func (s *DistribusiSisaService) Submit(bagiHasilID string, req SubmitDistribusiR
 	if bagiHasil.SatuanBagiHasil == models.SatuanRewardEnumRp {
 		namaRewardTarget = models.RewardEnumUang
 	} else {
-		namaRewardTarget = models.RewardEnumSembako
+		namaRewardTarget = models.RewardEnumBarang
 	}
 	rewardDistribusi, err := s.repo.GetRewardByNama(namaRewardTarget)
 	if err != nil {
@@ -479,18 +480,26 @@ func (s *DistribusiSisaService) Submit(bagiHasilID string, req SubmitDistribusiR
 
 	var result *SubmitDistribusiResp
 
+	if bagiHasil.PenjualanID == nil {
+		return nil, errInternal("Bagi hasil tidak memiliki penjualan")
+	}
+	penjualanID := *bagiHasil.PenjualanID
+
 	txErr := s.db.Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
-		distribusiID := utils.GenerateID("DS")
+		distribusiID := idgen.GenerateDistribusiSisaID(penjualanID)
 
 		if err := s.repo.CreateDistribusiSisa(tx, &models.DistribusiSisa{
 			DistribusiID: distribusiID,
 			BagiHasilID:  bagiHasilID,
 			TotalSisa:    totalSisa,
-			SatuanTotal:  string(bagiHasil.SatuanBagiHasil),
+			SatuanTotal:  bagiHasil.SatuanBagiHasil,
 			CreatedAt:    now,
 			CreatedBy:    req.AdminID,
 		}); err != nil {
+			if errors.Is(err, gorm.ErrDuplicatedKey) {
+				return errBadRequest("Sisa bagi hasil ini sudah pernah didistribusikan")
+			}
 			return errInternal("Gagal menyimpan data distribusi")
 		}
 
@@ -512,7 +521,6 @@ func (s *DistribusiSisaService) Submit(bagiHasilID string, req SubmitDistribusiR
 
 			totalPorsiBSI += bagianPokokBSI
 
-			// Transport split: proportional to qty mandiri vs non-mandiri from pengangkutan
 			split := transportSplitMap[bsu.BankID]
 			totalQty := split.QtyMandiri + split.QtyNonMandiri
 			var persenMandiri float64
@@ -532,7 +540,10 @@ func (s *DistribusiSisaService) Submit(bagiHasilID string, req SubmitDistribusiR
 				})
 			}
 
-			penerimaSisaID := utils.GenerateID("PDS")
+			penerimaSisaID, err := idgen.GeneratePenerimaSisaID(tx, penjualanID)
+			if err != nil {
+				return errInternal("Gagal generate penerima sisa ID: " + err.Error())
+			}
 			if err := s.repo.CreatePenerimaSisa(tx, &models.PenerimaDistribusiSisa{
 				PenerimaSisaID:  penerimaSisaID,
 				DistribusiID:    distribusiID,
@@ -541,7 +552,7 @@ func (s *DistribusiSisaService) Submit(bagiHasilID string, req SubmitDistribusiR
 				NominalDiterima: nominalBSU,
 				Porsi:           bagianPokokBSU,
 				Transportasi:    transportasiBSU,
-				SatuanNominal:   string(bagiHasil.SatuanBagiHasil),
+				SatuanNominal:   bagiHasil.SatuanBagiHasil,
 			}); err != nil {
 				return errInternal("Gagal menyimpan penerima BSU: " + bsu.BankID)
 			}
@@ -567,15 +578,19 @@ func (s *DistribusiSisaService) Submit(bagiHasilID string, req SubmitDistribusiR
 		}
 
 		totalNominalBSI := totalPorsiBSI + totalTransportBSI
+		penerimaSisaBSIID, err := idgen.GeneratePenerimaSisaID(tx, penjualanID)
+		if err != nil {
+			return errInternal("Gagal generate penerima sisa ID: " + err.Error())
+		}
 		if err := s.repo.CreatePenerimaSisa(tx, &models.PenerimaDistribusiSisa{
-			PenerimaSisaID:  utils.GenerateID("PDS"),
+			PenerimaSisaID:  penerimaSisaBSIID,
 			DistribusiID:    distribusiID,
 			BankID:          bsiID,
 			JenisPenerimaan: models.JenisTerimaBagiHasilBSI,
 			NominalDiterima: totalNominalBSI,
 			Porsi:           totalPorsiBSI,
 			Transportasi:    totalTransportBSI,
-			SatuanNominal:   string(bagiHasil.SatuanBagiHasil),
+			SatuanNominal:   bagiHasil.SatuanBagiHasil,
 			TransportDetail: transportDetailBSI,
 		}); err != nil {
 			return errInternal("Gagal menyimpan penerima BSI")
@@ -637,7 +652,7 @@ func (s *DistribusiSisaService) GetDetailDistribusiSisa(distribusiID string) (*D
 			NominalDiterima: p.NominalDiterima,
 			Porsi:           p.Porsi,
 			Transportasi:    p.Transportasi,
-			SatuanNominal:   p.SatuanNominal,
+			SatuanNominal:   string(p.SatuanNominal),
 		})
 	}
 
@@ -645,7 +660,7 @@ func (s *DistribusiSisaService) GetDetailDistribusiSisa(distribusiID string) (*D
 		DistribusiID: distribusi.DistribusiID,
 		BagiHasilID:  distribusi.BagiHasilID,
 		TotalSisa:    distribusi.TotalSisa,
-		Satuan:       distribusi.SatuanTotal,
+		Satuan:       string(distribusi.SatuanTotal),
 		CreatedAt:    distribusi.CreatedAt,
 		CreatedBy:    namaAdmin,
 		PenerimaBSI: PenerimaBSIDetailResp{
@@ -655,7 +670,7 @@ func (s *DistribusiSisaService) GetDetailDistribusiSisa(distribusiID string) (*D
 			NominalDiterima: penerimaBSI.NominalDiterima,
 			Porsi:           penerimaBSI.Porsi,
 			Transportasi:    penerimaBSI.Transportasi,
-			SatuanNominal:   penerimaBSI.SatuanNominal,
+			SatuanNominal:   string(penerimaBSI.SatuanNominal),
 			TransportDetail: penerimaBSI.TransportDetail,
 		},
 		PenerimaBSU: bsuResp,
@@ -689,7 +704,7 @@ func (s *DistribusiSisaService) ListBagiHasilBank(bankID string, startDate, endD
 			NominalDiterima:   p.NominalDiterima,
 			Porsi:             p.Porsi,
 			Transportasi:      p.Transportasi,
-			SatuanNominal:     p.SatuanNominal,
+			SatuanNominal:     string(p.SatuanNominal),
 			TanggalDistribusi: p.DistribusiSisa.CreatedAt,
 		})
 	}
@@ -738,7 +753,7 @@ func (s *DistribusiSisaService) DetailBagiHasilBank(penerimaSisaID string) (*Det
 		NominalDiterima:   penerima.NominalDiterima,
 		Porsi:             penerima.Porsi,
 		Transportasi:      penerima.Transportasi,
-		SatuanNominal:     penerima.SatuanNominal,
+		SatuanNominal:     string(penerima.SatuanNominal),
 		TanggalDistribusi: penerima.DistribusiSisa.CreatedAt,
 		PerhitunganSisa:   phList,
 	}, nil

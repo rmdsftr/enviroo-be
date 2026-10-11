@@ -7,16 +7,13 @@ import (
 	"gorm.io/gorm"
 )
 
-// ── Row types untuk raw query ──────────────────────────────────────────────
-
 type SetoranDetailHeader struct {
-	SetoranID          string               `json:"setoran_id"          gorm:"column:setoran_id"`
-	NamaPetugas        string               `json:"nama_petugas"        gorm:"column:nama_petugas"`
-	NamaNasabah        string               `json:"nama_nasabah"        gorm:"column:nama_nasabah"`
-	TransaksiTimestamp time.Time            `json:"transaksi_timestamp" gorm:"column:transaksi_timestamp"`
-	TotalItem          int                  `json:"total_item"          gorm:"column:total_item"`
-	StatusSetoran      models.StatusSetoran `json:"status_setoran"      gorm:"column:status_setoran"`
-	BuktiViaManual     string               `json:"bukti_via_manual"    gorm:"column:bukti_via_manual"`
+	SetoranID          string    `json:"setoran_id"          gorm:"column:setoran_id"`
+	NamaPetugas        string    `json:"nama_petugas"        gorm:"column:nama_petugas"`
+	NamaNasabah        string    `json:"nama_nasabah"        gorm:"column:nama_nasabah"`
+	TransaksiTimestamp time.Time `json:"transaksi_timestamp" gorm:"column:transaksi_timestamp"`
+	TotalItem          int       `json:"total_item"          gorm:"column:total_item"`
+	BuktiViaManual     string    `json:"bukti_via_manual"    gorm:"column:bukti_via_manual"`
 }
 
 type SetoranDetailItem struct {
@@ -26,14 +23,12 @@ type SetoranDetailItem struct {
 }
 
 type RiwayatSetoranRow struct {
-	SetoranID          string               `json:"setoran_id"          gorm:"column:setoran_id"`
-	NamaPetugas        string               `json:"nama_petugas"        gorm:"column:nama_petugas"`
-	TransaksiTimestamp time.Time            `json:"transaksi_timestamp" gorm:"column:transaksi_timestamp"`
-	TotalItem          int                  `json:"total_item"          gorm:"column:total_item"`
-	StatusSetoran      models.StatusSetoran `json:"status_setoran"      gorm:"column:status_setoran"`
+	SetoranID          string    `json:"setoran_id"          gorm:"column:setoran_id"`
+	PenimbanganID      string    `json:"penimbangan_id"      gorm:"column:penimbangan_id"`
+	NamaPetugas        string    `json:"nama_petugas"        gorm:"column:nama_petugas"`
+	TransaksiTimestamp time.Time `json:"transaksi_timestamp" gorm:"column:transaksi_timestamp"`
+	TotalItem          int       `json:"total_item"          gorm:"column:total_item"`
 }
-
-// ── Repo ───────────────────────────────────────────────────────────────────
 
 type SetoranRepo struct {
 	db *gorm.DB
@@ -42,8 +37,6 @@ type SetoranRepo struct {
 func NewSetoranRepo(db *gorm.DB) *SetoranRepo {
 	return &SetoranRepo{db: db}
 }
-
-// ── Non-transactional reads ────────────────────────────────────────────────
 
 func (r *SetoranRepo) FindNasabahAktifWithUser(nasabahID string) (*models.Nasabah, error) {
 	var n models.Nasabah
@@ -78,6 +71,28 @@ func (r *SetoranRepo) FindKatalogSampah(sampahID string) (*models.KatalogSampah,
 	return &s, err
 }
 
+func (r *SetoranRepo) InsentifSampahDilayani(tx *gorm.DB, bankID, sampahID string) (bool, error) {
+	db := tx
+	if db == nil {
+		db = r.db
+	}
+
+	var ada bool
+	err := db.Raw(`
+		SELECT EXISTS (
+			SELECT 1
+			FROM katalog_sampah ks
+			JOIN nilai_reward_bank nrb
+			  ON nrb.bank_id = ks.bank_id AND nrb.reward_id = ks.reward_id
+			WHERE ks.sampah_id = ?
+			  AND ks.bank_id   = ?
+			  AND nrb.level_user = ?
+			  AND nrb.is_active  = true
+		)
+	`, sampahID, bankID, models.LevelNasabah).Scan(&ada).Error
+	return ada, err
+}
+
 func (r *SetoranRepo) FindBankSampah(bankID string) (*models.BankSampah, error) {
 	var b models.BankSampah
 	err := r.db.Where("bank_id = ?", bankID).First(&b).Error
@@ -92,7 +107,6 @@ func (r *SetoranRepo) GetDetailHeader(setoranID string) (*SetoranDetailHeader, e
 			u_nasabah.nama  AS nama_nasabah,
 			setoran_nasabah.created_at  AS transaksi_timestamp,
 			setoran_nasabah.total_item,
-			setoran_nasabah.status_setoran,
 			setoran_nasabah.bukti_via_manual`).
 		Joins("LEFT JOIN admin ON admin.admin_id = setoran_nasabah.admin_id").
 		Joins("LEFT JOIN users u_petugas ON u_petugas.user_id = admin.user_id").
@@ -118,10 +132,9 @@ func (r *SetoranRepo) GetRiwayat(nasabahID, startDate, endDate string) ([]Riwaya
 	var rows []RiwayatSetoranRow
 	q := r.db.Table("setoran_nasabah").
 		Select(`setoran_nasabah.setoran_id,
-			u_petugas.nama AS nama_petugas,
+			u_petugas.nama AS nama_petugas, setoran_nasabah.penimbangan_id AS penimbangan_id,
 			setoran_nasabah.created_at AS transaksi_timestamp,
-			setoran_nasabah.total_item,
-			setoran_nasabah.status_setoran`).
+			setoran_nasabah.total_item`).
 		Joins("LEFT JOIN admin ON admin.admin_id = setoran_nasabah.admin_id").
 		Joins("LEFT JOIN users u_petugas ON u_petugas.user_id = admin.user_id").
 		Where("setoran_nasabah.nasabah_id = ?", nasabahID)
@@ -141,8 +154,6 @@ func (r *SetoranRepo) GetRiwayat(nasabahID, startDate, endDate string) ([]Riwaya
 	return rows, err
 }
 
-// ── Transactional (caller menyediakan tx dari db.Transaction) ─────────────
-
 func (r *SetoranRepo) FindPenimbanganTx(tx *gorm.DB, penimbanganID string) (*models.Penimbangan, error) {
 	var p models.Penimbangan
 	err := tx.Where("penimbangan_id = ? AND status_penimbangan = ?", penimbanganID, models.StatusAktif).
@@ -158,7 +169,6 @@ func (r *SetoranRepo) CreateDetailSetoran(tx *gorm.DB, d *models.DetailSetoranNa
 	return tx.Create(d).Error
 }
 
-// UpsertStokSampah menambah stok jika sudah ada, atau membuat baris baru jika belum.
 func (r *SetoranRepo) UpsertStokSampah(tx *gorm.DB, bankID, sampahID string, qty float64) error {
 	var stok models.StokSampah
 	res := tx.Where("bank_id = ? AND sampah_id = ?", bankID, sampahID).First(&stok)

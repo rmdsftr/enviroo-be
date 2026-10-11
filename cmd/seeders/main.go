@@ -1,10 +1,12 @@
 package main
 
 import (
+	"enviroo-be/internal/adapters/mailer"
 	"enviroo-be/internal/config"
 	"enviroo-be/internal/database"
+	"enviroo-be/internal/idgen"
 	"enviroo-be/internal/models"
-	"enviroo-be/pkg/utils"
+	"enviroo-be/internal/utils"
 	"fmt"
 	"log"
 	"time"
@@ -28,16 +30,16 @@ func main() {
 		log.Fatalf("Gagal konek ke database: %v", err)
 	}
 
-	mailer := utils.NewMailer(cfg)
+	mail := mailer.New(cfg)
 
 	log.Println("Memulai seeder superadmin...")
 
-	if err := seedSuperadmin(db, mailer); err != nil {
+	if err := seedSuperadmin(db, mail); err != nil {
 		log.Fatalf("Seeder gagal: %v", err)
 	}
 }
 
-func seedSuperadmin(db *gorm.DB, mailer *utils.Mailer) error {
+func seedSuperadmin(db *gorm.DB, mail *mailer.Mailer) error {
 	var userCount int64
 	db.Model(&models.User{}).Where("user_id = ?", superadminUserID).Count(&userCount)
 	if userCount > 0 {
@@ -67,7 +69,7 @@ func seedSuperadmin(db *gorm.DB, mailer *utils.Mailer) error {
 		return fmt.Errorf("gagal membuat user: %v", err)
 	}
 
-	adminID, err := utils.GenerateAdminID(tx, models.SuperAdmin, "")
+	adminID, err := idgen.GenerateAdminID(tx, models.SuperAdmin, "")
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("gagal generate admin ID: %v", err)
@@ -97,11 +99,16 @@ func seedSuperadmin(db *gorm.DB, mailer *utils.Mailer) error {
 	}
 
 	now := time.Now()
-	aktivasiID := utils.GenerateAktivasiID(superadminUserID)
+	aktivasiID, err := idgen.GenerateAktivasiID(tx, superadminUserID, models.RoleUserAdmin, models.TujuanAktivasi)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("gagal generate aktivasi ID: %v", err)
+	}
 	aktivasi := models.AktivasiAkun{
 		AktivasiID:  aktivasiID,
 		UserID:      superadminUserID,
 		AsRole:      models.RoleUserAdmin,
+		AdminID:     &adminID,
 		Token:       hashedOTP,
 		ExpiredAt:   now.Add(24 * time.Hour),
 		GeneratedBy: "system",
@@ -131,7 +138,7 @@ func seedSuperadmin(db *gorm.DB, mailer *utils.Mailer) error {
 		</div>
 	`, user.Nama, otp, aktivasi.ExpiredAt.Format("02 Jan 2006 15:04 WIB"))
 
-	if err := mailer.SendEmail(utils.EmailParams{
+	if err := mail.SendEmail(mailer.Params{
 		To:      superadminEmail,
 		Subject: "Aktivasi Akun Superadmin Enviroo",
 		Body:    emailBody,

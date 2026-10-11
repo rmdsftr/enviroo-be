@@ -4,7 +4,6 @@ import (
 	"enviroo-be/internal/models"
 	"enviroo-be/internal/repositories"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/mock"
 	"gorm.io/gorm"
 )
@@ -69,8 +68,8 @@ func (m *MockPengangkutanRepo) GetListByBSU(bsuID, startDate, endDate string) ([
 	return args.Get(0).([]repositories.PengangkutanListRow), args.Error(1)
 }
 
-func (m *MockPengangkutanRepo) FindPengangkutan(pengangkutanID string) (*models.PengangkutanSampah, error) {
-	args := m.Called(pengangkutanID)
+func (m *MockPengangkutanRepo) FindPengangkutan(tx *gorm.DB, pengangkutanID string) (*models.PengangkutanSampah, error) {
+	args := m.Called(tx, pengangkutanID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
@@ -119,7 +118,7 @@ func (m *MockPengangkutanRepo) FindBSUList(bsiID string) ([]models.BankSampah, e
 	return args.Get(0).([]models.BankSampah), args.Error(1)
 }
 
-func (m *MockPengangkutanRepo) FindJadwal(jadwalID uuid.UUID) (*models.Jadwal, error) {
+func (m *MockPengangkutanRepo) FindJadwal(jadwalID string) (*models.Jadwal, error) {
 	args := m.Called(jadwalID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)

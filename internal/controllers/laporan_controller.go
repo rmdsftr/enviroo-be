@@ -3,6 +3,7 @@ package controllers
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -18,11 +19,9 @@ func NewLaporanController(db *gorm.DB) *LaporanController {
 	return &LaporanController{DB: db}
 }
 
-// GET /laporan/penimbangan/:penimbangan_id
 func (lc *LaporanController) DownloadLaporanPenimbangan(c *gin.Context) {
 	penimbanganID := c.Param("penimbangan_id")
 
-	// ── 1. Header penimbangan ─────────────────────────────────────────────────
 	type headerData struct {
 		PenimbanganID      string     `gorm:"column:penimbangan_id"`
 		NamaBank           string     `gorm:"column:nama_bank"`
@@ -53,7 +52,6 @@ func (lc *LaporanController) DownloadLaporanPenimbangan(c *gin.Context) {
 		return
 	}
 
-	// ── 2. Detail setoran per item sampah ─────────────────────────────────────
 	type detailRow struct {
 		SetoranID     string    `gorm:"column:setoran_id"`
 		NasabahID     string    `gorm:"column:nasabah_id"`
@@ -89,14 +87,12 @@ func (lc *LaporanController) DownloadLaporanPenimbangan(c *gin.Context) {
 		return
 	}
 
-	// ── 3. Build Excel ────────────────────────────────────────────────────────
 	f := excelize.NewFile()
 	defer f.Close()
 
 	sheet := "Laporan Penimbangan"
 	f.SetSheetName("Sheet1", sheet)
 
-	// ── Styles ────────────────────────────────────────────────────────────────
 	styleTitle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Size: 14},
 		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
@@ -154,14 +150,11 @@ func (lc *LaporanController) DownloadLaporanPenimbangan(c *gin.Context) {
 		},
 	})
 
-	// ── Row 1: Title ──────────────────────────────────────────────────────────
 	f.MergeCell(sheet, "A1", "H1")
 	f.SetCellValue(sheet, "A1", "LAPORAN PENIMBANGAN SAMPAH")
 	f.SetCellStyle(sheet, "A1", "H1", styleTitle)
 	f.SetRowHeight(sheet, 1, 32)
 
-	// ── Rows 3+: Info header ──────────────────────────────────────────────────
-	// Layout: A:B = label (bold), C:H = value
 	tanggal, waktuMulai, waktuSelesai := "-", "-", "-"
 	if hdr.StartedAt != nil {
 		tanggal = hdr.StartedAt.Format("02 January 2006")
@@ -198,8 +191,6 @@ func (lc *LaporanController) DownloadLaporanPenimbangan(c *gin.Context) {
 		f.SetCellValue(sheet, valueCell, row[1])
 	}
 
-	// ── Table header ──────────────────────────────────────────────────────────
-	// Blank row between info and table = infoStartRow + len(infoRows)
 	tableHeaderRow := infoStartRow + len(infoRows) + 1
 	headers := []string{"No", "Nasabah ID", "Nama Nasabah", "No. Rekening", "Waktu Setoran", "Nama Sampah", "Satuan", "Qty"}
 	cols := []string{"A", "B", "C", "D", "E", "F", "G", "H"}
@@ -210,7 +201,6 @@ func (lc *LaporanController) DownloadLaporanPenimbangan(c *gin.Context) {
 	}
 	f.SetRowHeight(sheet, tableHeaderRow, 25)
 
-	// ── Data rows ─────────────────────────────────────────────────────────────
 	rowIdx := tableHeaderRow + 1
 	nasabahNo := 0
 	lastSetoran := ""
@@ -222,7 +212,6 @@ func (lc *LaporanController) DownloadLaporanPenimbangan(c *gin.Context) {
 			lastSetoran = d.SetoranID
 		}
 
-		// Alternating style per grup nasabah
 		bSt := styleBorder
 		bcSt := styleBorderCenter
 		if nasabahNo%2 == 0 {
@@ -237,7 +226,6 @@ func (lc *LaporanController) DownloadLaporanPenimbangan(c *gin.Context) {
 			f.SetCellValue(sheet, fmt.Sprintf("D%d", rowIdx), d.NomorRekening)
 			f.SetCellValue(sheet, fmt.Sprintf("E%d", rowIdx), d.WaktuSetoran.Format("02/01/2006 15:04"))
 		}
-		// Style tetap diterapkan di semua baris (termasuk non-first) agar border konsisten
 		f.SetCellStyle(sheet, fmt.Sprintf("A%d", rowIdx), fmt.Sprintf("A%d", rowIdx), bcSt)
 		f.SetCellStyle(sheet, fmt.Sprintf("B%d", rowIdx), fmt.Sprintf("B%d", rowIdx), bSt)
 		f.SetCellStyle(sheet, fmt.Sprintf("C%d", rowIdx), fmt.Sprintf("C%d", rowIdx), bSt)
@@ -256,8 +244,6 @@ func (lc *LaporanController) DownloadLaporanPenimbangan(c *gin.Context) {
 		rowIdx++
 	}
 
-	// ── Column widths ─────────────────────────────────────────────────────────
-	// A+B bersama jadi label info (gabungan ~28 char), di tabel A=No, B=NasabahID
 	f.SetColWidth(sheet, "A", "A", 6)
 	f.SetColWidth(sheet, "B", "B", 24)
 	f.SetColWidth(sheet, "C", "C", 26)
@@ -267,7 +253,6 @@ func (lc *LaporanController) DownloadLaporanPenimbangan(c *gin.Context) {
 	f.SetColWidth(sheet, "G", "G", 10)
 	f.SetColWidth(sheet, "H", "H", 10)
 
-	// ── Send response ─────────────────────────────────────────────────────────
 	filename := fmt.Sprintf("laporan-penimbangan-%s.xlsx", penimbanganID)
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
@@ -278,7 +263,6 @@ func (lc *LaporanController) DownloadLaporanPenimbangan(c *gin.Context) {
 	}
 }
 
-// GET /laporan/penimbangan/rekap/:bank_id?start=YYYY-MM-DD&end=YYYY-MM-DD
 func (lc *LaporanController) DownloadLaporanRekapPenimbangan(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
@@ -305,7 +289,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenimbangan(c *gin.Context) {
 	}
 	endDate = endDate.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
 
-	// ── 1. Info bank sampah ───────────────────────────────────────────────────
 	type bankData struct {
 		BankID   string `gorm:"column:bank_id"`
 		NamaBank string `gorm:"column:nama_bank"`
@@ -316,7 +299,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenimbangan(c *gin.Context) {
 		return
 	}
 
-	// ── 2. Rekap per sampah ───────────────────────────────────────────────────
 	type sampahRow struct {
 		NamaSampah string  `gorm:"column:nama_sampah"`
 		Kategori   string  `gorm:"column:kategori"`
@@ -344,7 +326,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenimbangan(c *gin.Context) {
 		return
 	}
 
-	// ── 3. Rekap per nasabah ──────────────────────────────────────────────────
 	type nasabahDetailRow struct {
 		NasabahID   string  `gorm:"column:nasabah_id"`
 		NamaNasabah string  `gorm:"column:nama_nasabah"`
@@ -375,13 +356,11 @@ func (lc *LaporanController) DownloadLaporanRekapPenimbangan(c *gin.Context) {
 		return
 	}
 
-	// ── 4. Build Excel ────────────────────────────────────────────────────────
 	f := excelize.NewFile()
 	defer f.Close()
 
 	periodeLabel := fmt.Sprintf("%s - %s", startDate.Format("02 January 2006"), endDate.Format("02 January 2006"))
 
-	// ── Styles ────────────────────────────────────────────────────────────────
 	styleTitle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Size: 14},
 		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
@@ -439,7 +418,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenimbangan(c *gin.Context) {
 		},
 	})
 
-	// ── Sheet 1: Rekap Sampah ─────────────────────────────────────────────────
 	sheetSampah := "Rekap Sampah"
 	f.SetSheetName("Sheet1", sheetSampah)
 
@@ -501,7 +479,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenimbangan(c *gin.Context) {
 	f.SetColWidth(sheetSampah, "C", "C", 14)
 	f.SetColWidth(sheetSampah, "D", "D", 12)
 
-	// ── Sheet 2: Rekap Nasabah ────────────────────────────────────────────────
 	sheetNasabah := "Rekap Nasabah"
 	f.NewSheet(sheetNasabah)
 
@@ -581,7 +558,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenimbangan(c *gin.Context) {
 
 	f.SetActiveSheet(0)
 
-	// ── Send response ─────────────────────────────────────────────────────────
 	filename := fmt.Sprintf("laporan-rekap-penimbangan-%s-%s-%s.xlsx", bankID, startStr, endStr)
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
@@ -592,11 +568,9 @@ func (lc *LaporanController) DownloadLaporanRekapPenimbangan(c *gin.Context) {
 	}
 }
 
-// GET /laporan/nasabah/:bank_id
 func (lc *LaporanController) DownloadLaporanNasabah(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
-	// ── 1. Info bank sampah ───────────────────────────────────────────────────
 	type bankData struct {
 		BankID   string `gorm:"column:bank_id"`
 		NamaBank string `gorm:"column:nama_bank"`
@@ -607,7 +581,6 @@ func (lc *LaporanController) DownloadLaporanNasabah(c *gin.Context) {
 		return
 	}
 
-	// ── 2. Daftar nasabah ─────────────────────────────────────────────────────
 	type nasabahRow struct {
 		NasabahID     string    `gorm:"column:nasabah_id"`
 		NIK           string    `gorm:"column:nik"`
@@ -636,14 +609,12 @@ func (lc *LaporanController) DownloadLaporanNasabah(c *gin.Context) {
 		return
 	}
 
-	// ── 3. Build Excel ────────────────────────────────────────────────────────
 	f := excelize.NewFile()
 	defer f.Close()
 
 	sheet := "Daftar Nasabah"
 	f.SetSheetName("Sheet1", sheet)
 
-	// ── Styles ────────────────────────────────────────────────────────────────
 	styleTitle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Size: 14},
 		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
@@ -734,13 +705,11 @@ func (lc *LaporanController) DownloadLaporanNasabah(c *gin.Context) {
 		},
 	})
 
-	// ── Row 1: Title ──────────────────────────────────────────────────────────
 	f.MergeCell(sheet, "A1", "H1")
 	f.SetCellValue(sheet, "A1", "DAFTAR NASABAH BANK SAMPAH")
 	f.SetCellStyle(sheet, "A1", "H1", styleTitle)
 	f.SetRowHeight(sheet, 1, 32)
 
-	// ── Rows 3+: Info header ──────────────────────────────────────────────────
 	infoRows := [][2]string{
 		{"Nama Bank Sampah", bank.NamaBank},
 		{"Bank ID", bank.BankID},
@@ -758,7 +727,6 @@ func (lc *LaporanController) DownloadLaporanNasabah(c *gin.Context) {
 		f.SetCellValue(sheet, fmt.Sprintf("C%d", r), row[1])
 	}
 
-	// ── Table header ──────────────────────────────────────────────────────────
 	tableHeaderRow := infoStartRow + len(infoRows) + 1
 	headers := []string{"No", "Nasabah ID", "NIK", "Nama Nasabah", "Email", "No. Rekening", "Tanggal Bergabung", "Status"}
 	cols := []string{"A", "B", "C", "D", "E", "F", "G", "H"}
@@ -769,7 +737,6 @@ func (lc *LaporanController) DownloadLaporanNasabah(c *gin.Context) {
 	}
 	f.SetRowHeight(sheet, tableHeaderRow, 25)
 
-	// ── Data rows ─────────────────────────────────────────────────────────────
 	rowIdx := tableHeaderRow + 1
 	for i, d := range rows {
 		no := i + 1
@@ -816,7 +783,6 @@ func (lc *LaporanController) DownloadLaporanNasabah(c *gin.Context) {
 		rowIdx++
 	}
 
-	// ── Column widths ─────────────────────────────────────────────────────────
 	f.SetColWidth(sheet, "A", "A", 6)
 	f.SetColWidth(sheet, "B", "B", 28)
 	f.SetColWidth(sheet, "C", "C", 20)
@@ -826,7 +792,6 @@ func (lc *LaporanController) DownloadLaporanNasabah(c *gin.Context) {
 	f.SetColWidth(sheet, "G", "G", 22)
 	f.SetColWidth(sheet, "H", "H", 12)
 
-	// ── Send response ─────────────────────────────────────────────────────────
 	filename := fmt.Sprintf("laporan-nasabah-%s.xlsx", bankID)
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
@@ -837,11 +802,9 @@ func (lc *LaporanController) DownloadLaporanNasabah(c *gin.Context) {
 	}
 }
 
-// GET /laporan/pengangkutan/:pengangkutan_id
 func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 	pengangkutanID := c.Param("pengangkutan_id")
 
-	// ── 1. Header pengangkutan ────────────────────────────────────────────────
 	type headerData struct {
 		PengangkutanID string    `gorm:"column:pengangkutan_id"`
 		NamaBSI        string    `gorm:"column:nama_bsi"`
@@ -883,13 +846,11 @@ func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 		return
 	}
 
-	// ── 2. Guard: pengangkutan harus sudah selesai ────────────────────────────
 	if hdr.StatusTerakhir != "completed" {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Laporan hanya tersedia untuk pengangkutan yang sudah selesai"})
 		return
 	}
 
-	// ── 3. Riwayat status (ASC) ───────────────────────────────────────────────
 	type riwayatRow struct {
 		Status      string    `gorm:"column:status"`
 		ChangedAt   time.Time `gorm:"column:changed_at"`
@@ -913,7 +874,6 @@ func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 		return
 	}
 
-	// ── 4. Detail sampah ──────────────────────────────────────────────────────
 	type detailRow struct {
 		NamaSampah string  `gorm:"column:nama_sampah"`
 		Satuan     string  `gorm:"column:satuan"`
@@ -932,14 +892,12 @@ func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 		return
 	}
 
-	// ── 5. Build Excel ────────────────────────────────────────────────────────
 	f := excelize.NewFile()
 	defer f.Close()
 
 	sheet := "Laporan Pengangkutan"
 	f.SetSheetName("Sheet1", sheet)
 
-	// ── Styles ────────────────────────────────────────────────────────────────
 	styleTitle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Size: 14},
 		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
@@ -1027,13 +985,11 @@ func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 		},
 	})
 
-	// ── Row 1: Title ──────────────────────────────────────────────────────────
 	f.MergeCell(sheet, "A1", "E1")
 	f.SetCellValue(sheet, "A1", "LAPORAN PENGANGKUTAN SAMPAH")
 	f.SetCellStyle(sheet, "A1", "E1", styleTitle)
 	f.SetRowHeight(sheet, 1, 32)
 
-	// ── Rows 3+: Info header ──────────────────────────────────────────────────
 	infoRows := [][2]string{
 		{"ID Pengangkutan", hdr.PengangkutanID},
 		{"Bank Sampah Induk (BSI)", hdr.NamaBSI},
@@ -1055,7 +1011,6 @@ func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 		f.SetCellValue(sheet, fmt.Sprintf("C%d", r), row[1])
 	}
 
-	// ── Section 1: Riwayat Status ─────────────────────────────────────────────
 	sectionRiwayatRow := infoStartRow + len(infoRows) + 1
 	f.MergeCell(sheet, fmt.Sprintf("A%d", sectionRiwayatRow), fmt.Sprintf("E%d", sectionRiwayatRow))
 	f.SetCellValue(sheet, fmt.Sprintf("A%d", sectionRiwayatRow), "  RIWAYAT STATUS PENGANGKUTAN")
@@ -1095,7 +1050,6 @@ func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 		rowIdx++
 	}
 
-	// ── Section 2: Detail Sampah ──────────────────────────────────────────────
 	sectionDetailRow := rowIdx + 1
 	f.MergeCell(sheet, fmt.Sprintf("A%d", sectionDetailRow), fmt.Sprintf("E%d", sectionDetailRow))
 	f.SetCellValue(sheet, fmt.Sprintf("A%d", sectionDetailRow), "  DETAIL SAMPAH YANG DIANGKUT")
@@ -1133,7 +1087,6 @@ func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 		rowIdx++
 	}
 
-	// ── Total row ─────────────────────────────────────────────────────────────
 	totalRow := rowIdx + 1
 	f.MergeCell(sheet, fmt.Sprintf("A%d", totalRow), fmt.Sprintf("C%d", totalRow))
 	f.SetCellValue(sheet, fmt.Sprintf("A%d", totalRow), "TOTAL JENIS SAMPAH")
@@ -1143,14 +1096,12 @@ func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 	f.SetCellStyle(sheet, fmt.Sprintf("E%d", totalRow), fmt.Sprintf("E%d", totalRow), styleTotalLabel)
 	f.SetRowHeight(sheet, totalRow, 22)
 
-	// ── Column widths ─────────────────────────────────────────────────────────
 	f.SetColWidth(sheet, "A", "A", 6)
 	f.SetColWidth(sheet, "B", "B", 26)
 	f.SetColWidth(sheet, "C", "C", 24)
 	f.SetColWidth(sheet, "D", "D", 22)
 	f.SetColWidth(sheet, "E", "E", 36)
 
-	// ── Send response ─────────────────────────────────────────────────────────
 	filename := fmt.Sprintf("laporan-pengangkutan-%s.xlsx", pengangkutanID)
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
@@ -1161,11 +1112,16 @@ func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 	}
 }
 
-// GET /laporan/bagi-hasil/:bagi_hasil_id
+func formatSatuanReward(satuan string) string {
+	if strings.EqualFold(satuan, "poin") {
+		return `#,##0.00" poin"`
+	}
+	return `"Rp"#,##0.00`
+}
+
 func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 	bagiHasilID := c.Param("bagi_hasil_id")
 
-	// ── 1. Header bagi hasil ──────────────────────────────────────────────────
 	type headerData struct {
 		BagiHasilID            string    `gorm:"column:bagi_hasil_id"`
 		NamaBank               string    `gorm:"column:nama_bank"`
@@ -1204,13 +1160,11 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 		return
 	}
 
-	// ── 2. Nasabah penerima (ringkasan per nasabah) ───────────────────────────
 	type nasabahRow struct {
 		NasabahID     string  `gorm:"column:nasabah_id"`
 		NamaNasabah   string  `gorm:"column:nama_nasabah"`
 		NamaBank      string  `gorm:"column:nama_bank"`
 		TotalDiterima float64 `gorm:"column:total_diterima"`
-		Satuan        string  `gorm:"column:satuan"`
 	}
 
 	var nasabahList []nasabahRow
@@ -1219,8 +1173,7 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 			n.nasabah_id,
 			u.nama      AS nama_nasabah,
 			bs.nama_bank AS nama_bank,
-			pbh.total_diterima,
-			pbh.satuan_diterima AS satuan
+			pbh.total_diterima
 		FROM penerima_bagi_hasil pbh
 		LEFT JOIN nasabah n      ON n.nasabah_id  = pbh.nasabah_id
 		LEFT JOIN users u        ON u.user_id     = n.user_id
@@ -1232,7 +1185,6 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 		return
 	}
 
-	// ── 3. Distribusi sisa (opsional) ─────────────────────────────────────────
 	type distribusiHeader struct {
 		DistribusiID      string    `gorm:"column:distribusi_id"`
 		TanggalDistribusi time.Time `gorm:"column:tanggal_distribusi"`
@@ -1266,7 +1218,6 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 		Porsi           float64 `gorm:"column:porsi"`
 		Transportasi    float64 `gorm:"column:transportasi"`
 		NominalDiterima float64 `gorm:"column:nominal_diterima"`
-		Satuan          string  `gorm:"column:satuan"`
 	}
 
 	var penerimaSisaList []penerimaSisaRow
@@ -1277,8 +1228,7 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 				pds.jenis_penerimaan,
 				pds.porsi,
 				pds.transportasi,
-				pds.nominal_diterima,
-				pds.satuan_nominal AS satuan
+				pds.nominal_diterima
 			FROM penerima_distribusi_sisa pds
 			LEFT JOIN bank_sampah bs ON bs.bank_id = pds.bank_id
 			WHERE pds.distribusi_id = ?
@@ -1289,16 +1239,15 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 		}
 	}
 
-	// ── 4. Build Excel ────────────────────────────────────────────────────────
 	f := excelize.NewFile()
 	defer f.Close()
 
 	sheet := "Laporan Bagi Hasil"
 	f.SetSheetName("Sheet1", sheet)
 
-	numFmt := "#,##0.00"
+	numFmt := formatSatuanReward(hdr.SatuanBagiHasil)
+	numFmtPolos := "#,##0.00"
 
-	// ── Styles ────────────────────────────────────────────────────────────────
 	styleTitle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Size: 14},
 		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
@@ -1385,6 +1334,31 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 			{Type: "bottom", Color: "CCCCCC", Style: 1},
 		},
 	})
+	stylePorsiNum, _ := f.NewStyle(&excelize.Style{
+		CustomNumFmt: &numFmtPolos,
+		Alignment:    &excelize.Alignment{Horizontal: "right", Vertical: "center"},
+		Border: []excelize.Border{
+			{Type: "left", Color: "CCCCCC", Style: 1},
+			{Type: "right", Color: "CCCCCC", Style: 1},
+			{Type: "top", Color: "CCCCCC", Style: 1},
+			{Type: "bottom", Color: "CCCCCC", Style: 1},
+		},
+	})
+	stylePorsiNumAlt, _ := f.NewStyle(&excelize.Style{
+		CustomNumFmt: &numFmtPolos,
+		Fill:         excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"F5F5F5"}},
+		Alignment:    &excelize.Alignment{Horizontal: "right", Vertical: "center"},
+		Border: []excelize.Border{
+			{Type: "left", Color: "CCCCCC", Style: 1},
+			{Type: "right", Color: "CCCCCC", Style: 1},
+			{Type: "top", Color: "CCCCCC", Style: 1},
+			{Type: "bottom", Color: "CCCCCC", Style: 1},
+		},
+	})
+	styleInfoNum, _ := f.NewStyle(&excelize.Style{
+		CustomNumFmt: &numFmt,
+		Alignment:    &excelize.Alignment{Horizontal: "left", Vertical: "center"},
+	})
 	styleTotalLabel, _ := f.NewStyle(&excelize.Style{
 		Font: &excelize.Font{Bold: true},
 		Fill: excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"EDE7F6"}},
@@ -1408,8 +1382,11 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 		},
 	})
 
-	cols := []string{"A", "B", "C", "D", "E", "F", "G", "H"}
-	maxCol := "H"
+	cols := []string{"A", "B", "C", "D", "E", "F"}
+	maxCol := "E"
+	if hasDistribusiSisa {
+		maxCol = "F"
+	}
 
 	cell := func(col string, row int) string {
 		return fmt.Sprintf("%s%d", col, row)
@@ -1421,44 +1398,54 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 		f.SetCellStyle(sheet, cell(from, row), cell(to, row), styleID)
 	}
 
-	// ── Row 1: Title ──────────────────────────────────────────────────────────
 	mergeRow("A", maxCol, 1)
 	f.SetCellValue(sheet, cell("A", 1), "LAPORAN BAGI HASIL SAMPAH")
 	styleRange("A", maxCol, 1, styleTitle)
 	f.SetRowHeight(sheet, 1, 32)
 
-	// ── Rows 3+: Info header ──────────────────────────────────────────────────
-	infoRows := [][2]string{
-		{"ID Bagi Hasil", hdr.BagiHasilID},
-		{"Bank Pelaksana", hdr.NamaBank},
-		{"ID Penjualan", hdr.PenjualanID},
-		{"Tanggal Bagi Hasil", hdr.CreatedAt.Format("02 January 2006, 15:04:05")},
-		{"Petugas", hdr.NamaPetugas},
-		{"Jenis Reward", hdr.NamaReward},
-		{"Gross Bank", fmt.Sprintf("%.2f %s", hdr.GrossBank, hdr.SatuanBagiHasil)},
-		{"Total Distribusi Nasabah", fmt.Sprintf("%.2f %s", hdr.TotalDistribusiNasabah, hdr.SatuanBagiHasil)},
-		{"Sisa Bagi Hasil", fmt.Sprintf("%.2f %s", hdr.SisaBagiHasil, hdr.SatuanBagiHasil)},
+	type barisInfo struct {
+		label string
+		teks  string
+		nilai *float64
+	}
+
+	infoRows := []barisInfo{
+		{label: "ID Bagi Hasil", teks: hdr.BagiHasilID},
+		{label: "Bank Pelaksana", teks: hdr.NamaBank},
+		{label: "ID Penjualan", teks: hdr.PenjualanID},
+		{label: "Tanggal Bagi Hasil", teks: hdr.CreatedAt.Format("02 January 2006, 15:04:05")},
+		{label: "Petugas", teks: hdr.NamaPetugas},
+		{label: "Jenis Insentif", teks: hdr.NamaReward},
+		{label: "Gross Bank", nilai: &hdr.GrossBank},
+		{label: "Total Distribusi Nasabah", nilai: &hdr.TotalDistribusiNasabah},
+		{label: "Sisa Bagi Hasil", nilai: &hdr.SisaBagiHasil},
 	}
 
 	const infoStartRow = 3
 	for i, row := range infoRows {
 		r := infoStartRow + i
 		mergeRow("A", "B", r)
-		f.SetCellValue(sheet, cell("A", r), row[0])
+		f.SetCellValue(sheet, cell("A", r), row.label)
 		styleRange("A", "B", r, styleBold)
 		mergeRow("C", maxCol, r)
-		f.SetCellValue(sheet, cell("C", r), row[1])
+		if row.nilai != nil {
+			f.SetCellValue(sheet, cell("C", r), *row.nilai)
+			styleRange("C", maxCol, r, styleInfoNum)
+			continue
+		}
+		f.SetCellValue(sheet, cell("C", r), row.teks)
 	}
 
-	// ── Section 1: Distribusi Nasabah ─────────────────────────────────────────
+	nasabahHeaders := []string{"No", "Nasabah ID", "Nama Nasabah", "Bank", "Total Diterima"}
+	nasabahLastCol := cols[len(nasabahHeaders)-1]
+
 	secNasabahRow := infoStartRow + len(infoRows) + 1
-	mergeRow("A", maxCol, secNasabahRow)
+	mergeRow("A", nasabahLastCol, secNasabahRow)
 	f.SetCellValue(sheet, cell("A", secNasabahRow), "  DISTRIBUSI KE NASABAH")
-	styleRange("A", maxCol, secNasabahRow, styleSectionHeader)
+	styleRange("A", nasabahLastCol, secNasabahRow, styleSectionHeader)
 	f.SetRowHeight(sheet, secNasabahRow, 22)
 
 	nasabahHeaderRow := secNasabahRow + 1
-	nasabahHeaders := []string{"No", "Nasabah ID", "Nama Nasabah", "Bank", "Total Diterima", "Satuan", "", ""}
 	for i, h := range nasabahHeaders {
 		f.SetCellValue(sheet, cell(cols[i], nasabahHeaderRow), h)
 		f.SetCellStyle(sheet, cell(cols[i], nasabahHeaderRow), cell(cols[i], nasabahHeaderRow), styleTableHeader)
@@ -1467,7 +1454,6 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 
 	rowIdx := nasabahHeaderRow + 1
 	var totalNasabah float64
-	lastSatuan := ""
 	for i, n := range nasabahList {
 		no := i + 1
 		bSt := styleBorder
@@ -1488,12 +1474,7 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 		f.SetCellStyle(sheet, cell("D", rowIdx), cell("D", rowIdx), bSt)
 		f.SetCellValue(sheet, cell("E", rowIdx), n.TotalDiterima)
 		f.SetCellStyle(sheet, cell("E", rowIdx), cell("E", rowIdx), bnSt)
-		f.SetCellValue(sheet, cell("F", rowIdx), n.Satuan)
-		f.SetCellStyle(sheet, cell("F", rowIdx), cell("F", rowIdx), bcSt)
-		f.SetCellStyle(sheet, cell("G", rowIdx), cell("G", rowIdx), bSt)
-		f.SetCellStyle(sheet, cell("H", rowIdx), cell("H", rowIdx), bSt)
 		totalNasabah += n.TotalDiterima
-		lastSatuan = n.Satuan
 		rowIdx++
 	}
 
@@ -1503,37 +1484,40 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 	styleRange("A", "D", totalNasabahRow, styleTotalLabel)
 	f.SetCellValue(sheet, cell("E", totalNasabahRow), totalNasabah)
 	f.SetCellStyle(sheet, cell("E", totalNasabahRow), cell("E", totalNasabahRow), styleTotalNum)
-	f.SetCellValue(sheet, cell("F", totalNasabahRow), lastSatuan)
-	styleRange("F", maxCol, totalNasabahRow, styleTotalLabel)
 	f.SetRowHeight(sheet, totalNasabahRow, 22)
 
-	// ── Section 2: Distribusi Sisa (opsional) ─────────────────────────────────
 	if hasDistribusiSisa {
+		sisaHeaders := []string{"No", "Bank Penerima", "Jenis Penerimaan", "Porsi (%)", "Transportasi", "Nominal Diterima"}
+		sisaLastCol := cols[len(sisaHeaders)-1]
+
 		secSisaRow := totalNasabahRow + 2
-		mergeRow("A", maxCol, secSisaRow)
+		mergeRow("A", sisaLastCol, secSisaRow)
 		f.SetCellValue(sheet, cell("A", secSisaRow), "  DISTRIBUSI SISA BAGI HASIL")
-		styleRange("A", maxCol, secSisaRow, styleSectionHeader)
+		styleRange("A", sisaLastCol, secSisaRow, styleSectionHeader)
 		f.SetRowHeight(sheet, secSisaRow, 22)
 
-		// Info distribusi sisa
-		sisaInfoRows := [][2]string{
-			{"ID Distribusi", ds.DistribusiID},
-			{"Tanggal Distribusi", ds.TanggalDistribusi.Format("02 January 2006, 15:04:05")},
-			{"Petugas Distribusi", ds.PetugasDistribusi},
-			{"Total Sisa", fmt.Sprintf("%.2f %s", ds.TotalSisa, ds.SatuanTotal)},
+		sisaInfoRows := []barisInfo{
+			{label: "ID Distribusi", teks: ds.DistribusiID},
+			{label: "Tanggal Distribusi", teks: ds.TanggalDistribusi.Format("02 January 2006, 15:04:05")},
+			{label: "Petugas Distribusi", teks: ds.PetugasDistribusi},
+			{label: "Total Sisa", nilai: &ds.TotalSisa},
 		}
 		sisaInfoStart := secSisaRow + 1
 		for i, row := range sisaInfoRows {
 			r := sisaInfoStart + i
 			mergeRow("A", "B", r)
-			f.SetCellValue(sheet, cell("A", r), row[0])
+			f.SetCellValue(sheet, cell("A", r), row.label)
 			styleRange("A", "B", r, styleBold)
-			mergeRow("C", maxCol, r)
-			f.SetCellValue(sheet, cell("C", r), row[1])
+			mergeRow("C", sisaLastCol, r)
+			if row.nilai != nil {
+				f.SetCellValue(sheet, cell("C", r), *row.nilai)
+				styleRange("C", sisaLastCol, r, styleInfoNum)
+				continue
+			}
+			f.SetCellValue(sheet, cell("C", r), row.teks)
 		}
 
 		sisaTableHeaderRow := sisaInfoStart + len(sisaInfoRows) + 1
-		sisaHeaders := []string{"No", "Bank Penerima", "Jenis Penerimaan", "Porsi (%)", "Transportasi", "Nominal Diterima", "Satuan"}
 		for i, h := range sisaHeaders {
 			f.SetCellValue(sheet, cell(cols[i], sisaTableHeaderRow), h)
 			f.SetCellStyle(sheet, cell(cols[i], sisaTableHeaderRow), cell(cols[i], sisaTableHeaderRow), styleTableHeader)
@@ -1546,10 +1530,12 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 			bSt := styleBorder
 			bcSt := styleBorderCenter
 			bnSt := styleBorderNum
+			bpSt := stylePorsiNum
 			if no%2 == 0 {
 				bSt = styleBorderAlt
 				bcSt = styleBorderCenterAlt
 				bnSt = styleBorderNumAlt
+				bpSt = stylePorsiNumAlt
 			}
 			f.SetCellValue(sheet, cell("A", rowIdx), no)
 			f.SetCellStyle(sheet, cell("A", rowIdx), cell("A", rowIdx), bcSt)
@@ -1558,29 +1544,22 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 			f.SetCellValue(sheet, cell("C", rowIdx), p.JenisPenerimaan)
 			f.SetCellStyle(sheet, cell("C", rowIdx), cell("C", rowIdx), bcSt)
 			f.SetCellValue(sheet, cell("D", rowIdx), p.Porsi)
-			f.SetCellStyle(sheet, cell("D", rowIdx), cell("D", rowIdx), bnSt)
+			f.SetCellStyle(sheet, cell("D", rowIdx), cell("D", rowIdx), bpSt)
 			f.SetCellValue(sheet, cell("E", rowIdx), p.Transportasi)
 			f.SetCellStyle(sheet, cell("E", rowIdx), cell("E", rowIdx), bnSt)
 			f.SetCellValue(sheet, cell("F", rowIdx), p.NominalDiterima)
 			f.SetCellStyle(sheet, cell("F", rowIdx), cell("F", rowIdx), bnSt)
-			f.SetCellValue(sheet, cell("G", rowIdx), p.Satuan)
-			f.SetCellStyle(sheet, cell("G", rowIdx), cell("G", rowIdx), bcSt)
-			f.SetCellStyle(sheet, cell("H", rowIdx), cell("H", rowIdx), bSt)
 			rowIdx++
 		}
 	}
 
-	// ── Column widths ─────────────────────────────────────────────────────────
 	f.SetColWidth(sheet, "A", "A", 6)
 	f.SetColWidth(sheet, "B", "B", 24)
 	f.SetColWidth(sheet, "C", "C", 26)
 	f.SetColWidth(sheet, "D", "D", 22)
 	f.SetColWidth(sheet, "E", "E", 18)
-	f.SetColWidth(sheet, "F", "F", 12)
-	f.SetColWidth(sheet, "G", "G", 14)
-	f.SetColWidth(sheet, "H", "H", 16)
+	f.SetColWidth(sheet, "F", "F", 20)
 
-	// ── Send response ─────────────────────────────────────────────────────────
 	filename := fmt.Sprintf("laporan-bagi-hasil-%s.xlsx", bagiHasilID)
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
@@ -1591,22 +1570,20 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 	}
 }
 
-// GET /laporan/penjualan/:penjualan_id
 func (lc *LaporanController) DownloadLaporanPenjualan(c *gin.Context) {
 	penjualanID := c.Param("penjualan_id")
 
-	// ── 1. Header penjualan ───────────────────────────────────────────────────
 	type headerData struct {
-		PenjualanID      string    `gorm:"column:penjualan_id"`
-		NamaBank         string    `gorm:"column:nama_bank"`
-		CreatedAt        time.Time `gorm:"column:created_at"`
-		IdentitasPembeli string    `gorm:"column:identitas_pembeli"`
-		NamaAdmin        string    `gorm:"column:nama_admin"`
-		NamaReward       string    `gorm:"column:nama_reward"`
-		TotalItem        int       `gorm:"column:total_item"`
-		TotalPenjualan   float64   `gorm:"column:total_penjualan"`
-		SatuanReward     string    `gorm:"column:satuan_reward"`
-		StatusBagiHasil  string    `gorm:"column:status_bagi_hasil"`
+		PenjualanID     string    `gorm:"column:penjualan_id"`
+		NamaBank        string    `gorm:"column:nama_bank"`
+		CreatedAt       time.Time `gorm:"column:created_at"`
+		NamaMitra       string    `gorm:"column:nama_mitra"`
+		NamaAdmin       string    `gorm:"column:nama_admin"`
+		NamaReward      string    `gorm:"column:nama_reward"`
+		TotalItem       int       `gorm:"column:total_item"`
+		TotalPenjualan  float64   `gorm:"column:total_penjualan"`
+		SatuanReward    string    `gorm:"column:satuan_reward"`
+		StatusBagiHasil string    `gorm:"column:status_bagi_hasil"`
 	}
 
 	var hdr headerData
@@ -1615,7 +1592,7 @@ func (lc *LaporanController) DownloadLaporanPenjualan(c *gin.Context) {
 			p.penjualan_id,
 			bs.nama_bank,
 			p.created_at,
-			p.identitas_pembeli,
+			COALESCE(m.nama_mitra, '-') AS nama_mitra,
 			COALESCE(u.nama, '-')  AS nama_admin,
 			r.nama_reward,
 			p.total_item,
@@ -1627,13 +1604,13 @@ func (lc *LaporanController) DownloadLaporanPenjualan(c *gin.Context) {
 		LEFT JOIN admin adm  ON adm.admin_id  = p.sold_by
 		LEFT JOIN users u    ON u.user_id     = adm.user_id
 		JOIN reward r        ON r.reward_id   = p.reward_id
+		LEFT JOIN mitra_pengepul m ON m.mitra_id = p.mitra_id
 		WHERE p.penjualan_id = ?
 	`, penjualanID).Scan(&hdr).Error; err != nil || hdr.PenjualanID == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Penjualan tidak ditemukan"})
 		return
 	}
 
-	// ── 2. Detail item sampah ─────────────────────────────────────────────────
 	type detailRow struct {
 		NamaSampah           string  `gorm:"column:nama_sampah"`
 		Satuan               string  `gorm:"column:satuan"`
@@ -1662,14 +1639,12 @@ func (lc *LaporanController) DownloadLaporanPenjualan(c *gin.Context) {
 		return
 	}
 
-	// ── 3. Build Excel ────────────────────────────────────────────────────────
 	f := excelize.NewFile()
 	defer f.Close()
 
 	sheet := "Laporan Penjualan"
 	f.SetSheetName("Sheet1", sheet)
 
-	// ── Styles ────────────────────────────────────────────────────────────────
 	styleTitle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Size: 14},
 		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
@@ -1772,20 +1747,17 @@ func (lc *LaporanController) DownloadLaporanPenjualan(c *gin.Context) {
 		},
 	})
 
-	// ── Row 1: Title ──────────────────────────────────────────────────────────
 	f.MergeCell(sheet, "A1", "G1")
 	f.SetCellValue(sheet, "A1", "LAPORAN PENJUALAN SAMPAH")
 	f.SetCellStyle(sheet, "A1", "G1", styleTitle)
 	f.SetRowHeight(sheet, 1, 32)
 
-	// ── Rows 3+: Info header ──────────────────────────────────────────────────
-	// Layout: A:B = label (bold), C:G = value
 	infoRows := [][2]string{
 		{"Nama Bank Sampah", hdr.NamaBank},
 		{"ID Penjualan", hdr.PenjualanID},
 		{"Tanggal Penjualan", hdr.CreatedAt.Format("02 January 2006, 15:04:05")},
 		{"Admin Penjual", hdr.NamaAdmin},
-		{"Pembeli", hdr.IdentitasPembeli},
+		{"Pembeli", hdr.NamaMitra},
 		{"Jenis Reward", hdr.NamaReward},
 		{"Total Item", fmt.Sprintf("%d jenis sampah", hdr.TotalItem)},
 		{"Total Penjualan", fmt.Sprintf("%.2f %s", hdr.TotalPenjualan, hdr.SatuanReward)},
@@ -1802,7 +1774,6 @@ func (lc *LaporanController) DownloadLaporanPenjualan(c *gin.Context) {
 		f.SetCellValue(sheet, fmt.Sprintf("C%d", r), row[1])
 	}
 
-	// ── Table header ──────────────────────────────────────────────────────────
 	tableHeaderRow := infoStartRow + len(infoRows) + 1
 	headers := []string{"No", "Nama Sampah", "Satuan", "Qty", "Harga Jual/Satuan", "Subtotal Penjualan", "Harga Snapshot Nasabah/Satuan"}
 	cols := []string{"A", "B", "C", "D", "E", "F", "G"}
@@ -1813,7 +1784,6 @@ func (lc *LaporanController) DownloadLaporanPenjualan(c *gin.Context) {
 	}
 	f.SetRowHeight(sheet, tableHeaderRow, 30)
 
-	// ── Data rows ─────────────────────────────────────────────────────────────
 	rowIdx := tableHeaderRow + 1
 	for i, d := range details {
 		no := i + 1
@@ -1851,7 +1821,6 @@ func (lc *LaporanController) DownloadLaporanPenjualan(c *gin.Context) {
 		rowIdx++
 	}
 
-	// ── Total row ─────────────────────────────────────────────────────────────
 	totalRow := rowIdx + 1
 	f.MergeCell(sheet, fmt.Sprintf("A%d", totalRow), fmt.Sprintf("E%d", totalRow))
 	f.SetCellValue(sheet, fmt.Sprintf("A%d", totalRow), fmt.Sprintf("TOTAL PENJUALAN (%s)", hdr.SatuanReward))
@@ -1861,7 +1830,6 @@ func (lc *LaporanController) DownloadLaporanPenjualan(c *gin.Context) {
 	f.SetCellStyle(sheet, fmt.Sprintf("G%d", totalRow), fmt.Sprintf("G%d", totalRow), styleTotalLabel)
 	f.SetRowHeight(sheet, totalRow, 22)
 
-	// ── Column widths ─────────────────────────────────────────────────────────
 	f.SetColWidth(sheet, "A", "A", 6)
 	f.SetColWidth(sheet, "B", "B", 28)
 	f.SetColWidth(sheet, "C", "C", 10)
@@ -1870,7 +1838,6 @@ func (lc *LaporanController) DownloadLaporanPenjualan(c *gin.Context) {
 	f.SetColWidth(sheet, "F", "F", 22)
 	f.SetColWidth(sheet, "G", "G", 30)
 
-	// ── Send response ─────────────────────────────────────────────────────────
 	filename := fmt.Sprintf("laporan-penjualan-%s.xlsx", penjualanID)
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
@@ -1881,7 +1848,6 @@ func (lc *LaporanController) DownloadLaporanPenjualan(c *gin.Context) {
 	}
 }
 
-// GET /laporan/penjualan/rekap/:bank_id?start=YYYY-MM-DD&end=YYYY-MM-DD
 func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
@@ -1908,7 +1874,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 	}
 	endDate = endDate.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
 
-	// ── 1. Info bank sampah ───────────────────────────────────────────────────
 	type bankData struct {
 		BankID   string `gorm:"column:bank_id"`
 		NamaBank string `gorm:"column:nama_bank"`
@@ -1919,10 +1884,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 		return
 	}
 
-	// ── 2. Rekap per sampah (di-group termasuk harga_jual, karena harga bisa
-	//      berbeda antar transaksi penjualan dalam periode yang sama) ──────────
-	// NB: satuan_reward (Rp/poin) ikut di-group karena harga_jual & subtotal_penjualan
-	// didenominasi dalam satuan itu — transaksi Rp dan poin gak boleh ketuker/kegabung.
 	type sampahRow struct {
 		NamaSampah   string  `gorm:"column:nama_sampah"`
 		Kategori     string  `gorm:"column:kategori"`
@@ -1955,24 +1916,23 @@ func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 		return
 	}
 
-	// ── 3. Detail per transaksi penjualan ─────────────────────────────────────
 	type transaksiRow struct {
-		PenjualanID      string    `gorm:"column:penjualan_id"`
-		CreatedAt        time.Time `gorm:"column:created_at"`
-		IdentitasPembeli string    `gorm:"column:identitas_pembeli"`
-		SatuanReward     string    `gorm:"column:satuan_reward"`
-		NamaSampah       string    `gorm:"column:nama_sampah"`
-		Qty              float64   `gorm:"column:qty"`
-		Satuan           string    `gorm:"column:satuan"`
-		HargaJual        float64   `gorm:"column:harga_jual"`
-		Subtotal         float64   `gorm:"column:subtotal_penjualan"`
+		PenjualanID  string    `gorm:"column:penjualan_id"`
+		CreatedAt    time.Time `gorm:"column:created_at"`
+		NamaMitra    string    `gorm:"column:nama_mitra"`
+		SatuanReward string    `gorm:"column:satuan_reward"`
+		NamaSampah   string    `gorm:"column:nama_sampah"`
+		Qty          float64   `gorm:"column:qty"`
+		Satuan       string    `gorm:"column:satuan"`
+		HargaJual    float64   `gorm:"column:harga_jual"`
+		Subtotal     float64   `gorm:"column:subtotal_penjualan"`
 	}
 	var transaksiRows []transaksiRow
 	if err := lc.DB.Raw(`
 		SELECT
 			p.penjualan_id,
 			p.created_at,
-			p.identitas_pembeli,
+			COALESCE(m.nama_mitra, '-') AS nama_mitra,
 			p.satuan_reward,
 			s.nama_sampah,
 			dp.qty,
@@ -1983,6 +1943,7 @@ func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 		JOIN penjualan p       ON p.penjualan_id = dp.penjualan_id
 		JOIN katalog_sampah ks ON ks.sampah_id    = dp.sampah_id
 		JOIN sampah s          ON s.sarok_id      = ks.sarok_id
+		LEFT JOIN mitra_pengepul m ON m.mitra_id  = p.mitra_id
 		WHERE p.bank_id = ? AND p.created_at BETWEEN ? AND ?
 		ORDER BY p.created_at ASC, s.nama_sampah ASC
 	`, bankID, startDate, endDate).Scan(&transaksiRows).Error; err != nil {
@@ -1990,14 +1951,12 @@ func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 		return
 	}
 
-	// ── 4. Build Excel ────────────────────────────────────────────────────────
 	f := excelize.NewFile()
 	defer f.Close()
 
 	periodeLabel := fmt.Sprintf("%s - %s", startDate.Format("02 January 2006"), endDate.Format("02 January 2006"))
 	numFmt := "#,##0.00"
 
-	// ── Styles ────────────────────────────────────────────────────────────────
 	styleTitle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Size: 14},
 		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
@@ -2076,7 +2035,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 		},
 	})
 
-	// ── Sheet 1: Rekap Sampah ─────────────────────────────────────────────────
 	sheetSampah := "Rekap Sampah"
 	f.SetSheetName("Sheet1", sheetSampah)
 
@@ -2132,9 +2090,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 		},
 	})
 
-	// Data sudah terurut per satuan_reward, jadi tiap kelompok kontigu — begitu
-	// satuan_reward ganti (atau data habis), tutup kelompok dgn baris TOTAL sendiri
-	// supaya Rp dan poin gak pernah kejumlah jadi satu angka.
 	writeSampahTotalRow := func(rowIdx int, satuanReward string, subtotal float64) {
 		f.MergeCell(sheetSampah, fmt.Sprintf("A%d", rowIdx), fmt.Sprintf("F%d", rowIdx))
 		f.SetCellValue(sheetSampah, fmt.Sprintf("A%d", rowIdx), fmt.Sprintf("TOTAL (%s)", satuanReward))
@@ -2200,7 +2155,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 	f.SetColWidth(sheetSampah, "F", "F", 18)
 	f.SetColWidth(sheetSampah, "G", "G", 18)
 
-	// ── Sheet 2: Detail Transaksi ─────────────────────────────────────────────
 	sheetTransaksi := "Detail Transaksi"
 	f.NewSheet(sheetTransaksi)
 
@@ -2254,7 +2208,7 @@ func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 		if isFirst {
 			f.SetCellValue(sheetTransaksi, fmt.Sprintf("A%d", rowIdx), transaksiNo)
 			f.SetCellValue(sheetTransaksi, fmt.Sprintf("B%d", rowIdx), d.CreatedAt.Format("02/01/2006 15:04"))
-			f.SetCellValue(sheetTransaksi, fmt.Sprintf("C%d", rowIdx), d.IdentitasPembeli)
+			f.SetCellValue(sheetTransaksi, fmt.Sprintf("C%d", rowIdx), d.NamaMitra)
 			f.SetCellValue(sheetTransaksi, fmt.Sprintf("D%d", rowIdx), d.SatuanReward)
 		}
 		f.SetCellStyle(sheetTransaksi, fmt.Sprintf("A%d", rowIdx), fmt.Sprintf("A%d", rowIdx), bcSt)
@@ -2292,7 +2246,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 
 	f.SetActiveSheet(0)
 
-	// ── Send response ─────────────────────────────────────────────────────────
 	filename := fmt.Sprintf("laporan-rekap-penjualan-%s-%s-%s.xlsx", bankID, startStr, endStr)
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
@@ -2303,7 +2256,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 	}
 }
 
-// GET /laporan/bagi-hasil/rekap/:bank_id?start=YYYY-MM-DD&end=YYYY-MM-DD
 func (lc *LaporanController) DownloadLaporanRekapBagiHasil(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
@@ -2330,7 +2282,6 @@ func (lc *LaporanController) DownloadLaporanRekapBagiHasil(c *gin.Context) {
 	}
 	endDate = endDate.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
 
-	// ── 1. Info bank sampah ───────────────────────────────────────────────────
 	type bankData struct {
 		BankID   string `gorm:"column:bank_id"`
 		NamaBank string `gorm:"column:nama_bank"`
@@ -2341,8 +2292,6 @@ func (lc *LaporanController) DownloadLaporanRekapBagiHasil(c *gin.Context) {
 		return
 	}
 
-	// ── 2. Rekap per nasabah (di-group termasuk satuan, karena bisa Rp atau
-	//      poin tergantung reward penjualan yang dipakai di tiap event bagi hasil) ─
 	type nasabahRow struct {
 		NasabahID     string  `gorm:"column:nasabah_id"`
 		NamaNasabah   string  `gorm:"column:nama_nasabah"`
@@ -2368,7 +2317,6 @@ func (lc *LaporanController) DownloadLaporanRekapBagiHasil(c *gin.Context) {
 		return
 	}
 
-	// ── 3. Detail per transaksi (event) bagi hasil ────────────────────────────
 	type transaksiRow struct {
 		BagiHasilID     string    `gorm:"column:bagi_hasil_id"`
 		CreatedAt       time.Time `gorm:"column:created_at"`
@@ -2403,14 +2351,12 @@ func (lc *LaporanController) DownloadLaporanRekapBagiHasil(c *gin.Context) {
 		return
 	}
 
-	// ── 4. Build Excel ────────────────────────────────────────────────────────
 	f := excelize.NewFile()
 	defer f.Close()
 
 	periodeLabel := fmt.Sprintf("%s - %s", startDate.Format("02 January 2006"), endDate.Format("02 January 2006"))
 	numFmt := "#,##0.00"
 
-	// ── Styles ────────────────────────────────────────────────────────────────
 	styleTitle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Size: 14},
 		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
@@ -2512,7 +2458,6 @@ func (lc *LaporanController) DownloadLaporanRekapBagiHasil(c *gin.Context) {
 		},
 	})
 
-	// ── Sheet 1: Rekap Nasabah ────────────────────────────────────────────────
 	sheetNasabah := "Rekap Nasabah"
 	f.SetSheetName("Sheet1", sheetNasabah)
 
@@ -2544,9 +2489,6 @@ func (lc *LaporanController) DownloadLaporanRekapBagiHasil(c *gin.Context) {
 	}
 	f.SetRowHeight(sheetNasabah, nasabahTableHeaderRow, 25)
 
-	// Data sudah terurut per satuan, jadi tiap kelompok kontigu — begitu satuan
-	// ganti (atau data habis), tutup kelompok dgn baris TOTAL sendiri supaya Rp
-	// dan poin gak pernah kejumlah jadi satu angka.
 	writeNasabahTotalRow := func(rowIdx int, satuan string, total float64) {
 		f.MergeCell(sheetNasabah, fmt.Sprintf("A%d", rowIdx), fmt.Sprintf("D%d", rowIdx))
 		f.SetCellValue(sheetNasabah, fmt.Sprintf("A%d", rowIdx), fmt.Sprintf("TOTAL (%s)", satuan))
@@ -2604,7 +2546,6 @@ func (lc *LaporanController) DownloadLaporanRekapBagiHasil(c *gin.Context) {
 	f.SetColWidth(sheetNasabah, "D", "D", 12)
 	f.SetColWidth(sheetNasabah, "E", "E", 18)
 
-	// ── Sheet 2: Detail Transaksi Bagi Hasil ──────────────────────────────────
 	sheetTransaksi := "Detail Transaksi"
 	f.NewSheet(sheetTransaksi)
 
@@ -2694,7 +2635,6 @@ func (lc *LaporanController) DownloadLaporanRekapBagiHasil(c *gin.Context) {
 
 	f.SetActiveSheet(0)
 
-	// ── Send response ─────────────────────────────────────────────────────────
 	filename := fmt.Sprintf("laporan-rekap-bagi-hasil-%s-%s-%s.xlsx", bankID, startStr, endStr)
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
@@ -2705,7 +2645,6 @@ func (lc *LaporanController) DownloadLaporanRekapBagiHasil(c *gin.Context) {
 	}
 }
 
-// GET /laporan/penarikan/rekap/:bank_id?start=YYYY-MM-DD&end=YYYY-MM-DD
 func (lc *LaporanController) DownloadLaporanRekapPenarikan(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
@@ -2732,7 +2671,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenarikan(c *gin.Context) {
 	}
 	endDate = endDate.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
 
-	// ── 1. Info bank sampah ───────────────────────────────────────────────────
 	type bankData struct {
 		BankID   string `gorm:"column:bank_id"`
 		NamaBank string `gorm:"column:nama_bank"`
@@ -2743,9 +2681,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenarikan(c *gin.Context) {
 		return
 	}
 
-	// ── 2. Rekap per nasabah — cuma status 'berhasil' yang dihitung, karena cuma
-	//      itu yang beneran ngurangin saldo nasabah. Di-group termasuk satuan
-	//      (Rp/poin) biar gak ketuker/kegabung. ─────────────────────────────────
 	type nasabahRow struct {
 		NasabahID    string  `gorm:"column:nasabah_id"`
 		NamaNasabah  string  `gorm:"column:nama_nasabah"`
@@ -2762,7 +2697,8 @@ func (lc *LaporanController) DownloadLaporanRekapPenarikan(c *gin.Context) {
 		FROM penarikan p
 		JOIN nasabah n ON n.nasabah_id = p.nasabah_id
 		JOIN users u   ON u.user_id    = n.user_id
-		WHERE p.bank_id = ? AND p.status_penarikan = 'berhasil' AND p.created_at BETWEEN ? AND ?
+		JOIN riwayat_penarikan rpc ON rpc.penarikan_id = p.penarikan_id AND rpc.status_penarikan = 'pending'
+		WHERE p.bank_id = ? AND p.status_penarikan = 'completed' AND rpc.created_at BETWEEN ? AND ?
 		GROUP BY n.nasabah_id, u.nama, p.satuan_penarikan
 		ORDER BY p.satuan_penarikan ASC, u.nama ASC
 	`, bankID, startDate, endDate).Scan(&nasabahRows).Error; err != nil {
@@ -2770,7 +2706,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenarikan(c *gin.Context) {
 		return
 	}
 
-	// ── 3. Detail per transaksi penarikan — semua status, buat audit trail ────
 	type transaksiRow struct {
 		CreatedAt   time.Time `gorm:"column:created_at"`
 		NasabahID   string    `gorm:"column:nasabah_id"`
@@ -2782,7 +2717,7 @@ func (lc *LaporanController) DownloadLaporanRekapPenarikan(c *gin.Context) {
 	var transaksiRows []transaksiRow
 	if err := lc.DB.Raw(`
 		SELECT
-			p.created_at,
+			rpc.created_at,
 			n.nasabah_id,
 			u.nama                 AS nama_nasabah,
 			p.nominal_penarikan,
@@ -2791,21 +2726,20 @@ func (lc *LaporanController) DownloadLaporanRekapPenarikan(c *gin.Context) {
 		FROM penarikan p
 		JOIN nasabah n ON n.nasabah_id = p.nasabah_id
 		JOIN users u   ON u.user_id    = n.user_id
-		WHERE p.bank_id = ? AND p.created_at BETWEEN ? AND ?
-		ORDER BY p.created_at ASC
+		JOIN riwayat_penarikan rpc ON rpc.penarikan_id = p.penarikan_id AND rpc.status_penarikan = 'pending'
+		WHERE p.bank_id = ? AND rpc.created_at BETWEEN ? AND ?
+		ORDER BY rpc.created_at ASC
 	`, bankID, startDate, endDate).Scan(&transaksiRows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil detail transaksi: " + err.Error()})
 		return
 	}
 
-	// ── 4. Build Excel ────────────────────────────────────────────────────────
 	f := excelize.NewFile()
 	defer f.Close()
 
 	periodeLabel := fmt.Sprintf("%s - %s", startDate.Format("02 January 2006"), endDate.Format("02 January 2006"))
 	numFmt := "#,##0.00"
 
-	// ── Styles ────────────────────────────────────────────────────────────────
 	styleTitle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Size: 14},
 		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
@@ -2940,7 +2874,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenarikan(c *gin.Context) {
 		},
 	})
 
-	// ── Sheet 1: Rekap Nasabah ────────────────────────────────────────────────
 	sheetNasabah := "Rekap Nasabah"
 	f.SetSheetName("Sheet1", sheetNasabah)
 
@@ -2973,9 +2906,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenarikan(c *gin.Context) {
 	}
 	f.SetRowHeight(sheetNasabah, nasabahTableHeaderRow, 25)
 
-	// Data sudah terurut per satuan, jadi tiap kelompok kontigu — begitu satuan
-	// ganti (atau data habis), tutup kelompok dgn baris TOTAL sendiri supaya Rp
-	// dan poin gak pernah kejumlah jadi satu angka.
 	writeNasabahTotalRow := func(rowIdx int, satuan string, total float64) {
 		f.MergeCell(sheetNasabah, fmt.Sprintf("A%d", rowIdx), fmt.Sprintf("D%d", rowIdx))
 		f.SetCellValue(sheetNasabah, fmt.Sprintf("A%d", rowIdx), fmt.Sprintf("TOTAL (%s)", satuan))
@@ -3033,7 +2963,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenarikan(c *gin.Context) {
 	f.SetColWidth(sheetNasabah, "D", "D", 12)
 	f.SetColWidth(sheetNasabah, "E", "E", 18)
 
-	// ── Sheet 2: Detail Transaksi ─────────────────────────────────────────────
 	sheetTransaksi := "Detail Transaksi"
 	f.NewSheet(sheetTransaksi)
 
@@ -3056,7 +2985,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenarikan(c *gin.Context) {
 	}
 
 	transaksiTableHeaderRow := transaksiInfoStartRow + len(transaksiInfoRows) + 1
-	// Status ditaruh di kolom terakhir (G) supaya bisa disorot warnanya
 	transaksiHeaders := []string{"No", "Tanggal", "Nasabah ID", "Nama Nasabah", "Nominal", "Satuan", "Status"}
 	transaksiCols := []string{"A", "B", "C", "D", "E", "F", "G"}
 	for i, h := range transaksiHeaders {
@@ -3121,7 +3049,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenarikan(c *gin.Context) {
 
 	f.SetActiveSheet(0)
 
-	// ── Send response ─────────────────────────────────────────────────────────
 	filename := fmt.Sprintf("laporan-rekap-penarikan-%s-%s-%s.xlsx", bankID, startStr, endStr)
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
@@ -3132,7 +3059,6 @@ func (lc *LaporanController) DownloadLaporanRekapPenarikan(c *gin.Context) {
 	}
 }
 
-// GET /laporan/bank-sampah
 func (lc *LaporanController) DownloadLaporanBankSampah(c *gin.Context) {
 	type bankRow struct {
 		BankID        string    `gorm:"column:bank_id"`
@@ -3254,13 +3180,11 @@ func (lc *LaporanController) DownloadLaporanBankSampah(c *gin.Context) {
 		},
 	})
 
-	// ── Row 1: Title ──────────────────────────────────────────────────────────
 	f.MergeCell(sheet, "A1", "I1")
 	f.SetCellValue(sheet, "A1", "DAFTAR BANK SAMPAH")
 	f.SetCellStyle(sheet, "A1", "I1", styleTitle)
 	f.SetRowHeight(sheet, 1, 32)
 
-	// ── Rows 3+: Info header ──────────────────────────────────────────────────
 	infoRows := [][2]string{
 		{"Tanggal Cetak", time.Now().Format("02 January 2006, 15:04:05")},
 		{"Total Bank", fmt.Sprintf("%d bank sampah", len(rows))},
@@ -3275,7 +3199,6 @@ func (lc *LaporanController) DownloadLaporanBankSampah(c *gin.Context) {
 		f.SetCellValue(sheet, fmt.Sprintf("C%d", r), row[1])
 	}
 
-	// ── Table header ──────────────────────────────────────────────────────────
 	tableHeaderRow := infoStartRow + len(infoRows) + 1
 	headers := []string{"No", "Bank ID", "Nama Bank", "Jenis Bank", "Kecamatan", "Kelurahan", "Alamat", "Nasabah Aktif", "Status"}
 	cols := []string{"A", "B", "C", "D", "E", "F", "G", "H", "I"}
@@ -3286,7 +3209,6 @@ func (lc *LaporanController) DownloadLaporanBankSampah(c *gin.Context) {
 	}
 	f.SetRowHeight(sheet, tableHeaderRow, 25)
 
-	// ── Data rows ─────────────────────────────────────────────────────────────
 	rowIdx := tableHeaderRow + 1
 	for i, d := range rows {
 		no := i + 1
@@ -3333,7 +3255,6 @@ func (lc *LaporanController) DownloadLaporanBankSampah(c *gin.Context) {
 		rowIdx++
 	}
 
-	// ── Column widths ─────────────────────────────────────────────────────────
 	f.SetColWidth(sheet, "A", "A", 6)
 	f.SetColWidth(sheet, "B", "B", 16)
 	f.SetColWidth(sheet, "C", "C", 28)
@@ -3344,7 +3265,6 @@ func (lc *LaporanController) DownloadLaporanBankSampah(c *gin.Context) {
 	f.SetColWidth(sheet, "H", "H", 14)
 	f.SetColWidth(sheet, "I", "I", 10)
 
-	// ── Send response ─────────────────────────────────────────────────────────
 	filename := fmt.Sprintf("laporan-bank-sampah-%s.xlsx", time.Now().Format("20060102"))
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
@@ -3355,7 +3275,6 @@ func (lc *LaporanController) DownloadLaporanBankSampah(c *gin.Context) {
 	}
 }
 
-// GET /laporan/katalog-sampah/:bank_id
 func (lc *LaporanController) DownloadLaporanKatalogSampah(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
@@ -3371,7 +3290,6 @@ func (lc *LaporanController) DownloadLaporanKatalogSampah(c *gin.Context) {
 		return
 	}
 
-	// BSU menggunakan katalog milik parent BSI, difilter berdasarkan stok yang dimiliki BSU
 	catalogBankID := bankID
 	if bank.JenisBank == "bsu" && bank.ParentBankID != nil {
 		catalogBankID = *bank.ParentBankID
@@ -3508,13 +3426,11 @@ func (lc *LaporanController) DownloadLaporanKatalogSampah(c *gin.Context) {
 		},
 	})
 
-	// ── Row 1: Title ──────────────────────────────────────────────────────────
 	f.MergeCell(sheet, "A1", "J1")
 	f.SetCellValue(sheet, "A1", "KATALOG SAMPAH BANK SAMPAH")
 	f.SetCellStyle(sheet, "A1", "J1", styleTitle)
 	f.SetRowHeight(sheet, 1, 32)
 
-	// ── Rows 3+: Info header ──────────────────────────────────────────────────
 	infoRows := [][2]string{
 		{"Nama Bank Sampah", bank.NamaBank},
 		{"Bank ID", bank.BankID},
@@ -3531,7 +3447,6 @@ func (lc *LaporanController) DownloadLaporanKatalogSampah(c *gin.Context) {
 		f.SetCellValue(sheet, fmt.Sprintf("C%d", r), row[1])
 	}
 
-	// ── Table header ──────────────────────────────────────────────────────────
 	tableHeaderRow := infoStartRow + len(infoRows) + 1
 	headers := []string{"No", "Nama Sampah", "Kategori", "Satuan", "Jenis Reward", "Harga Nasabah/Satuan", "Harga Eksternal/Satuan", "Satuan Reward", "Syarat Pemilahan", "Tanggal Ditambahkan"}
 	cols := []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"}
@@ -3542,7 +3457,6 @@ func (lc *LaporanController) DownloadLaporanKatalogSampah(c *gin.Context) {
 	}
 	f.SetRowHeight(sheet, tableHeaderRow, 30)
 
-	// ── Data rows ─────────────────────────────────────────────────────────────
 	rowIdx := tableHeaderRow + 1
 	for i, d := range rows {
 		no := i + 1
@@ -3579,7 +3493,6 @@ func (lc *LaporanController) DownloadLaporanKatalogSampah(c *gin.Context) {
 		rowIdx++
 	}
 
-	// ── Column widths ─────────────────────────────────────────────────────────
 	f.SetColWidth(sheet, "A", "A", 6)
 	f.SetColWidth(sheet, "B", "B", 26)
 	f.SetColWidth(sheet, "C", "C", 20)
@@ -3591,7 +3504,6 @@ func (lc *LaporanController) DownloadLaporanKatalogSampah(c *gin.Context) {
 	f.SetColWidth(sheet, "I", "I", 36)
 	f.SetColWidth(sheet, "J", "J", 22)
 
-	// ── Send response ─────────────────────────────────────────────────────────
 	filename := fmt.Sprintf("katalog-sampah-%s.xlsx", bankID)
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
@@ -3602,8 +3514,7 @@ func (lc *LaporanController) DownloadLaporanKatalogSampah(c *gin.Context) {
 	}
 }
 
-// GET /laporan/katalog-sembako/:bank_id
-func (lc *LaporanController) DownloadLaporanKatalogSembako(c *gin.Context) {
+func (lc *LaporanController) DownloadLaporanKatalogBarang(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
 	type bankData struct {
@@ -3618,7 +3529,6 @@ func (lc *LaporanController) DownloadLaporanKatalogSembako(c *gin.Context) {
 		return
 	}
 
-	// BSU menggunakan katalog milik parent BSI, difilter berdasarkan stok yang dimiliki BSU
 	catalogBankID := bankID
 	if bank.JenisBank == "bsu" && bank.ParentBankID != nil {
 		catalogBankID = *bank.ParentBankID
@@ -3634,7 +3544,7 @@ func (lc *LaporanController) DownloadLaporanKatalogSembako(c *gin.Context) {
 	var queryArgs []interface{}
 	stokFilter := ""
 	if bank.JenisBank == "bsu" {
-		stokFilter = "AND EXISTS (SELECT 1 FROM stok_sembako st WHERE st.sembako_id = ks.sembako_id AND st.bank_id = ?)"
+		stokFilter = "AND EXISTS (SELECT 1 FROM stok_barang st WHERE st.produk_id = ks.produk_id AND st.bank_id = ?)"
 		queryArgs = append(queryArgs, catalogBankID, bankID)
 	} else {
 		queryArgs = append(queryArgs, catalogBankID)
@@ -3644,19 +3554,19 @@ func (lc *LaporanController) DownloadLaporanKatalogSembako(c *gin.Context) {
 			s.nama_barang,
 			ks.nilai_poin,
 			ks.created_at
-		FROM katalog_sembako ks
-		JOIN sembako s ON s.barang_id = ks.barang_id
+		FROM katalog_barang ks
+		JOIN barang s ON s.barang_id = ks.barang_id
 		WHERE ks.bank_id = ? %s
 		ORDER BY s.nama_barang ASC
 	`, stokFilter), queryArgs...).Scan(&rows).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data katalog sembako: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data katalog barang: " + err.Error()})
 		return
 	}
 
 	f := excelize.NewFile()
 	defer f.Close()
 
-	sheet := "Katalog Sembako"
+	sheet := "Katalog Barang"
 	f.SetSheetName("Sheet1", sheet)
 
 	numFmt := "#,##0.00"
@@ -3739,13 +3649,11 @@ func (lc *LaporanController) DownloadLaporanKatalogSembako(c *gin.Context) {
 		},
 	})
 
-	// ── Row 1: Title ──────────────────────────────────────────────────────────
 	f.MergeCell(sheet, "A1", "D1")
-	f.SetCellValue(sheet, "A1", "KATALOG SEMBAKO BANK SAMPAH")
+	f.SetCellValue(sheet, "A1", "KATALOG BARANG BANK SAMPAH")
 	f.SetCellStyle(sheet, "A1", "D1", styleTitle)
 	f.SetRowHeight(sheet, 1, 32)
 
-	// ── Rows 3+: Info header ──────────────────────────────────────────────────
 	infoRows := [][2]string{
 		{"Nama Bank Sampah", bank.NamaBank},
 		{"Bank ID", bank.BankID},
@@ -3762,7 +3670,6 @@ func (lc *LaporanController) DownloadLaporanKatalogSembako(c *gin.Context) {
 		f.SetCellValue(sheet, fmt.Sprintf("C%d", r), row[1])
 	}
 
-	// ── Table header ──────────────────────────────────────────────────────────
 	tableHeaderRow := infoStartRow + len(infoRows) + 1
 	headers := []string{"No", "Nama Barang", "Nilai Poin", "Tanggal Ditambahkan"}
 	cols := []string{"A", "B", "C", "D"}
@@ -3773,7 +3680,6 @@ func (lc *LaporanController) DownloadLaporanKatalogSembako(c *gin.Context) {
 	}
 	f.SetRowHeight(sheet, tableHeaderRow, 25)
 
-	// ── Data rows ─────────────────────────────────────────────────────────────
 	rowIdx := tableHeaderRow + 1
 	for i, d := range rows {
 		no := i + 1
@@ -3798,14 +3704,12 @@ func (lc *LaporanController) DownloadLaporanKatalogSembako(c *gin.Context) {
 		rowIdx++
 	}
 
-	// ── Column widths ─────────────────────────────────────────────────────────
 	f.SetColWidth(sheet, "A", "A", 6)
 	f.SetColWidth(sheet, "B", "B", 32)
 	f.SetColWidth(sheet, "C", "C", 16)
 	f.SetColWidth(sheet, "D", "D", 22)
 
-	// ── Send response ─────────────────────────────────────────────────────────
-	filename := fmt.Sprintf("katalog-sembako-%s.xlsx", bankID)
+	filename := fmt.Sprintf("katalog-barang-%s.xlsx", bankID)
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	c.Header("Cache-Control", "no-cache")

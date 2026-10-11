@@ -1,15 +1,13 @@
 package controllers
 
 import (
-	"fmt"
 	"net/http"
-	"time"
 
+	"enviroo-be/internal/adapters/storage"
 	"enviroo-be/internal/middleware"
 	"enviroo-be/internal/models"
 	"enviroo-be/internal/repositories"
 	"enviroo-be/internal/services"
-	"enviroo-be/pkg/storage"
 
 	"github.com/gin-gonic/gin"
 )
@@ -23,7 +21,6 @@ func NewPenarikanController(svc services.PenarikanService, cf *storage.Cloudflar
 	return &PenarikanController{Svc: svc, CF: cf}
 }
 
-// POST /penarikan/preview/:nasabah_id
 func (pc *PenarikanController) PreviewAjukanPenarikan(c *gin.Context) {
 	nasabahID := c.Param("nasabah_id")
 
@@ -41,7 +38,6 @@ func (pc *PenarikanController) PreviewAjukanPenarikan(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
-// POST /penarikan/ajukan/:nasabah_id
 func (pc *PenarikanController) AjukanPenarikan(c *gin.Context) {
 	nasabahID := c.Param("nasabah_id")
 
@@ -62,7 +58,6 @@ func (pc *PenarikanController) AjukanPenarikan(c *gin.Context) {
 	})
 }
 
-// POST /penarikan/konfirmasi/:penarikan_id
 func (pc *PenarikanController) KonfirmasiPenarikanNasabah(c *gin.Context) {
 	penarikanID := c.Param("penarikan_id")
 
@@ -72,29 +67,24 @@ func (pc *PenarikanController) KonfirmasiPenarikanNasabah(c *gin.Context) {
 		return
 	}
 
-	var req struct {
-		BuktiFoto string `json:"bukti_foto" binding:"required"`
-	}
+	var req services.KonfirmasiPenarikanReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	fotoURL, err := pc.uploadFoto(req.BuktiFoto, penarikanID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengunggah bukti foto: " + err.Error()})
-		return
-	}
-
-	if err := pc.Svc.Konfirmasi(penarikanID, claims.UserID, fotoURL); err != nil {
+	if err := pc.Svc.Konfirmasi(penarikanID, claims.UserID, req); err != nil {
 		handleServiceError(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Penarikan berhasil dikonfirmasi"})
+	pesan := "Penarikan berhasil ditolak"
+	if req.Status == string(models.StatusPenarikanApproved) {
+		pesan = "Penarikan berhasil disetujui"
+	}
+	c.JSON(http.StatusOK, gin.H{"message": pesan})
 }
 
-// PATCH /penarikan/batal/:penarikan_id
 func (pc *PenarikanController) BatalPenarikan(c *gin.Context) {
 	penarikanID := c.Param("penarikan_id")
 
@@ -104,7 +94,15 @@ func (pc *PenarikanController) BatalPenarikan(c *gin.Context) {
 		return
 	}
 
-	if err := pc.Svc.Batal(penarikanID, claims.UserID); err != nil {
+	var req struct {
+		Catatan string `json:"catatan" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := pc.Svc.Batal(penarikanID, claims.UserID, req.Catatan); err != nil {
 		handleServiceError(c, err)
 		return
 	}
@@ -112,7 +110,43 @@ func (pc *PenarikanController) BatalPenarikan(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Pengajuan penarikan berhasil dibatalkan dan saldo telah dikembalikan"})
 }
 
-// GET /penarikan/list/:nasabah_id
+func (pc *PenarikanController) SelesaiPenarikan(c *gin.Context) {
+	claims, ok := middleware.GetClaims(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Sesi tidak valid"})
+		return
+	}
+
+	req := services.SelesaiPenarikanReq{
+		QRData:      c.PostForm("qr_data"),
+		NasabahID:   c.PostForm("nasabah_id"),
+		PenarikanID: c.PostForm("penarikan_id"),
+	}
+	if catatan, ada := c.GetPostForm("catatan"); ada {
+		req.Catatan = &catatan
+	}
+
+	if req.QRData == "" {
+		if file, header, err := c.Request.FormFile("bukti_foto"); err == nil {
+			defer file.Close()
+
+			fotoURL, errUpload := pc.CF.UploadFile(file, header, "penarikan")
+			if errUpload != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengunggah bukti foto: " + errUpload.Error()})
+				return
+			}
+			req.BuktiFoto = fotoURL
+		}
+	}
+
+	if err := pc.Svc.Selesai(claims.UserID, req); err != nil {
+		handleServiceError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Penarikan berhasil diselesaikan"})
+}
+
 func (pc *PenarikanController) ListPenarikanNasabah(c *gin.Context) {
 	nasabahID := c.Param("nasabah_id")
 
@@ -125,7 +159,6 @@ func (pc *PenarikanController) ListPenarikanNasabah(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// GET /penarikan/list-bank/:bank_id
 func (pc *PenarikanController) ListPenarikanNasabahByBank(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
@@ -141,7 +174,6 @@ func (pc *PenarikanController) ListPenarikanNasabahByBank(c *gin.Context) {
 	})
 }
 
-// GET /penarikan/detail/:penarikan_id
 func (pc *PenarikanController) DetailPenarikanNasabah(c *gin.Context) {
 	penarikanID := c.Param("penarikan_id")
 
@@ -159,49 +191,28 @@ func (pc *PenarikanController) DetailPenarikanNasabah(c *gin.Context) {
 	c.JSON(http.StatusOK, detail)
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-func (pc *PenarikanController) uploadFoto(base64Foto, penarikanID string) (string, error) {
-	if base64Foto == "" {
-		return "", nil
-	}
-	// Jika pendek → sudah berupa URL, pakai langsung
-	if len(base64Foto) <= 100 {
-		return base64Foto, nil
-	}
-	path := fmt.Sprintf("penarikan/%s_%d.jpg", penarikanID, time.Now().Unix())
-	return pc.CF.UploadBase64(base64Foto, path)
-}
-
 func bindPenarikanFilter(c *gin.Context) repositories.PenarikanFilter {
 	var f repositories.PenarikanFilter
 	_ = c.ShouldBindQuery(&f)
 	return f
 }
 
-// handleServiceError memetakan ServiceError ke HTTP response.
-// Mengembalikan error non-nil jika sudah menulis response (agar caller bisa return).
 func handleServiceError(c *gin.Context, err error) error {
 	if err == nil {
 		return nil
 	}
 	svcErr, ok := err.(*services.ServiceError)
 	if ok {
+		resp := gin.H{"error": svcErr.Message}
 		if svcErr.Data != nil {
-			c.JSON(svcErr.Code, gin.H{"error": svcErr.Message, "data": svcErr.Data})
-		} else {
-			c.JSON(svcErr.Code, gin.H{"error": svcErr.Message})
+			resp["data"] = svcErr.Data
 		}
+		if svcErr.ErrCode != "" {
+			resp["code"] = svcErr.ErrCode
+		}
+		c.JSON(svcErr.Code, resp)
 	} else {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 	}
 	return err
-}
-
-// rolePenarikan dipertahankan agar kompatibel dengan kode yang sudah ada
-func rolePenarikan(role models.RoleAdmin) string {
-	if role == models.RoleNasabah {
-		return "nasabah"
-	}
-	return "admin"
 }

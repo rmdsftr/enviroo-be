@@ -1,7 +1,10 @@
 package middleware
 
 import (
+	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -9,60 +12,72 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// IPRateLimiter membatasi jumlah request per alamat IP menggunakan algoritma
-// token bucket (in-memory, tanpa dependency eksternal seperti Redis).
-//
-// Setiap IP punya bucket sendiri. Bucket yang lama tidak aktif dibersihkan
-// oleh goroutine cleanup agar map tidak tumbuh tanpa batas.
 type IPRateLimiter struct {
-	mu      sync.Mutex
-	clients map[string]*clientBucket
-	rate    rate.Limit
-	burst   int
-	ttl     time.Duration
+	mu            sync.Mutex
+	clients       map[string]*clientBucket
+	rate          rate.Limit
+	burst         int
+	ttl           time.Duration
+	blockDuration time.Duration
 }
 
 type clientBucket struct {
-	limiter  *rate.Limiter
-	lastSeen time.Time
+	limiter      *rate.Limiter
+	lastSeen     time.Time
+	blockedUntil time.Time
 }
 
-// NewIPRateLimiter membuat limiter dengan laju isi ulang `r` dan kapasitas burst `b`.
-// Contoh: NewIPRateLimiter(rate.Every(6*time.Second), 5) ≈ 10 request/menit, burst 5.
 func NewIPRateLimiter(r rate.Limit, b int) *IPRateLimiter {
+	return NewIPRateLimiterWithBlock(r, b, 0)
+}
+
+func NewIPRateLimiterWithBlock(r rate.Limit, b int, blockDuration time.Duration) *IPRateLimiter {
 	l := &IPRateLimiter{
-		clients: make(map[string]*clientBucket),
-		rate:    r,
-		burst:   b,
-		ttl:     10 * time.Minute,
+		clients:       make(map[string]*clientBucket),
+		rate:          r,
+		burst:         b,
+		ttl:           10 * time.Minute,
+		blockDuration: blockDuration,
 	}
 	go l.cleanupLoop()
 	return l
 }
 
-// getLimiter mengembalikan bucket untuk sebuah IP, membuatnya jika belum ada.
-func (l *IPRateLimiter) getLimiter(ip string) *rate.Limiter {
+func (l *IPRateLimiter) allow(ip string) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if c, ok := l.clients[ip]; ok {
-		c.lastSeen = time.Now()
-		return c.limiter
+	now := time.Now()
+	c, ok := l.clients[ip]
+	if !ok {
+		c = &clientBucket{limiter: rate.NewLimiter(l.rate, l.burst)}
+		l.clients[ip] = c
+	}
+	c.lastSeen = now
+
+	if now.Before(c.blockedUntil) {
+		return false, c.blockedUntil.Sub(now)
 	}
 
-	limiter := rate.NewLimiter(l.rate, l.burst)
-	l.clients[ip] = &clientBucket{limiter: limiter, lastSeen: time.Now()}
-	return limiter
+	if c.limiter.AllowN(now, 1) {
+		return true, 0
+	}
+
+	if l.blockDuration > 0 {
+		c.blockedUntil = now.Add(l.blockDuration)
+		return false, l.blockDuration
+	}
+	return false, 0
 }
 
-// cleanupLoop menghapus bucket IP yang tidak aktif lebih dari ttl.
 func (l *IPRateLimiter) cleanupLoop() {
 	ticker := time.NewTicker(l.ttl)
 	defer ticker.Stop()
 	for range ticker.C {
 		l.mu.Lock()
+		now := time.Now()
 		for ip, c := range l.clients {
-			if time.Since(c.lastSeen) > l.ttl {
+			if now.Sub(c.lastSeen) > l.ttl && now.After(c.blockedUntil) {
 				delete(l.clients, ip)
 			}
 		}
@@ -70,15 +85,24 @@ func (l *IPRateLimiter) cleanupLoop() {
 	}
 }
 
-// Middleware menolak request dengan 429 jika IP melebihi kuota.
 func (l *IPRateLimiter) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !l.getLimiter(c.ClientIP()).Allow() {
+		allowed, retryAfter := l.allow(c.ClientIP())
+		if allowed {
+			c.Next()
+			return
+		}
+
+		if retryAfter > 0 {
+			c.Header("Retry-After", strconv.Itoa(int(math.Ceil(retryAfter.Seconds()))))
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"error": "Terlalu banyak permintaan. Silakan coba lagi beberapa saat.",
+				"error": fmt.Sprintf("Terlalu banyak percobaan. Silakan coba lagi dalam %d menit.", int(math.Ceil(retryAfter.Minutes()))),
 			})
 			return
 		}
-		c.Next()
+
+		c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+			"error": "Terlalu banyak permintaan. Silakan coba lagi beberapa saat.",
+		})
 	}
 }

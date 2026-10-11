@@ -2,7 +2,7 @@ package middleware
 
 import (
 	"enviroo-be/internal/models"
-	"enviroo-be/pkg/utils"
+	"enviroo-be/internal/utils"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -11,20 +11,10 @@ import (
 
 const ClaimsKey = "claims"
 
-// RequireAuth memvalidasi access_token lalu memverifikasi status akun ke database.
-// Jika akun nonaktif/pending, request ditolak dengan 403 dan code ACCOUNT_INACTIVE.
 func RequireAuth(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 1. Coba ambil dari cookie (untuk Web)
-		tokenStr, err := c.Cookie(utils.AccessTokenCookieName)
 
-		// 2. Jika tidak ada di cookie, coba ambil dari Authorization header (untuk Mobile)
-		if err != nil || tokenStr == "" {
-			authHeader := c.GetHeader("Authorization")
-			if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
-				tokenStr = authHeader[7:]
-			}
-		}
+		tokenStr := utils.ExtractTokenFromRequest(c)
 
 		if tokenStr == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
@@ -41,7 +31,6 @@ func RequireAuth(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		// 3. Cek status akun di database
 		if claims.Role == models.RoleNasabah {
 			var count int64
 			db.Model(&models.Nasabah{}).
@@ -68,13 +57,29 @@ func RequireAuth(db *gorm.DB) gin.HandlerFunc {
 			}
 		}
 
+		var sessionUser models.User
+		if err := db.Select("device_session_id", "web_session_id").
+			Where("user_id = ?", claims.UserID).
+			First(&sessionUser).Error; err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "Sesi tidak valid. Silakan login kembali.",
+			})
+			return
+		}
+		sessionID := sessionUser.SessionIDFor(claims.Platform)
+		if sessionID == nil || *sessionID == "" || *sessionID != claims.SessionID {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "Sesi Anda telah berakhir karena akun digunakan di perangkat lain. Silakan login kembali.",
+				"code":  "SESSION_REVOKED",
+			})
+			return
+		}
+
 		c.Set(ClaimsKey, claims)
 		c.Next()
 	}
 }
 
-// RequireRole memastikan user yang sudah terautentikasi memiliki salah satu role yang diizinkan.
-// Harus dipasang setelah RequireAuth.
 func RequireRole(roles ...models.RoleAdmin) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw, exists := c.Get(ClaimsKey)
@@ -102,10 +107,6 @@ func RequireRole(roles ...models.RoleAdmin) gin.HandlerFunc {
 	}
 }
 
-// RequireSameBankParam memastikan bank_id di URL param cocok dengan bank_id di token.
-// Superadmin (BankID == "") di-skip otomatis.
-// bypassRoles: role yang diizinkan akses lintas bank tanpa ownership check (mis. AdminBSI).
-// Harus dipasang setelah RequireAuth.
 func RequireSameBankParam(paramName string, bypassRoles ...models.RoleAdmin) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, ok := GetClaims(c)
@@ -131,10 +132,21 @@ func RequireSameBankParam(paramName string, bypassRoles ...models.RoleAdmin) gin
 	}
 }
 
-// RequireSameNasabah memastikan nasabah_id di URL param benar-benar milik user di token.
-// Token hanya membawa UserID (bukan nasabah_id), jadi kepemilikan diverifikasi ke database.
-// Role selain nasabah (admin/petugas/superadmin) di-skip — akses mereka sudah diatur
-// oleh middleware role/bank lainnya. Harus dipasang setelah RequireAuth.
+func RequireSameUser(paramName string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims, ok := GetClaims(c)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Tidak terautentikasi"})
+			return
+		}
+		if c.Param(paramName) != claims.UserID {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Akses ditolak. Anda hanya dapat mengakses akun Anda sendiri."})
+			return
+		}
+		c.Next()
+	}
+}
+
 func RequireSameNasabah(db *gorm.DB, paramName string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, ok := GetClaims(c)
@@ -142,7 +154,7 @@ func RequireSameNasabah(db *gorm.DB, paramName string) gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Tidak terautentikasi"})
 			return
 		}
-		// Hanya nasabah yang dibatasi kepemilikan; role lain diteruskan.
+
 		if claims.Role != models.RoleNasabah {
 			c.Next()
 			return
@@ -159,7 +171,38 @@ func RequireSameNasabah(db *gorm.DB, paramName string) gin.HandlerFunc {
 	}
 }
 
-// GetClaims adalah helper untuk mengambil claims dari context Gin.
+func RequireNasabahBankAccess(db *gorm.DB, paramName string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims, ok := GetClaims(c)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Tidak terautentikasi"})
+			return
+		}
+
+		var nasabah models.Nasabah
+		if err := db.Select("nasabah_id", "user_id", "bank_id").
+			Where("nasabah_id = ?", c.Param(paramName)).First(&nasabah).Error; err != nil {
+			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "Nasabah tidak ditemukan"})
+			return
+		}
+
+		if claims.Role == models.RoleNasabah {
+			if nasabah.UserID != claims.UserID {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Akses ditolak. Anda tidak memiliki akses ke data nasabah ini."})
+				return
+			}
+			c.Next()
+			return
+		}
+
+		if nasabah.BankID != claims.BankID {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Akses ditolak. Anda tidak memiliki akses ke data nasabah ini."})
+			return
+		}
+		c.Next()
+	}
+}
+
 func GetClaims(c *gin.Context) (*utils.JWTClaims, bool) {
 	raw, exists := c.Get(ClaimsKey)
 	if !exists {
