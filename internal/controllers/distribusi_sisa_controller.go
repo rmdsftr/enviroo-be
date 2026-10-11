@@ -7,7 +7,7 @@ import (
 
 	"enviroo-be/internal/repositories"
 	"enviroo-be/internal/services"
-	"enviroo-be/pkg/utils"
+	"enviroo-be/internal/utils"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -36,7 +36,6 @@ func svcErr(c *gin.Context, err error) {
 	c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 }
 
-// GET /distribusi-sisa/konfigurasi/:bank_id
 func (dsc *DistribusiSisaController) GetKonfigurasi(c *gin.Context) {
 	result, err := dsc.Svc.GetKonfigurasi(c.Param("bank_id"))
 	if err != nil {
@@ -46,7 +45,6 @@ func (dsc *DistribusiSisaController) GetKonfigurasi(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// POST /distribusi-sisa/konfigurasi/:bank_id
 func (dsc *DistribusiSisaController) AddKonfigurasi(c *gin.Context) {
 	var req services.AddKonfigurasiReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -61,7 +59,6 @@ func (dsc *DistribusiSisaController) AddKonfigurasi(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"message": "Konfigurasi berhasil dibuat", "data": result})
 }
 
-// PATCH /distribusi-sisa/konfigurasi/:bank_id
 func (dsc *DistribusiSisaController) UpdateKonfigurasi(c *gin.Context) {
 	var req services.UpdateKonfigurasiReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -76,7 +73,6 @@ func (dsc *DistribusiSisaController) UpdateKonfigurasi(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Konfigurasi berhasil diperbarui", "data": result})
 }
 
-// GET /distribusi-sisa/preview/:bagi_hasil_id
 func (dsc *DistribusiSisaController) PreviewDistribusiSisa(c *gin.Context) {
 	result, err := dsc.Svc.PreviewDistribusiSisa(c.Param("bagi_hasil_id"))
 	if err != nil {
@@ -86,7 +82,6 @@ func (dsc *DistribusiSisaController) PreviewDistribusiSisa(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// POST /distribusi-sisa/submit/:bagi_hasil_id
 func (dsc *DistribusiSisaController) SubmitDistribusiSisa(c *gin.Context) {
 	var req services.SubmitDistribusiReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -100,7 +95,6 @@ func (dsc *DistribusiSisaController) SubmitDistribusiSisa(c *gin.Context) {
 		return
 	}
 
-	// Kirim notifikasi ke admin tiap BSU penerima
 	ctx := c.Request.Context()
 	for _, item := range result.PenerimaBSU {
 		pesanNilai := utils.FormatBagiHasilNilai(item.Nominal, result.Satuan)
@@ -131,7 +125,6 @@ func (dsc *DistribusiSisaController) SubmitDistribusiSisa(c *gin.Context) {
 	})
 }
 
-// GET /distribusi-sisa/detail/:distribusi_id
 func (dsc *DistribusiSisaController) GetDetailDistribusiSisa(c *gin.Context) {
 	result, err := dsc.Svc.GetDetailDistribusiSisa(c.Param("distribusi_id"))
 	if err != nil {
@@ -141,7 +134,6 @@ func (dsc *DistribusiSisaController) GetDetailDistribusiSisa(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// GET /distribusi-sisa/list-bh-bank/:bank_id
 func (dsc *DistribusiSisaController) ListBagiHasilBank(c *gin.Context) {
 	var filter struct {
 		StartDate string `form:"start_date"`
@@ -184,7 +176,6 @@ func (dsc *DistribusiSisaController) ListBagiHasilBank(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// GET /distribusi-sisa/detail-bh-bank/:penerima_sisa_id
 func (dsc *DistribusiSisaController) DetailBagiHasilBank(c *gin.Context) {
 	result, err := dsc.Svc.DetailBagiHasilBank(c.Param("penerima_sisa_id"))
 	if err != nil {

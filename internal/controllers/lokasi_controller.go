@@ -2,7 +2,7 @@ package controllers
 
 import (
 	"enviroo-be/internal/models"
-	"enviroo-be/pkg/utils"
+	"enviroo-be/internal/utils"
 	"net/http"
 	"strconv"
 
@@ -43,12 +43,6 @@ func (lc *LokasiController) GetLokasiBankSampah(c *gin.Context) {
 	})
 }
 
-// GET /lokasi/statistik-kecamatan
-//
-// Query params (optional):
-//
-//	sort=asc  → urutkan dari kecamatan dengan bank paling sedikit
-//	sort=desc → urutkan dari kecamatan dengan bank paling banyak (default)
 func (lc *LokasiController) StatistikBankSampahPerKecamatan(c *gin.Context) {
 	sort := c.DefaultQuery("sort", "desc")
 	if sort != "asc" && sort != "desc" {
@@ -67,7 +61,6 @@ func (lc *LokasiController) StatistikBankSampahPerKecamatan(c *gin.Context) {
 		Banks       []BankItem `json:"banks"`
 	}
 
-	// Ambil semua kecamatan beserta jumlah bank, diurutkan sesuai sort
 	type kecamatanCount struct {
 		IDKecamatan int    `gorm:"column:id_kecamatan"`
 		Kecamatan   string `gorm:"column:kecamatan"`
@@ -85,7 +78,6 @@ func (lc *LokasiController) StatistikBankSampahPerKecamatan(c *gin.Context) {
 		return
 	}
 
-	// Ambil semua bank sekaligus, lalu map ke kecamatan masing-masing
 	type bankRow struct {
 		IDKecamatan int    `gorm:"column:id_kecamatan"`
 		BankID      string `gorm:"column:bank_id"`
@@ -128,8 +120,6 @@ func (lc *LokasiController) StatistikBankSampahPerKecamatan(c *gin.Context) {
 		"data":    results,
 	})
 }
-
-// ─── KECAMATAN ────────────────────────────────────────────────────────────────
 
 func (lc *LokasiController) GetAllKecamatan(c *gin.Context) {
 	var results []models.Kecamatan
@@ -256,8 +246,6 @@ func (lc *LokasiController) DeleteKecamatan(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Kecamatan berhasil dihapus"})
 }
 
-// ─── KELURAHAN ────────────────────────────────────────────────────────────────
-
 func (lc *LokasiController) GetAllKelurahan(c *gin.Context) {
 	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
 	if err != nil || page < 1 {
@@ -315,7 +303,6 @@ func (lc *LokasiController) GetKelurahanByID(c *gin.Context) {
 	})
 }
 
-// GetKelurahanByKecamatan mengembalikan semua kelurahan dalam satu kecamatan
 func (lc *LokasiController) GetKelurahanByKecamatan(c *gin.Context) {
 	kecamatanID := c.Param("id")
 	var results []models.Kelurahan
@@ -344,7 +331,6 @@ func (lc *LokasiController) CreateKelurahan(c *gin.Context) {
 		return
 	}
 
-	// Validasi kecamatan exists
 	var kecamatan models.Kecamatan
 	if err := lc.DB.Where("id_kecamatan = ?", req.IDKecamatan).First(&kecamatan).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Kecamatan tidak ditemukan"})

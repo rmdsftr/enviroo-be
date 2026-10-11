@@ -1,13 +1,38 @@
 package repositories
 
 import (
+	"enviroo-be/internal/idgen"
 	"enviroo-be/internal/models"
-	"enviroo-be/pkg/utils"
 	"fmt"
 	"time"
 
 	"gorm.io/gorm"
 )
+
+func MutasiSaldo(tx *gorm.DB, saldo *models.SaldoRekening, delta float64, keterangan, adminID string, now time.Time) error {
+	nominalSebelum := saldo.NominalSaldo
+	saldo.NominalSaldo += delta
+	saldo.LastUpdatedAt = now
+	saldo.LastUpdatedBy = &adminID
+	if err := tx.Save(saldo).Error; err != nil {
+		return err
+	}
+
+	riwayatSaldoID, err := idgen.GenerateRiwayatSaldoID(tx, saldo.RekeningID)
+	if err != nil {
+		return err
+	}
+
+	return tx.Create(&models.RiwayatArusSaldo{
+		RiwayatSaldoID: riwayatSaldoID,
+		RekeningID:     &saldo.RekeningID,
+		NominalSebelum: nominalSebelum,
+		NominalSesudah: saldo.NominalSaldo,
+		CreatedAt:      now,
+		CreatedBy:      &adminID,
+		Keterangan:     keterangan,
+	}).Error
+}
 
 func UpdateSaldoRekening(
 	tx *gorm.DB,
@@ -36,20 +61,5 @@ func UpdateSaldoRekening(
 		return fmt.Errorf("rekening bank %s untuk reward_id %d tidak ditemukan", *bankID, rewardID)
 	}
 
-	nominalSebelum := saldo.NominalSaldo
-	saldo.NominalSaldo += nilai
-	saldo.LastUpdatedAt = now
-	saldo.LastUpdatedBy = &adminID
-	if err := tx.Save(&saldo).Error; err != nil {
-		return err
-	}
-
-	return tx.Create(&models.RiwayatArusSaldo{
-		RiwayatSaldoID: utils.GenerateID("RS"),
-		RekeningID:     &saldo.RekeningID,
-		NominalSebelum: nominalSebelum,
-		NominalSesudah: saldo.NominalSaldo,
-		CreatedAt:      now,
-		CreatedBy:      &adminID,
-	}).Error
+	return MutasiSaldo(tx, &saldo, nilai, "Bagi hasil", adminID, now)
 }

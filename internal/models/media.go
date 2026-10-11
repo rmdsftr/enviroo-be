@@ -1,16 +1,15 @@
 package models
 
 type Media struct {
-	MediaID  string `gorm:"column:media_id;primaryKey;size:100"`
-	MediaURL string `gorm:"column:media_url;size:255"`
-	FileName string `gorm:"column:file_name;size:255"`
-	FileType string `gorm:"column:file_type;size:50"` // e.g., image/png, image/jpeg
-	FileSize int64  `gorm:"column:file_size"`        // In bytes
-	AdminID  string `gorm:"column:admin_id;size:100"` // Uploader
-	KontenID string `gorm:"column:konten_id;size:100"` // FK to Konten (optional/independent link)
+	MediaID  string `gorm:"column:media_id;primaryKey;size:36"`
+	MediaURL string `gorm:"column:media_url;size:255;not null"`
+	FileName string `gorm:"column:file_name;size:255;not null"`
+	FileType string `gorm:"column:file_type;size:50;not null"`
+	FileSize int64  `gorm:"column:file_size;not null"`
+	AdminID  string `gorm:"column:admin_id;size:13"`
+	KontenID string `gorm:"column:konten_id;size:21"`
 
-	// Relasi balik
-	Konten Konten `gorm:"foreignKey:KontenID;references:KontenID"`
+	Konten Konten `gorm:"foreignKey:KontenID;references:KontenID;constraint:OnDelete:CASCADE"`
 }
 
 func (Media) TableName() string {

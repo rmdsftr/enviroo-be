@@ -20,6 +20,27 @@ func (m *MockPenarikanRepo) FindNasabahAktif(nasabahID string) (*models.Nasabah,
 	return args.Get(0).(*models.Nasabah), args.Error(1)
 }
 
+func (m *MockPenarikanRepo) FindNasabah(tx *gorm.DB, nasabahID string) (*models.Nasabah, error) {
+	args := m.Called(tx, nasabahID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.Nasabah), args.Error(1)
+}
+
+func (m *MockPenarikanRepo) FindNasabahWithUser(nasabahID string) (*models.Nasabah, error) {
+	args := m.Called(nasabahID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.Nasabah), args.Error(1)
+}
+
+func (m *MockPenarikanRepo) CountNasabahMilikUser(userID, nasabahID string) (int64, error) {
+	args := m.Called(userID, nasabahID)
+	return args.Get(0).(int64), args.Error(1)
+}
+
 func (m *MockPenarikanRepo) FindNasabahByUserID(userID string) (*models.Nasabah, error) {
 	args := m.Called(userID)
 	if args.Get(0) == nil {
@@ -44,20 +65,20 @@ func (m *MockPenarikanRepo) FindSaldoRekening(nasabahID string, rewardID int) (*
 	return args.Get(0).(*models.SaldoRekening), args.Error(1)
 }
 
-func (m *MockPenarikanRepo) FindSembako(sembakoID, bankID string) (*models.KatalogSembako, error) {
-	args := m.Called(sembakoID, bankID)
+func (m *MockPenarikanRepo) FindProduk(produkID, bankID string) (*models.KatalogBarang, error) {
+	args := m.Called(produkID, bankID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).(*models.KatalogSembako), args.Error(1)
+	return args.Get(0).(*models.KatalogBarang), args.Error(1)
 }
 
-func (m *MockPenarikanRepo) FindStokSembako(sembakoID, bankID string) (*models.StokSembako, error) {
-	args := m.Called(sembakoID, bankID)
+func (m *MockPenarikanRepo) FindStokBarang(produkID, bankID string) (*models.StokBarang, error) {
+	args := m.Called(produkID, bankID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).(*models.StokSembako), args.Error(1)
+	return args.Get(0).(*models.StokBarang), args.Error(1)
 }
 
 func (m *MockPenarikanRepo) FindPenarikanByID(penarikanID string) (*models.Penarikan, error) {
@@ -68,9 +89,19 @@ func (m *MockPenarikanRepo) FindPenarikanByID(penarikanID string) (*models.Penar
 	return args.Get(0).(*models.Penarikan), args.Error(1)
 }
 
-func (m *MockPenarikanRepo) FindByNasabahID(nasabahID string, f repositories.PenarikanFilter) ([]models.Penarikan, error) {
+func (m *MockPenarikanRepo) FindRiwayatPenarikan(penarikanID string) ([]repositories.RiwayatPenarikanRow, error) {
+	args := m.Called(penarikanID)
+	return args.Get(0).([]repositories.RiwayatPenarikanRow), args.Error(1)
+}
+
+func (m *MockPenarikanRepo) SaveRiwayatPenarikan(tx *gorm.DB, rw *models.RiwayatPenarikan) error {
+	args := m.Called(tx, rw)
+	return args.Error(0)
+}
+
+func (m *MockPenarikanRepo) FindByNasabahID(nasabahID string, f repositories.PenarikanFilter) ([]repositories.PenarikanListRow, error) {
 	args := m.Called(nasabahID, f)
-	return args.Get(0).([]models.Penarikan), args.Error(1)
+	return args.Get(0).([]repositories.PenarikanListRow), args.Error(1)
 }
 
 func (m *MockPenarikanRepo) FindByBankID(bankID string, f repositories.PenarikanFilter) ([]models.Penarikan, error) {
@@ -91,20 +122,20 @@ func (m *MockPenarikanRepo) LockSaldo(tx *gorm.DB, nasabahID string, rewardID in
 	return args.Get(0).(*models.SaldoRekening), args.Error(1)
 }
 
-func (m *MockPenarikanRepo) LockSembako(tx *gorm.DB, sembakoID, bankID string) (*models.KatalogSembako, error) {
-	args := m.Called(tx, sembakoID, bankID)
+func (m *MockPenarikanRepo) LockProduk(tx *gorm.DB, produkID, bankID string) (*models.KatalogBarang, error) {
+	args := m.Called(tx, produkID, bankID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).(*models.KatalogSembako), args.Error(1)
+	return args.Get(0).(*models.KatalogBarang), args.Error(1)
 }
 
-func (m *MockPenarikanRepo) LockStok(tx *gorm.DB, sembakoID, bankID string) (*models.StokSembako, error) {
-	args := m.Called(tx, sembakoID, bankID)
+func (m *MockPenarikanRepo) LockStok(tx *gorm.DB, produkID, bankID string) (*models.StokBarang, error) {
+	args := m.Called(tx, produkID, bankID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).(*models.StokSembako), args.Error(1)
+	return args.Get(0).(*models.StokBarang), args.Error(1)
 }
 
 func (m *MockPenarikanRepo) LockPenarikan(tx *gorm.DB, penarikanID string) (*models.Penarikan, error) {
@@ -115,7 +146,7 @@ func (m *MockPenarikanRepo) LockPenarikan(tx *gorm.DB, penarikanID string) (*mod
 	return args.Get(0).(*models.Penarikan), args.Error(1)
 }
 
-func (m *MockPenarikanRepo) FindAdminTx(tx *gorm.DB, userID string) (*models.Admin, error) {
+func (m *MockPenarikanRepo) FindAdminAktif(tx *gorm.DB, userID string) (*models.Admin, error) {
 	args := m.Called(tx, userID)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
@@ -123,9 +154,9 @@ func (m *MockPenarikanRepo) FindAdminTx(tx *gorm.DB, userID string) (*models.Adm
 	return args.Get(0).(*models.Admin), args.Error(1)
 }
 
-func (m *MockPenarikanRepo) FindDetailSembako(tx *gorm.DB, penarikanID string) ([]models.DetailPenarikanSembako, error) {
+func (m *MockPenarikanRepo) FindDetailBarang(tx *gorm.DB, penarikanID string) ([]models.DetailPenarikanBarang, error) {
 	args := m.Called(tx, penarikanID)
-	return args.Get(0).([]models.DetailPenarikanSembako), args.Error(1)
+	return args.Get(0).([]models.DetailPenarikanBarang), args.Error(1)
 }
 
 func (m *MockPenarikanRepo) UpdateSaldo(tx *gorm.DB, saldo *models.SaldoRekening, nominal float64) error {
@@ -143,13 +174,13 @@ func (m *MockPenarikanRepo) SavePenarikan(tx *gorm.DB, p *models.Penarikan) erro
 	return args.Error(0)
 }
 
-func (m *MockPenarikanRepo) SaveDetailSembako(tx *gorm.DB, d *models.DetailPenarikanSembako) error {
+func (m *MockPenarikanRepo) SaveDetailBarang(tx *gorm.DB, d *models.DetailPenarikanBarang) error {
 	args := m.Called(tx, d)
 	return args.Error(0)
 }
 
-func (m *MockPenarikanRepo) UpdateStok(tx *gorm.DB, sembakoID, bankID string, delta float64) error {
-	args := m.Called(tx, sembakoID, bankID, delta)
+func (m *MockPenarikanRepo) UpdateStok(tx *gorm.DB, produkID, bankID string, delta float64) error {
+	args := m.Called(tx, produkID, bankID, delta)
 	return args.Error(0)
 }
 

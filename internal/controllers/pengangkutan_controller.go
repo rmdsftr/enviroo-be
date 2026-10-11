@@ -6,7 +6,7 @@ import (
 
 	"enviroo-be/internal/models"
 	"enviroo-be/internal/services"
-	"enviroo-be/pkg/storage"
+	"enviroo-be/internal/adapters/storage"
 
 	"github.com/gin-gonic/gin"
 )
@@ -20,7 +20,6 @@ func NewPengangkutanController(svc services.PengangkutanService, cfStorage *stor
 	return &PengangkutanController{Svc: svc, CFStorage: cfStorage}
 }
 
-// GET /pengangkutan/check/:bsi_id
 func (p *PengangkutanController) CheckJadwalPengangkutan(c *gin.Context) {
 	rows, err := p.Svc.GetJadwalHariIni(c.Param("bsi_id"))
 	if err := handleServiceError(c, err); err != nil {
@@ -32,7 +31,6 @@ func (p *PengangkutanController) CheckJadwalPengangkutan(c *gin.Context) {
 	})
 }
 
-// POST /pengangkutan/start
 func (p *PengangkutanController) StartSesiPengangkutan(c *gin.Context) {
 	var req struct {
 		BSIID      string `json:"bsi_id"       binding:"required"`
@@ -59,7 +57,6 @@ func (p *PengangkutanController) StartSesiPengangkutan(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"message": "Sesi pengangkutan berhasil dimulai", "data": pgk})
 }
 
-// GET /pengangkutan/get-all/:bank_id
 func (p *PengangkutanController) GetAllPengangkutan(c *gin.Context) {
 	rows, err := p.Svc.GetList(c.Param("bank_id"), c.Query("start_date"), c.Query("end_date"))
 	if err := handleServiceError(c, err); err != nil {
@@ -68,7 +65,6 @@ func (p *PengangkutanController) GetAllPengangkutan(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Data pengangkutan berhasil diambil", "data": rows})
 }
 
-// PATCH /pengangkutan/update/:pengangkutan_id/:admin_bsi_id
 func (p *PengangkutanController) UpdatePengangkutanByBSI(c *gin.Context) {
 	var req struct {
 		CurrentStatus string `json:"current_status" binding:"required"`
@@ -95,7 +91,6 @@ func (p *PengangkutanController) UpdatePengangkutanByBSI(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Status pengangkutan berhasil diperbarui", "data": riwayat})
 }
 
-// POST /pengangkutan/request/:bsu_id/:admin_bsu_id
 func (p *PengangkutanController) RequestPengangkutanByBSU(c *gin.Context) {
 	var req struct {
 		Tanggal  string `json:"tanggal"   binding:"required"`
@@ -118,7 +113,6 @@ func (p *PengangkutanController) RequestPengangkutanByBSU(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"message": "Permintaan pengangkutan berhasil diajukan", "data": pgk})
 }
 
-// POST /pengangkutan/preview/:pengangkutan_id
 func (p *PengangkutanController) PreviewPengangkutanSampah(c *gin.Context) {
 	itemsStr := c.PostForm("items")
 	if itemsStr == "" {
@@ -138,7 +132,6 @@ func (p *PengangkutanController) PreviewPengangkutanSampah(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Preview pengangkutan berhasil dihitung", "data": result})
 }
 
-// POST /pengangkutan/input
 func (p *PengangkutanController) InputSampahPengangkutan(c *gin.Context) {
 	if err := c.Request.ParseMultipartForm(10 << 20); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Gagal memproses form data"})
@@ -202,7 +195,6 @@ func (p *PengangkutanController) InputSampahPengangkutan(c *gin.Context) {
 	})
 }
 
-// GET /pengangkutan/detail-sampah/:pengangkutan_id
 func (p *PengangkutanController) DetailSampahPengangkutan(c *gin.Context) {
 	detail, err := p.Svc.GetDetailSampah(c.Param("pengangkutan_id"))
 	if err := handleServiceError(c, err); err != nil {
@@ -214,7 +206,6 @@ func (p *PengangkutanController) DetailSampahPengangkutan(c *gin.Context) {
 	})
 }
 
-// GET /pengangkutan/list-sampah/:bsi_id/:bsu_id
 func (p *PengangkutanController) ListSampahPengangkutan(c *gin.Context) {
 	rows, err := p.Svc.GetSampahList(c.Param("bsi_id"), c.Param("bsu_id"))
 	if err := handleServiceError(c, err); err != nil {
@@ -223,7 +214,6 @@ func (p *PengangkutanController) ListSampahPengangkutan(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "List sampah berhasil diambil", "data": rows})
 }
 
-// GET /pengangkutan/check-sesi-active/:bsu_id
 func (p *PengangkutanController) CheckSesiActivePengangkutan(c *gin.Context) {
 	result, err := p.Svc.CheckSesiAktif(c.Param("bsu_id"))
 	if err := handleServiceError(c, err); err != nil {
@@ -232,7 +222,6 @@ func (p *PengangkutanController) CheckSesiActivePengangkutan(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// GET /pengangkutan/detail-sesi-active/:pengangkutan_id
 func (p *PengangkutanController) DetailSesiActivePengangkutan(c *gin.Context) {
 	result, err := p.Svc.GetDetailSesiAktif(c.Param("pengangkutan_id"))
 	if err := handleServiceError(c, err); err != nil {
@@ -241,7 +230,6 @@ func (p *PengangkutanController) DetailSesiActivePengangkutan(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// GET /pengangkutan/get-all-active/:bsi_id/:admin_id
 func (p *PengangkutanController) GetAllActivePengangkutan(c *gin.Context) {
 	result, err := p.Svc.GetAllAktif(c.Param("bsi_id"), c.Param("admin_id"))
 	if err := handleServiceError(c, err); err != nil {

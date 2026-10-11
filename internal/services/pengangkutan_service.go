@@ -6,15 +6,13 @@ import (
 	"log"
 	"time"
 
+	"enviroo-be/internal/idgen"
 	"enviroo-be/internal/models"
 	"enviroo-be/internal/repositories"
-	"enviroo-be/pkg/utils"
+	"enviroo-be/internal/utils"
 
-	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
-
-// ── Repo interface ─────────────────────────────────────────────────────────
 
 type PengangkutanRepoIface interface {
 	GetJadwalHariIni(bsiID string, todayHari models.HariEnum, mingguKe int, todayDate string) ([]repositories.ListJadwalRow, error)
@@ -24,14 +22,14 @@ type PengangkutanRepoIface interface {
 	FindJadwalStart(bsiID, bsuID string, todayHari models.HariEnum, mingguKe int, todayDate string) (*models.Jadwal, error)
 	GetListByBSI(bsiID, startDate, endDate string) ([]repositories.PengangkutanListRow, error)
 	GetListByBSU(bsuID, startDate, endDate string) ([]repositories.PengangkutanListRow, error)
-	FindPengangkutan(pengangkutanID string) (*models.PengangkutanSampah, error)
+	FindPengangkutan(tx *gorm.DB, pengangkutanID string) (*models.PengangkutanSampah, error)
 	FindAdminByBank(adminID, bankID string) (*models.Admin, error)
 	FindLastRiwayat(db *gorm.DB, pengangkutanID string) (*models.RiwayatPengangkutan, error)
 	SetAdminBSI(db *gorm.DB, pgk *models.PengangkutanSampah, adminID string) error
 	CheckJadwalConflict(bsiID, bsuID string, reqHari models.HariEnum, mingguKe int, reqDateStr, jamMulai, jamSelesai string) (bool, error)
 	FindLatestPengangkutan(bsuID, bsiID string) (*models.PengangkutanSampah, error)
 	FindBSUList(bsiID string) ([]models.BankSampah, error)
-	FindJadwal(jadwalID uuid.UUID) (*models.Jadwal, error)
+	FindJadwal(jadwalID string) (*models.Jadwal, error)
 	GetDetailHeader(pengangkutanID string) (*repositories.PengangkutanDetailHeader, error)
 	GetDetailItems(pengangkutanID string) ([]repositories.PengangkutanDetailItem, error)
 	GetSampahList(bsiID, bsuID string) ([]repositories.SampahPengangkutanRow, error)
@@ -40,7 +38,6 @@ type PengangkutanRepoIface interface {
 	FindAdminsBankAktif(bankID string) ([]repositories.PengangkutanAdminUser, error)
 	FindStok(bankID, sampahID string) (float64, error)
 	FindKatalogWithAll(sampahID string) (*models.KatalogSampah, error)
-	// Tx methods
 	CreatePengangkutan(tx *gorm.DB, p *models.PengangkutanSampah) error
 	CreateRiwayat(tx *gorm.DB, rw *models.RiwayatPengangkutan) error
 	CreateJadwal(tx *gorm.DB, j *models.Jadwal) error
@@ -51,8 +48,6 @@ type PengangkutanRepoIface interface {
 	FindKatalogTx(tx *gorm.DB, sampahID string) (*models.KatalogSampah, error)
 	CreateTabunganSampah(tx *gorm.DB, t *models.TabunganSampah) error
 }
-
-// ── Request / Response types ───────────────────────────────────────────────
 
 type StartSesiReq struct {
 	BSIID      string
@@ -103,8 +98,8 @@ type PreviewPengangkutanResult struct {
 }
 
 type PengangkutanDetail struct {
-	Header repositories.PengangkutanDetailHeader  `json:"header"`
-	Items  []repositories.PengangkutanDetailItem  `json:"items"`
+	Header repositories.PengangkutanDetailHeader `json:"header"`
+	Items  []repositories.PengangkutanDetailItem `json:"items"`
 }
 
 type SesiAktifResult struct {
@@ -150,8 +145,6 @@ type AllAktifResult struct {
 	Data    []PengangkutanAktifItem `json:"data"`
 }
 
-// ── Service interface ──────────────────────────────────────────────────────
-
 type PengangkutanService interface {
 	GetJadwalHariIni(bsiID string) ([]repositories.ListJadwalRow, error)
 	StartSesi(req StartSesiReq) (*models.PengangkutanSampah, error)
@@ -167,8 +160,6 @@ type PengangkutanService interface {
 	GetAllAktif(bsiID, adminID string) (*AllAktifResult, error)
 }
 
-// ── Implementation ─────────────────────────────────────────────────────────
-
 type pengangkutanService struct {
 	db       *gorm.DB
 	repo     PengangkutanRepoIface
@@ -181,7 +172,7 @@ func NewPengangkutanService(db *gorm.DB, repo PengangkutanRepoIface, notifSvc No
 
 func (s *pengangkutanService) GetJadwalHariIni(bsiID string) ([]repositories.ListJadwalRow, error) {
 	now := time.Now()
-	rows, err := s.repo.GetJadwalHariIni(bsiID, hariOf(now), weekOfMonth(now), now.Format("2006-01-02"))
+	rows, err := s.repo.GetJadwalHariIni(bsiID, utils.HariOf(now), utils.WeekOfMonth(now), now.Format("2006-01-02"))
 	if err != nil {
 		return nil, errInternal("Gagal mengambil jadwal pengangkutan: " + err.Error())
 	}
@@ -200,15 +191,14 @@ func (s *pengangkutanService) StartSesi(req StartSesiReq) (*models.PengangkutanS
 	}
 
 	now := time.Now()
-	jadwal, err := s.repo.FindJadwalStart(req.BSIID, req.BSUID, hariOf(now), weekOfMonth(now), now.Format("2006-01-02"))
+	jadwal, err := s.repo.FindJadwalStart(req.BSIID, req.BSUID, utils.HariOf(now), utils.WeekOfMonth(now), now.Format("2006-01-02"))
 	if err != nil {
 		return nil, errNotFound("Jadwal tidak cocok dengan jadwal rutin ataupun khusus")
 	}
-	if req.JadwalID != jadwal.JadwalID.String() {
+	if req.JadwalID != jadwal.JadwalID {
 		return nil, errBadRequest("jadwal_id tidak cocok dengan jadwal hari ini")
 	}
 
-	pengangkutanID := utils.GenerateID("PGK")
 	initStatus := models.StatusOTW
 	initNotes := "Sesi pengangkutan dimulai"
 	if req.IsMandiri {
@@ -216,23 +206,34 @@ func (s *pengangkutanService) StartSesi(req StartSesiReq) (*models.PengangkutanS
 		initNotes = "BSU mengantar sendiri, langsung tiba di BSI"
 	}
 
-	pgk := &models.PengangkutanSampah{
-		PengangkutanID: pengangkutanID,
-		BSIID:          req.BSIID,
-		BSUId:          req.BSUID,
-		AdminBSIID:     &req.AdminBSIID,
-		JadwalID:       jadwal.JadwalID,
-		IsMandiri:      req.IsMandiri,
-	}
-	riwayat := &models.RiwayatPengangkutan{
-		PengangkutanID:     pengangkutanID,
-		StatusPengangkutan: initStatus,
-		ChangedAt:          now,
-		ChangedBy:          req.AdminBSIID,
-		Notes:              initNotes,
-	}
-
+	var pgk *models.PengangkutanSampah
 	txErr := s.db.Transaction(func(tx *gorm.DB) error {
+		pengangkutanID, err := idgen.GeneratePengangkutanID(tx, req.BSIID)
+		if err != nil {
+			return errInternal("Gagal generate pengangkutan ID: " + err.Error())
+		}
+
+		pgk = &models.PengangkutanSampah{
+			PengangkutanID: pengangkutanID,
+			BSIID:          req.BSIID,
+			BSUId:          req.BSUID,
+			AdminBSIID:     &req.AdminBSIID,
+			JadwalID:       jadwal.JadwalID,
+			IsMandiri:      req.IsMandiri,
+		}
+		riwayatPengangkutanID, err := idgen.GenerateRiwayatPengangkutanID(tx, pengangkutanID)
+		if err != nil {
+			return errInternal("Gagal generate riwayat pengangkutan ID: " + err.Error())
+		}
+		riwayat := &models.RiwayatPengangkutan{
+			RiwayatPengangkutanID: riwayatPengangkutanID,
+			PengangkutanID:        pengangkutanID,
+			StatusPengangkutan:    initStatus,
+			ChangedAt:             now,
+			ChangedBy:             req.AdminBSIID,
+			Notes:                 initNotes,
+		}
+
 		if err := s.repo.CreatePengangkutan(tx, pgk); err != nil {
 			return errInternal("Gagal membuat sesi pengangkutan: " + err.Error())
 		}
@@ -264,7 +265,7 @@ func (s *pengangkutanService) GetList(bankID, startDate, endDate string) ([]repo
 }
 
 func (s *pengangkutanService) UpdateStatus(pengangkutanID, adminBSIID string, req UpdateStatusReq) (*models.RiwayatPengangkutan, error) {
-	pgk, err := s.repo.FindPengangkutan(pengangkutanID)
+	pgk, err := s.repo.FindPengangkutan(nil, pengangkutanID)
 	if err != nil {
 		return nil, errNotFound("Data pengangkutan tidak ditemukan")
 	}
@@ -305,14 +306,25 @@ func (s *pengangkutanService) UpdateStatus(pengangkutanID, adminBSIID string, re
 		ChangedBy:          adminBSIID,
 		Notes:              req.Notes,
 	}
-	if err := s.repo.CreateRiwayat(s.db, newRiwayat); err != nil {
-		return nil, errInternal("Gagal memperbarui status pengangkutan: " + err.Error())
+	txErr := s.db.Transaction(func(tx *gorm.DB) error {
+		riwayatPengangkutanID, err := idgen.GenerateRiwayatPengangkutanID(tx, pengangkutanID)
+		if err != nil {
+			return errInternal("Gagal generate riwayat pengangkutan ID: " + err.Error())
+		}
+		newRiwayat.RiwayatPengangkutanID = riwayatPengangkutanID
+		if err := s.repo.CreateRiwayat(tx, newRiwayat); err != nil {
+			return errInternal("Gagal memperbarui status pengangkutan: " + err.Error())
+		}
+		return nil
+	})
+	if txErr != nil {
+		return nil, txErr
 	}
 	return newRiwayat, nil
 }
 
 func (s *pengangkutanService) RequestByBSU(bsuID, adminBSUID string, req RequestBSUReq) (*models.PengangkutanSampah, error) {
-	reqDate, err := parseFlexibleDate(req.Tanggal)
+	reqDate, err := utils.ParseFlexibleDate(req.Tanggal)
 	if err != nil {
 		return nil, errBadRequest("Format tanggal tidak valid. Gunakan YYYY-MM-DD atau RFC3339")
 	}
@@ -341,8 +353,8 @@ func (s *pengangkutanService) RequestByBSU(bsuID, adminBSUID string, req Request
 	}
 
 	reqDateStr := reqDate.Format("2006-01-02")
-	reqHari := hariOf(reqDate)
-	mingguKe := weekOfMonth(reqDate)
+	reqHari := utils.HariOf(reqDate)
+	mingguKe := utils.WeekOfMonth(reqDate)
 
 	conflict, err := s.repo.CheckJadwalConflict(bsiID, bsuID, reqHari, mingguKe, reqDateStr, req.JamMulai, jamSelesai)
 	if err != nil {
@@ -352,43 +364,56 @@ func (s *pengangkutanService) RequestByBSU(bsuID, adminBSUID string, req Request
 		return nil, errConflict("Permintaan ditolak. Jadwal pengangkutan pada waktu tersebut bertabrakan dengan jadwal yang sudah ada.", nil)
 	}
 
-	pengangkutanID := utils.GenerateID("PGK")
 	trueVal, falseVal := true, false
 
 	newJadwal := &models.Jadwal{
-		JadwalID:          uuid.New(),
 		BankID:            bsiID,
-		TargetBankID:      bsuID,
-		Hari:              reqHari,
-		MingguKe:          mingguKe,
+		TargetBankID:      &bsuID,
 		JenisJadwal:       models.JadwalPengangkutan,
 		JamMulai:          req.JamMulai,
 		JamSelesai:        jamSelesai,
 		IsActive:          &trueVal,
 		IsRutin:           &falseVal,
-		Tanggal:           reqDate,
+		Tanggal:           &reqDate,
 		NamaJadwalSpesial: "Request Pengangkutan BSU",
 		CreatedBy:         adminBSUID,
 	}
 	pgk := &models.PengangkutanSampah{
-		PengangkutanID: pengangkutanID,
-		BSIID:          bsiID,
-		BSUId:          bsuID,
-		AdminBSIID:     nil,
-		AdminBSUId:     &adminBSUID,
+		BSIID:      bsiID,
+		BSUId:      bsuID,
+		AdminBSIID: nil,
+		AdminBSUId: &adminBSUID,
 	}
 	riwayat := &models.RiwayatPengangkutan{
-		PengangkutanID:     pengangkutanID,
 		StatusPengangkutan: models.StatusRequested,
 		ChangedAt:          time.Now(),
 		ChangedBy:          adminBSUID,
 		Notes:              req.Notes,
 	}
 
+	var pengangkutanID string
 	txErr := s.db.Transaction(func(tx *gorm.DB) error {
+		jadwalID, err := idgen.GenerateJadwalID(tx, false, models.JadwalPengangkutan, bsuID)
+		if err != nil {
+			return errInternal("Gagal generate jadwal ID: " + err.Error())
+		}
+		newJadwal.JadwalID = jadwalID
+
 		if err := s.repo.CreateJadwal(tx, newJadwal); err != nil {
 			return errInternal("Gagal membuat jadwal baru: " + err.Error())
 		}
+
+		pengangkutanID, err = idgen.GeneratePengangkutanID(tx, bsiID)
+		if err != nil {
+			return errInternal("Gagal generate pengangkutan ID: " + err.Error())
+		}
+		pgk.PengangkutanID = pengangkutanID
+		riwayat.PengangkutanID = pengangkutanID
+		riwayatPengangkutanID, err := idgen.GenerateRiwayatPengangkutanID(tx, pengangkutanID)
+		if err != nil {
+			return errInternal("Gagal generate riwayat pengangkutan ID: " + err.Error())
+		}
+		riwayat.RiwayatPengangkutanID = riwayatPengangkutanID
 		pgk.JadwalID = newJadwal.JadwalID
 		if err := s.repo.CreatePengangkutan(tx, pgk); err != nil {
 			return errInternal("Gagal membuat sesi pengangkutan: " + err.Error())
@@ -417,7 +442,7 @@ func (s *pengangkutanService) RequestByBSU(bsuID, adminBSUID string, req Request
 }
 
 func (s *pengangkutanService) Preview(pengangkutanID string, items []ItemPengangkutanReq) (*PreviewPengangkutanResult, error) {
-	pgk, err := s.repo.FindPengangkutan(pengangkutanID)
+	pgk, err := s.repo.FindPengangkutan(nil, pengangkutanID)
 	if err != nil {
 		return nil, errNotFound("Sesi pengangkutan tidak ditemukan")
 	}
@@ -486,8 +511,8 @@ func (s *pengangkutanService) Input(pengangkutanID, adminBSIID, adminBSUID strin
 	totalItem := len(items)
 
 	txErr := s.db.Transaction(func(tx *gorm.DB) error {
-		var pgk models.PengangkutanSampah
-		if err := tx.Where("pengangkutan_id = ?", pengangkutanID).First(&pgk).Error; err != nil {
+		pgk, err := s.repo.FindPengangkutan(tx, pengangkutanID)
+		if err != nil {
 			return errNotFound("Sesi pengangkutan tidak ditemukan")
 		}
 
@@ -520,17 +545,20 @@ func (s *pengangkutanService) Input(pengangkutanID, adminBSIID, adminBSUID strin
 			}
 		}
 
-		// Tabungan BSU (FIFO) — skip sampah bereward sembako
 		for _, item := range items {
 			katalog, err := s.repo.FindKatalogTx(tx, item.SampahID)
 			if err != nil {
 				return errInternal(fmt.Sprintf("Gagal mengambil info sampah %s", item.SampahID))
 			}
-			if katalog.Reward.NamaReward == models.RewardEnumSembako {
+			if katalog.Reward.NamaReward == models.RewardEnumBarang {
 				continue
 			}
+			tabunganID, err := idgen.GenerateTabunganID(tx, pengangkutanID)
+			if err != nil {
+				return errInternal("Gagal generate tabungan ID: " + err.Error())
+			}
 			tabungan := &models.TabunganSampah{
-				TabunganID: utils.GenerateID("TBG"),
+				TabunganID: tabunganID,
 				BankID:     &pgk.BSUId,
 				SampahID:   item.SampahID,
 				Entitas:    models.EntitasBankSampah,
@@ -562,7 +590,7 @@ func (s *pengangkutanService) Input(pengangkutanID, adminBSIID, adminBSUID strin
 	}
 
 	go func() {
-		pgk, err := s.repo.FindPengangkutan(pengangkutanID)
+		pgk, err := s.repo.FindPengangkutan(nil, pengangkutanID)
 		if err != nil {
 			log.Printf("[Notif] Gagal ambil pengangkutan %s: %v", pengangkutanID, err)
 			return
@@ -655,7 +683,7 @@ func (s *pengangkutanService) CheckSesiAktif(bsuID string) (*SesiAktifResult, er
 }
 
 func (s *pengangkutanService) GetDetailSesiAktif(pengangkutanID string) (*DetailSesiAktifResult, error) {
-	pgk, err := s.repo.FindPengangkutan(pengangkutanID)
+	pgk, err := s.repo.FindPengangkutan(nil, pengangkutanID)
 	if err != nil {
 		return nil, errNotFound("Sesi pengangkutan tidak ditemukan")
 	}
@@ -742,7 +770,7 @@ func (s *pengangkutanService) GetAllAktif(bsiID, adminID string) (*AllAktifResul
 		tanggalStr := ""
 		jamMulai, jamSelesai := "", ""
 		if jadwal, err := s.repo.FindJadwal(pgk.JadwalID); err == nil {
-			if !jadwal.Tanggal.IsZero() {
+			if jadwal.Tanggal != nil {
 				tanggalStr = jadwal.Tanggal.Format("2006-01-02")
 			}
 			jamMulai = jadwal.JamMulai
@@ -765,29 +793,6 @@ func (s *pengangkutanService) GetAllAktif(bsiID, adminID string) (*AllAktifResul
 	}
 
 	return &AllAktifResult{BSIID: bsiID, NamaBSI: bsi.NamaBank, Data: result}, nil
-}
-
-// ── Private helpers ────────────────────────────────────────────────────────
-
-func hariOf(t time.Time) models.HariEnum {
-	return []models.HariEnum{
-		models.Minggu, models.Senin, models.Selasa, models.Rabu,
-		models.Kamis, models.Jumat, models.Sabtu,
-	}[t.Weekday()]
-}
-
-func weekOfMonth(date time.Time) int {
-	firstOfMonth := time.Date(date.Year(), date.Month(), 1, 0, 0, 0, 0, date.Location())
-	firstWeekday := int(firstOfMonth.Weekday())
-	adjustedDay := date.Day() + firstWeekday - 1
-	return (adjustedDay / 7) + 1
-}
-
-func parseFlexibleDate(s string) (time.Time, error) {
-	if t, err := time.Parse("2006-01-02", s); err == nil {
-		return t, nil
-	}
-	return time.Parse(time.RFC3339, s)
 }
 
 func validTransitionBSI(current, next models.StatusPengangkutan) bool {

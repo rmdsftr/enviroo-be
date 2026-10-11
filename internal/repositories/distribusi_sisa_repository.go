@@ -15,8 +15,6 @@ func NewDistribusiSisaRepo(db *gorm.DB) *DistribusiSisaRepo {
 	return &DistribusiSisaRepo{DB: db}
 }
 
-// ── Bank & Setting ──────────────────────────────────────────────────────────
-
 func (r *DistribusiSisaRepo) GetBankByID(bankID string) (*models.BankSampah, error) {
 	var bank models.BankSampah
 	err := r.DB.Where("bank_id = ?", bankID).First(&bank).Error
@@ -43,15 +41,12 @@ func (r *DistribusiSisaRepo) SaveSetting(s *models.SettingSisaBagiHasil) error {
 	return r.DB.Save(s).Error
 }
 
-// ── Preview & Submit ────────────────────────────────────────────────────────
-
 func (r *DistribusiSisaRepo) GetBagiHasilWithBank(bagiHasilID string) (*models.BagiHasil, error) {
 	var bh models.BagiHasil
 	err := r.DB.Preload("Bank").Where("bagi_hasil_id = ?", bagiHasilID).First(&bh).Error
 	return &bh, err
 }
 
-// FindDistribusiByBagiHasil returns (record, found). found=true means a conflict exists.
 func (r *DistribusiSisaRepo) FindDistribusiByBagiHasil(bagiHasilID string) (*models.DistribusiSisa, bool) {
 	var d models.DistribusiSisa
 	if err := r.DB.Where("bagi_hasil_id = ?", bagiHasilID).First(&d).Error; err != nil {
@@ -108,8 +103,6 @@ func (r *DistribusiSisaRepo) GetKontribusiPerBSU(db *gorm.DB, bagiHasilID string
 	return rows, err
 }
 
-// GetTransportSplitPerBSU returns, per BSU, how many kg was delivered mandiri (is_mandiri=true)
-// vs non-mandiri for the given bagi_hasil, by joining perhitungan_sisa → tabungan_sampah → pengangkutan_sampah.
 func (r *DistribusiSisaRepo) GetTransportSplitPerBSU(db *gorm.DB, bagiHasilID string) ([]TransportSplitRow, error) {
 	var rows []TransportSplitRow
 	err := db.Table("perhitungan_sisa ps").
@@ -152,8 +145,6 @@ func (r *DistribusiSisaRepo) GetAdminsByBankID(bankID string) ([]models.Admin, e
 	err := r.DB.Preload("User").Where("bank_id = ?", bankID).Find(&admins).Error
 	return admins, err
 }
-
-// ── Detail & List ───────────────────────────────────────────────────────────
 
 func (r *DistribusiSisaRepo) GetDistribusiSisa(distribusiID string) (*models.DistribusiSisa, error) {
 	var d models.DistribusiSisa

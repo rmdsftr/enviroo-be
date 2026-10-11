@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"enviroo-be/internal/repositories"
 	"enviroo-be/internal/services"
-	"enviroo-be/pkg/storage"
+	"enviroo-be/internal/adapters/storage"
 	"fmt"
 	"net/http"
 
@@ -19,11 +19,11 @@ type PenjualanController struct {
 
 func NewPenjualanController(db *gorm.DB, cfStorage *storage.CloudflareStorage) *PenjualanController {
 	repo := repositories.NewPenjualanRepo(db)
-	svc := services.NewPenjualanService(db, repo)
+	mitraRepo := repositories.NewMitraRepo(db)
+	svc := services.NewPenjualanService(db, repo, mitraRepo)
 	return &PenjualanController{Svc: svc, CFStorage: cfStorage}
 }
 
-// POST /penjualan/preview/:bank_id
 func (pc *PenjualanController) PreviewPenjualanEksternal(c *gin.Context) {
 	if err := c.Request.ParseMultipartForm(10 << 20); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Gagal membaca form data"})
@@ -44,7 +44,6 @@ func (pc *PenjualanController) PreviewPenjualanEksternal(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// POST /penjualan/add-eksternal/:bank_id/:admin_id
 func (pc *PenjualanController) AddNewPenjualanEksternal(c *gin.Context) {
 	if err := c.Request.ParseMultipartForm(10 << 20); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Gagal membaca form data"})
@@ -57,9 +56,10 @@ func (pc *PenjualanController) AddNewPenjualanEksternal(c *gin.Context) {
 		return
 	}
 
-	identitas := c.PostForm("identitas_pembeli")
-	if identitas == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Identitas pembeli wajib diisi"})
+	mitraID := c.PostForm("mitra_id")
+	namaMitra := c.PostForm("nama_mitra")
+	if mitraID == "" && namaMitra == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "mitra_id atau nama_mitra wajib diisi"})
 		return
 	}
 
@@ -83,7 +83,7 @@ func (pc *PenjualanController) AddNewPenjualanEksternal(c *gin.Context) {
 
 	result, svcErr := pc.Svc.SubmitPenjualan(
 		c.Param("bank_id"), c.Param("admin_id"),
-		rewardID, identitas, fotoURL, items,
+		rewardID, mitraID, namaMitra, fotoURL, items,
 	)
 	if svcErr != nil {
 		svcErr2(c, svcErr)
@@ -98,7 +98,6 @@ func (pc *PenjualanController) AddNewPenjualanEksternal(c *gin.Context) {
 	})
 }
 
-// GET /penjualan/riwayat-eksternal/:bank_id
 func (pc *PenjualanController) GetRiwayatPenjualanEksternal(c *gin.Context) {
 	riwayat, err := pc.Svc.GetRiwayat(c.Param("bank_id"), c.Query("start_date"), c.Query("end_date"))
 	if err != nil {
@@ -108,7 +107,6 @@ func (pc *PenjualanController) GetRiwayatPenjualanEksternal(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Riwayat penjualan berhasil diambil", "data": riwayat})
 }
 
-// GET /penjualan/detail-eksternal/:penjualan_id
 func (pc *PenjualanController) DetailPenjualanEksternal(c *gin.Context) {
 	detail, err := pc.Svc.GetDetail(c.Param("penjualan_id"))
 	if err != nil {
@@ -118,19 +116,6 @@ func (pc *PenjualanController) DetailPenjualanEksternal(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Detail penjualan berhasil diambil", "data": detail})
 }
 
-// GET /penjualan/mitra/:bank_id
-func (pc *PenjualanController) GetListMitraPenjualan(c *gin.Context) {
-	mitra, err := pc.Svc.GetMitra(c.Param("bank_id"))
-	if err != nil {
-		svcErr2(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"message": "List mitra berhasil diambil", "data": mitra})
-}
-
-// ── helpers ─────────────────────────────────────────────────────────────────
-
-// parseFormPenjualan extracts reward_id and items_sampah from a multipart form.
 func parseFormPenjualan(c *gin.Context) (rewardID int, items []services.ItemSampahDijual, err error) {
 	rewardIDStr := c.PostForm("reward_id")
 	if _, scanErr := fmt.Sscan(rewardIDStr, &rewardID); scanErr != nil || rewardID <= 0 {
@@ -149,9 +134,6 @@ func parseFormPenjualan(c *gin.Context) (rewardID int, items []services.ItemSamp
 	return rewardID, items, nil
 }
 
-// svcErr2 writes a ServiceError (or generic 500) to the response.
-// Named svcErr2 to avoid collision with svcErr in distribusi_sisa_controller.go
-// within the same package.
 func svcErr2(c *gin.Context, err error) {
 	if se, ok := err.(*services.ServiceError); ok {
 		resp := gin.H{"error": se.Message}

@@ -1,6 +1,7 @@
 package repositories
 
 import (
+	"enviroo-be/internal/idgen"
 	"enviroo-be/internal/models"
 	"time"
 
@@ -14,8 +15,6 @@ type BagiHasilRepo struct {
 func NewBagiHasilRepo(db *gorm.DB) *BagiHasilRepo {
 	return &BagiHasilRepo{DB: db}
 }
-
-// ── Basic reads ─────────────────────────────────────────────────────────────
 
 func (r *BagiHasilRepo) GetBankByID(bankID string) (*models.BankSampah, error) {
 	var bank models.BankSampah
@@ -63,7 +62,6 @@ func (r *BagiHasilRepo) CreatePerhitunganSisa(db *gorm.DB, ps *models.Perhitunga
 	return db.Create(ps).Error
 }
 
-// NasabahRow is a projection from the batch nasabah info query.
 type NasabahRow struct {
 	NasabahID   string
 	NamaNasabah string
@@ -88,30 +86,35 @@ func (r *BagiHasilRepo) GetNasabahWithUser(nasabahID string) (*models.Nasabah, e
 	return &nasabah, err
 }
 
-// ── Writes (accept tx or main DB) ──────────────────────────────────────────
-
 func (r *BagiHasilRepo) SaveTabungan(db *gorm.DB, t *models.TabunganSampah) error {
 	return db.Save(t).Error
 }
 
-// UpsertSchemaHargaNasabah creates or updates the nasabah price schema,
-// recording a history entry when the price changes.
 func (r *BagiHasilRepo) UpsertSchemaHargaNasabah(db *gorm.DB, sampahID string, harga float64, satuan models.SatuanRewardEnum, adminID string) error {
 	var schema models.SchemaHargaSampah
 	if err := db.Where("sampah_id = ? AND level_user = ?", sampahID, models.LevelNasabah).First(&schema).Error; err != nil {
+		schemaID, genErr := idgen.GenerateSchemaHargaID(sampahID, models.LevelNasabah)
+		if genErr != nil {
+			return genErr
+		}
 		return db.Create(&models.SchemaHargaSampah{
-			SampahID: sampahID, LevelUser: models.LevelNasabah,
+			SchemaID: schemaID, SampahID: sampahID, LevelUser: models.LevelNasabah,
 			Harga: harga, SatuanReward: satuan,
 		}).Error
 	}
 	if schema.Harga == harga {
 		return nil
 	}
+	historyID, genErr := idgen.GenerateHistorySampahID(db, schema.SchemaID)
+	if genErr != nil {
+		return genErr
+	}
 	if err := db.Create(&models.KatalogSampahHistory{
-		SchemaID:  int(schema.SchemaID),
-		HargaLama: schema.Harga,
-		HargaBaru: harga,
-		ChangedBy: adminID,
+		HistorySampahID: historyID,
+		SchemaID:        schema.SchemaID,
+		HargaLama:       schema.Harga,
+		HargaBaru:       harga,
+		ChangedBy:       adminID,
 	}).Error; err != nil {
 		return err
 	}
@@ -142,8 +145,6 @@ func (r *BagiHasilRepo) UpdatePenjualanStatus(db *gorm.DB, penjualan *models.Pen
 func (r *BagiHasilRepo) UpdateSaldoRekening(db *gorm.DB, bankID *string, nasabahID *string, rewardID int, reward models.Reward, nilai float64, entitas models.EntitasEnum, adminID string, now time.Time) error {
 	return UpdateSaldoRekening(db, bankID, nasabahID, rewardID, reward, nilai, entitas, adminID, now)
 }
-
-// ── Read endpoints ──────────────────────────────────────────────────────────
 
 func (r *BagiHasilRepo) GetBagiHasilByPenjualan(penjualanID string) (*models.BagiHasil, error) {
 	var bh models.BagiHasil
@@ -181,7 +182,6 @@ func (r *BagiHasilRepo) GetNamaPetugas(adminID string) string {
 	return nama
 }
 
-// FindDistribusiSisaID returns the distribusi_id if already distributed, nil otherwise.
 func (r *BagiHasilRepo) FindDistribusiSisaID(bagiHasilID string) *string {
 	var d models.DistribusiSisa
 	if err := r.DB.Where("bagi_hasil_id = ?", bagiHasilID).First(&d).Error; err != nil {

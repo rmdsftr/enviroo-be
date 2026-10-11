@@ -1,0 +1,5 @@
+# Environment variables
+.env*
+
+# Firebase / GCP credentials
+internal/config/*.json

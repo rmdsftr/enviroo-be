@@ -8,13 +8,30 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// AdminInfo menyimpan user_id dan fcm_token admin aktif (untuk notifikasi)
 type AdminInfo struct {
 	UserID   string
 	FCMToken string
 }
 
-// PenarikanFilter adalah parameter filter untuk query daftar penarikan
+type RiwayatPenarikanRow struct {
+	RiwayatPenarikanID string
+	StatusPenarikan    models.StatusPenarikanEnum
+	Catatan            *string
+	CreatedByRaw       string
+	CreatedByNama      *string
+	CreatedAt          time.Time
+}
+
+type PenarikanListRow struct {
+	PenarikanID      string                     `gorm:"column:penarikan_id"`
+	CreatedAt        *time.Time                 `gorm:"column:created_at"`
+	StatusPenarikan  models.StatusPenarikanEnum `gorm:"column:status_penarikan"`
+	NominalPenarikan float64                    `gorm:"column:nominal_penarikan"`
+	SatuanPenarikan  models.SatuanRewardEnum    `gorm:"column:satuan_penarikan"`
+	RewardID         *int                       `gorm:"column:reward_id"`
+	NamaReward       string                     `gorm:"column:nama_reward"`
+}
+
 type PenarikanFilter struct {
 	Status    string `form:"status"`
 	RewardID  *int   `form:"reward_id"`
@@ -30,7 +47,32 @@ func NewPenarikanRepo(db *gorm.DB) *PenarikanRepo {
 	return &PenarikanRepo{db: db}
 }
 
-// ── Non-transactional reads ────────────────────────────────────────────────
+func (r *PenarikanRepo) conn(tx *gorm.DB) *gorm.DB {
+	if tx != nil {
+		return tx
+	}
+	return r.db
+}
+
+func (r *PenarikanRepo) FindNasabah(tx *gorm.DB, nasabahID string) (*models.Nasabah, error) {
+	var n models.Nasabah
+	err := r.conn(tx).Where("nasabah_id = ?", nasabahID).First(&n).Error
+	return &n, err
+}
+
+func (r *PenarikanRepo) FindNasabahWithUser(nasabahID string) (*models.Nasabah, error) {
+	var n models.Nasabah
+	err := r.db.Preload("User").Where("nasabah_id = ?", nasabahID).First(&n).Error
+	return &n, err
+}
+
+func (r *PenarikanRepo) CountNasabahMilikUser(userID, nasabahID string) (int64, error) {
+	var count int64
+	err := r.db.Model(&models.Nasabah{}).
+		Where("user_id = ? AND nasabah_id = ?", userID, nasabahID).
+		Count(&count).Error
+	return count, err
+}
 
 func (r *PenarikanRepo) FindNasabahAktif(nasabahID string) (*models.Nasabah, error) {
 	var n models.Nasabah
@@ -57,17 +99,17 @@ func (r *PenarikanRepo) FindSaldoRekening(nasabahID string, rewardID int) (*mode
 	return &s, err
 }
 
-func (r *PenarikanRepo) FindSembako(sembakoID, bankID string) (*models.KatalogSembako, error) {
-	var s models.KatalogSembako
-	err := r.db.Preload("MasterSembako").
-		Where("sembako_id = ? AND bank_id = ?", sembakoID, bankID).
+func (r *PenarikanRepo) FindProduk(produkID, bankID string) (*models.KatalogBarang, error) {
+	var s models.KatalogBarang
+	err := r.db.Preload("MasterBarang").
+		Where("produk_id = ? AND bank_id = ?", produkID, bankID).
 		First(&s).Error
 	return &s, err
 }
 
-func (r *PenarikanRepo) FindStokSembako(sembakoID, bankID string) (*models.StokSembako, error) {
-	var s models.StokSembako
-	err := r.db.Where("sembako_id = ? AND bank_id = ?", sembakoID, bankID).First(&s).Error
+func (r *PenarikanRepo) FindStokBarang(produkID, bankID string) (*models.StokBarang, error) {
+	var s models.StokBarang
+	err := r.db.Where("produk_id = ? AND bank_id = ?", produkID, bankID).First(&s).Error
 	return &s, err
 }
 
@@ -77,19 +119,36 @@ func (r *PenarikanRepo) FindPenarikanByID(penarikanID string) (*models.Penarikan
 		Preload("Nasabah.User").
 		Preload("Bank").
 		Preload("Reward").
-		Preload("DetailPenarikanSembako.KatalogSembako.MasterSembako").
+		Preload("DetailPenarikanBarang.KatalogBarang.MasterBarang").
 		Where("penarikan_id = ?", penarikanID).
 		First(&p).Error
 	return &p, err
 }
 
-func (r *PenarikanRepo) FindByNasabahID(nasabahID string, f PenarikanFilter) ([]models.Penarikan, error) {
-	q := r.penarikanBaseQuery().Where("penarikan.nasabah_id = ?", nasabahID)
+func (r *PenarikanRepo) FindRiwayatPenarikan(penarikanID string) ([]RiwayatPenarikanRow, error) {
+	var rows []RiwayatPenarikanRow
+	err := r.db.Table("riwayat_penarikan rp").
+		Select("rp.riwayat_penarikan_id, rp.status_penarikan, rp.catatan, rp.created_by AS created_by_raw, u.nama AS created_by_nama, rp.created_at").
+		Joins("LEFT JOIN users u ON u.user_id = rp.created_by").
+		Where("rp.penarikan_id = ?", penarikanID).
+		Order("rp.created_at ASC").
+		Scan(&rows).Error
+	return rows, err
+}
+
+func (r *PenarikanRepo) FindByNasabahID(nasabahID string, f PenarikanFilter) ([]PenarikanListRow, error) {
+	q := r.db.Table("penarikan").
+		Select(`penarikan.penarikan_id, rp_created.created_at, penarikan.status_penarikan,
+			penarikan.nominal_penarikan, penarikan.satuan_penarikan, penarikan.reward_id,
+			reward.nama_reward`).
+		Joins(`LEFT JOIN riwayat_penarikan rp_created ON rp_created.penarikan_id = penarikan.penarikan_id AND rp_created.status_penarikan = 'pending'`).
+		Joins(`LEFT JOIN reward ON reward.reward_id = penarikan.reward_id`).
+		Where("penarikan.nasabah_id = ?", nasabahID)
 	q = applyPenarikanFilter(q, f)
 
-	var list []models.Penarikan
-	err := q.Order("penarikan.created_at DESC").Find(&list).Error
-	return list, err
+	var rows []PenarikanListRow
+	err := q.Order("rp_created.created_at DESC").Find(&rows).Error
+	return rows, err
 }
 
 func (r *PenarikanRepo) FindByBankID(bankID string, f PenarikanFilter) ([]models.Penarikan, error) {
@@ -97,7 +156,7 @@ func (r *PenarikanRepo) FindByBankID(bankID string, f PenarikanFilter) ([]models
 	q = applyPenarikanFilter(q, f)
 
 	var list []models.Penarikan
-	err := q.Order("penarikan.created_at DESC").Find(&list).Error
+	err := q.Order("rp_created.created_at DESC").Find(&list).Error
 	return list, err
 }
 
@@ -111,8 +170,6 @@ func (r *PenarikanRepo) FindAdminsByBankID(bankID string) ([]AdminInfo, error) {
 	return admins, err
 }
 
-// ── Transactional (caller menyediakan tx dari db.Transaction) ─────────────
-
 func (r *PenarikanRepo) LockSaldo(tx *gorm.DB, nasabahID string, rewardID int) (*models.SaldoRekening, error) {
 	var s models.SaldoRekening
 	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -121,19 +178,19 @@ func (r *PenarikanRepo) LockSaldo(tx *gorm.DB, nasabahID string, rewardID int) (
 	return &s, err
 }
 
-func (r *PenarikanRepo) LockSembako(tx *gorm.DB, sembakoID, bankID string) (*models.KatalogSembako, error) {
-	var s models.KatalogSembako
+func (r *PenarikanRepo) LockProduk(tx *gorm.DB, produkID, bankID string) (*models.KatalogBarang, error) {
+	var s models.KatalogBarang
 	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Preload("MasterSembako").
-		Where("sembako_id = ? AND bank_id = ?", sembakoID, bankID).
+		Preload("MasterBarang").
+		Where("produk_id = ? AND bank_id = ?", produkID, bankID).
 		First(&s).Error
 	return &s, err
 }
 
-func (r *PenarikanRepo) LockStok(tx *gorm.DB, sembakoID, bankID string) (*models.StokSembako, error) {
-	var s models.StokSembako
+func (r *PenarikanRepo) LockStok(tx *gorm.DB, produkID, bankID string) (*models.StokBarang, error) {
+	var s models.StokBarang
 	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("sembako_id = ? AND bank_id = ?", sembakoID, bankID).
+		Where("produk_id = ? AND bank_id = ?", produkID, bankID).
 		First(&s).Error
 	return &s, err
 }
@@ -147,14 +204,14 @@ func (r *PenarikanRepo) LockPenarikan(tx *gorm.DB, penarikanID string) (*models.
 	return &p, err
 }
 
-func (r *PenarikanRepo) FindAdminTx(tx *gorm.DB, userID string) (*models.Admin, error) {
+func (r *PenarikanRepo) FindAdminAktif(tx *gorm.DB, userID string) (*models.Admin, error) {
 	var a models.Admin
-	err := tx.Where("user_id = ?", userID).First(&a).Error
+	err := r.conn(tx).Where("user_id = ? AND status_admin = ?", userID, models.Aktif).First(&a).Error
 	return &a, err
 }
 
-func (r *PenarikanRepo) FindDetailSembako(tx *gorm.DB, penarikanID string) ([]models.DetailPenarikanSembako, error) {
-	var details []models.DetailPenarikanSembako
+func (r *PenarikanRepo) FindDetailBarang(tx *gorm.DB, penarikanID string) ([]models.DetailPenarikanBarang, error) {
+	var details []models.DetailPenarikanBarang
 	err := tx.Where("penarikan_id = ?", penarikanID).Find(&details).Error
 	return details, err
 }
@@ -171,13 +228,17 @@ func (r *PenarikanRepo) SavePenarikan(tx *gorm.DB, p *models.Penarikan) error {
 	return tx.Create(p).Error
 }
 
-func (r *PenarikanRepo) SaveDetailSembako(tx *gorm.DB, d *models.DetailPenarikanSembako) error {
+func (r *PenarikanRepo) SaveRiwayatPenarikan(tx *gorm.DB, rw *models.RiwayatPenarikan) error {
+	return tx.Create(rw).Error
+}
+
+func (r *PenarikanRepo) SaveDetailBarang(tx *gorm.DB, d *models.DetailPenarikanBarang) error {
 	return tx.Create(d).Error
 }
 
-func (r *PenarikanRepo) UpdateStok(tx *gorm.DB, sembakoID, bankID string, delta float64) error {
-	return tx.Model(&models.StokSembako{}).
-		Where("sembako_id = ? AND bank_id = ?", sembakoID, bankID).
+func (r *PenarikanRepo) UpdateStok(tx *gorm.DB, produkID, bankID string, delta float64) error {
+	return tx.Model(&models.StokBarang{}).
+		Where("produk_id = ? AND bank_id = ?", produkID, bankID).
 		Update("stok", gorm.Expr("stok + ?", delta)).Error
 }
 
@@ -185,10 +246,9 @@ func (r *PenarikanRepo) UpdateStatus(tx *gorm.DB, p *models.Penarikan, updates m
 	return tx.Model(p).Updates(updates).Error
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-
 func (r *PenarikanRepo) penarikanBaseQuery() *gorm.DB {
 	return r.db.Model(&models.Penarikan{}).
+		Joins(`LEFT JOIN riwayat_penarikan rp_created ON rp_created.penarikan_id = penarikan.penarikan_id AND rp_created.status_penarikan = 'pending'`).
 		Preload("Nasabah.User").
 		Preload("Bank").
 		Preload("Reward")
@@ -203,14 +263,13 @@ func applyPenarikanFilter(q *gorm.DB, f PenarikanFilter) *gorm.DB {
 	}
 	if f.StartDate != "" {
 		if t, err := time.Parse("2006-01-02", f.StartDate); err == nil {
-			q = q.Where("penarikan.created_at >= ?", t)
+			q = q.Where("rp_created.created_at >= ?", t)
 		}
 	}
 	if f.EndDate != "" {
 		if t, err := time.Parse("2006-01-02", f.EndDate); err == nil {
-			q = q.Where("penarikan.created_at <= ?", t.Add(24*time.Hour-time.Second))
+			q = q.Where("rp_created.created_at <= ?", t.Add(24*time.Hour-time.Second))
 		}
 	}
 	return q
 }
-

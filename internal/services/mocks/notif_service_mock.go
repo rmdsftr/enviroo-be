@@ -2,6 +2,7 @@ package mocks
 
 import (
 	"context"
+	"time"
 
 	"enviroo-be/internal/services"
 
@@ -65,8 +66,33 @@ func (m *MockNotifSvc) NotifPenarikanBerhasil(ctx context.Context, userID, fcmTo
 	return args.Error(0)
 }
 
-func (m *MockNotifSvc) NotifPenarikanDitolak(ctx context.Context, userID, fcmToken string, refID string, alasan string) error {
-	args := m.Called(ctx, userID, fcmToken, refID, alasan)
+func (m *MockNotifSvc) NotifPenarikanDitolak(ctx context.Context, userID, fcmToken string, refID string) error {
+	args := m.Called(ctx, userID, fcmToken, refID)
+	return args.Error(0)
+}
+
+func (m *MockNotifSvc) NotifPenarikanDisetujui(ctx context.Context, userID, fcmToken string, pesanDeadlineJemput string, refID string) error {
+	args := m.Called(ctx, userID, fcmToken, pesanDeadlineJemput, refID)
+	return args.Error(0)
+}
+
+func (m *MockNotifSvc) NotifPenarikanRequestExpired(ctx context.Context, userID, fcmToken string, pesanNilai string, refID string) error {
+	args := m.Called(ctx, userID, fcmToken, pesanNilai, refID)
+	return args.Error(0)
+}
+
+func (m *MockNotifSvc) NotifPenarikanRequestExpiredAdmin(ctx context.Context, userID, fcmToken string, namaNasabah string, pesanNilai string, refID string) error {
+	args := m.Called(ctx, userID, fcmToken, namaNasabah, pesanNilai, refID)
+	return args.Error(0)
+}
+
+func (m *MockNotifSvc) NotifPenarikanPickupExpired(ctx context.Context, userID, fcmToken string, pesanNilai string, refID string) error {
+	args := m.Called(ctx, userID, fcmToken, pesanNilai, refID)
+	return args.Error(0)
+}
+
+func (m *MockNotifSvc) NotifPenarikanPickupExpiredAdmin(ctx context.Context, userID, fcmToken string, namaNasabah string, pesanNilai string, refID string) error {
+	args := m.Called(ctx, userID, fcmToken, namaNasabah, pesanNilai, refID)
 	return args.Error(0)
 }
 
@@ -95,18 +121,13 @@ func (m *MockNotifSvc) NotifPengangkutanBerhasil(ctx context.Context, userID, fc
 	return args.Error(0)
 }
 
-func (m *MockNotifSvc) NotifDistribusiSembakoBerhasil(ctx context.Context, userID, fcmToken string, namaBSU string, totalJenisSembako int, namaBSI string, refID string) error {
-	args := m.Called(ctx, userID, fcmToken, namaBSU, totalJenisSembako, namaBSI, refID)
+func (m *MockNotifSvc) NotifDistribusiBarangBerhasil(ctx context.Context, userID, fcmToken string, namaBSU string, totalJenisBarang int, namaBSI string, refID string) error {
+	args := m.Called(ctx, userID, fcmToken, namaBSU, totalJenisBarang, namaBSI, refID)
 	return args.Error(0)
 }
 
 func (m *MockNotifSvc) NotifPengajuanPenarikan(ctx context.Context, userID, fcmToken string, namaNasabah string, pesanNilai string, refID string) error {
 	args := m.Called(ctx, userID, fcmToken, namaNasabah, pesanNilai, refID)
-	return args.Error(0)
-}
-
-func (m *MockNotifSvc) NotifReminderPenimbangan(ctx context.Context, userID, fcmToken string, namaBank string, jamMulai string, jamSelesai string, refID string) error {
-	args := m.Called(ctx, userID, fcmToken, namaBank, jamMulai, jamSelesai, refID)
 	return args.Error(0)
 }
 
@@ -120,8 +141,33 @@ func (m *MockNotifSvc) NotifReminderPenimbanganH1(ctx context.Context, userID, f
 	return args.Error(0)
 }
 
+func (m *MockNotifSvc) NotifReminderPenimbanganAdminH1(ctx context.Context, userID, fcmToken string, namaBank string, jamMulai string, jamSelesai string, refID string) error {
+	args := m.Called(ctx, userID, fcmToken, namaBank, jamMulai, jamSelesai, refID)
+	return args.Error(0)
+}
+
+func (m *MockNotifSvc) NotifPembatalanPenimbangan(ctx context.Context, userID, fcmToken string, tanggalSesi time.Time, jamMulai string, jamSelesai string, refID string) error {
+	args := m.Called(ctx, userID, fcmToken, tanggalSesi, jamMulai, jamSelesai, refID)
+	return args.Error(0)
+}
+
+func (m *MockNotifSvc) NotifPembatalanPenimbanganAdmin(ctx context.Context, userID, fcmToken string, tanggalSesi time.Time, jamMulai string, jamSelesai string, refID string) error {
+	args := m.Called(ctx, userID, fcmToken, tanggalSesi, jamMulai, jamSelesai, refID)
+	return args.Error(0)
+}
+
 func (m *MockNotifSvc) NotifReminderPengangkutanH1(ctx context.Context, userID, fcmToken string, namaBSU string, namaBSI string, jamMulai string, jamSelesai string, refID string) error {
 	args := m.Called(ctx, userID, fcmToken, namaBSU, namaBSI, jamMulai, jamSelesai, refID)
+	return args.Error(0)
+}
+
+func (m *MockNotifSvc) NotifSesiPenimbanganDibuka(ctx context.Context, userID, fcmToken string, refID string) error {
+	args := m.Called(ctx, userID, fcmToken, refID)
+	return args.Error(0)
+}
+
+func (m *MockNotifSvc) NotifSesiPenimbanganDitutup(ctx context.Context, userID, fcmToken string, refID string) error {
+	args := m.Called(ctx, userID, fcmToken, refID)
 	return args.Error(0)
 }
 

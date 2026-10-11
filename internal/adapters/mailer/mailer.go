@@ -1,4 +1,4 @@
-package utils
+package mailer
 
 import (
 	"enviroo-be/internal/config"
@@ -8,15 +8,12 @@ import (
 	"gopkg.in/gomail.v2"
 )
 
-// EmailParams berisi parameter yang diperlukan untuk mengirim email.
-// Cukup isi To, Subject, dan Body (HTML string) saat memanggil dari controller.
-type EmailParams struct {
-	To      string // Alamat email tujuan
-	Subject string // Subjek email
-	Body    string // Isi email dalam format HTML
+type Params struct {
+	To      string
+	Subject string
+	Body    string
 }
 
-// Mailer menyimpan konfigurasi SMTP yang sudah di-load dari config.
 type Mailer struct {
 	host       string
 	port       int
@@ -25,9 +22,7 @@ type Mailer struct {
 	senderName string
 }
 
-// NewMailer membuat instance Mailer dari Config.
-// Panggil sekali di main.go, lalu pass ke controller yang membutuhkan.
-func NewMailer(cfg *config.Config) *Mailer {
+func New(cfg *config.Config) *Mailer {
 	port, _ := strconv.Atoi(cfg.SMTPPort)
 	return &Mailer{
 		host:       cfg.SMTPHost,
@@ -38,15 +33,7 @@ func NewMailer(cfg *config.Config) *Mailer {
 	}
 }
 
-// SendEmail mengirim email menggunakan konfigurasi SMTP yang sudah tersimpan.
-// Contoh penggunaan di controller:
-//
-//	err := mailer.SendEmail(utils.EmailParams{
-//	    To:      "user@example.com",
-//	    Subject: "Verifikasi Akun Enviroo",
-//	    Body:    "<h1>Halo!</h1><p>Klik link berikut untuk verifikasi...</p>",
-//	})
-func (m *Mailer) SendEmail(params EmailParams) error {
+func (m *Mailer) SendEmail(params Params) error {
 	msg := gomail.NewMessage()
 	msg.SetHeader("From", fmt.Sprintf("%s <%s>", m.senderName, m.email))
 	msg.SetHeader("To", params.To)

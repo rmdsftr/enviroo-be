@@ -4,7 +4,7 @@ import (
 	"context"
 	"enviroo-be/internal/repositories"
 	"enviroo-be/internal/services"
-	"enviroo-be/pkg/utils"
+	"enviroo-be/internal/utils"
 	"fmt"
 	"net/http"
 	"time"
@@ -24,7 +24,6 @@ func NewBagiHasilController(db *gorm.DB, notifSvc services.NotifikasiService) *B
 	return &BagiHasilController{Svc: svc, NotifSvc: notifSvc}
 }
 
-// POST /bagi-hasil/preview/:penjualan_id/:bank_id
 func (bhc *BagiHasilController) PreviewHitungBagiHasil(c *gin.Context) {
 	result, err := bhc.Svc.Preview(c.Param("penjualan_id"), c.Param("bank_id"))
 	if err != nil {
@@ -34,7 +33,6 @@ func (bhc *BagiHasilController) PreviewHitungBagiHasil(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// POST /bagi-hasil/submit/:penjualan_id/:bank_id
 func (bhc *BagiHasilController) SubmitBagiHasil(c *gin.Context) {
 	var req struct {
 		AdminID string `json:"admin_id"`
@@ -76,7 +74,6 @@ func (bhc *BagiHasilController) SubmitBagiHasil(c *gin.Context) {
 	}()
 }
 
-// GET /bagi-hasil/detail/:penjualan_id
 func (bhc *BagiHasilController) GetDetailBagiHasil(c *gin.Context) {
 	result, err := bhc.Svc.GetDetail(c.Param("penjualan_id"))
 	if err != nil {
@@ -86,7 +83,6 @@ func (bhc *BagiHasilController) GetDetailBagiHasil(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// GET /bagi-hasil/list-bh-nasabah/:nasabah_id
 func (bhc *BagiHasilController) GetListBagiHasilPerNasabah(c *gin.Context) {
 	result, err := bhc.Svc.GetListNasabah(c.Param("nasabah_id"), c.Query("start_date"), c.Query("end_date"))
 	if err != nil {
@@ -96,7 +92,6 @@ func (bhc *BagiHasilController) GetListBagiHasilPerNasabah(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// GET /bagi-hasil/detail-bh-nasabah/:penerima_id
 func (bhc *BagiHasilController) GetDetailBagiHasilNasabah(c *gin.Context) {
 	result, err := bhc.Svc.GetDetailNasabah(c.Param("penerima_id"))
 	if err != nil {
@@ -106,21 +101,18 @@ func (bhc *BagiHasilController) GetDetailBagiHasilNasabah(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// GET /bagi-hasil/list-bh-bsu/:bsu_id — deprecated, redirected to distribusi-sisa
 func (bhc *BagiHasilController) GetListBagiHasilPerBsu(c *gin.Context) {
 	c.JSON(http.StatusGone, gin.H{
 		"error": "Endpoint ini sudah tidak digunakan. Gunakan GET /distribusi-sisa untuk melihat bagi hasil BSU.",
 	})
 }
 
-// GET /bagi-hasil/detail-bh-bsu/:penerima_id — deprecated, redirected to distribusi-sisa
 func (bhc *BagiHasilController) GetDetailBagiHasilBSU(c *gin.Context) {
 	c.JSON(http.StatusGone, gin.H{
 		"error": "Endpoint ini sudah tidak digunakan. Gunakan GET /distribusi-sisa/detail/:distribusi_id untuk melihat detail bagi hasil BSU.",
 	})
 }
 
-// GET /bagi-hasil/list-bh-bank/:bank_id
 func (bhc *BagiHasilController) GetListBagiHasilBankPusat(c *gin.Context) {
 	var filter struct {
 		StartDate string `form:"start_date"`
@@ -163,7 +155,6 @@ func (bhc *BagiHasilController) GetListBagiHasilBankPusat(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// GET /bagi-hasil/detail-bh-bank/:bagi_hasil_id
 func (bhc *BagiHasilController) GetDetailBagiHasilBankPusat(c *gin.Context) {
 	result, err := bhc.Svc.GetDetailBankPusat(c.Param("bagi_hasil_id"))
 	if err != nil {

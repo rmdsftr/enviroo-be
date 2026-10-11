@@ -10,13 +10,10 @@ import (
 	"enviroo-be/internal/services"
 	"enviroo-be/internal/services/mocks"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 )
-
-// ── helpers ───────────────────────────────────────────────────────────────────
 
 func pgkBSI() *models.BankSampah {
 	return &models.BankSampah{BankID: "BSI-001", NamaBank: "BSI Utama", JenisBank: models.BSI, IsActive: true}
@@ -63,8 +60,6 @@ func newPgkSvc(t *testing.T) (sqlmock.Sqlmock, *mocks.MockPengangkutanRepo, *moc
 	return dbMock, repo, notif, svc
 }
 
-// ── GetJadwalHariIni ──────────────────────────────────────────────────────────
-
 func TestGetJadwalHariIni_Error(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
 
@@ -107,8 +102,6 @@ func TestGetJadwalHariIni_Sukses(t *testing.T) {
 	assert.Len(t, result, 2)
 	assert.Equal(t, "BSU-001", result[0].BsuID)
 }
-
-// ── StartSesi ─────────────────────────────────────────────────────────────────
 
 func TestStartSesi_BSITidakAktif(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
@@ -153,8 +146,7 @@ func TestStartSesi_JadwalTidakDitemukan(t *testing.T) {
 func TestStartSesi_JadwalIDTidakCocok(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
 
-	jadwalUUID := uuid.New()
-	jadwal := &models.Jadwal{JadwalID: jadwalUUID}
+	jadwal := &models.Jadwal{JadwalID: "JDW-001"}
 
 	repo.On("FindBankAktif", "BSI-001").Return(pgkBSI(), nil)
 	repo.On("FindBSUAktifByParent", "BSU-001", "BSI-001").Return(pgkBSU(), nil)
@@ -164,7 +156,7 @@ func TestStartSesi_JadwalIDTidakCocok(t *testing.T) {
 	result, err := svc.StartSesi(services.StartSesiReq{
 		BSIID:    "BSI-001",
 		BSUID:    "BSU-001",
-		JadwalID: uuid.New().String(), // beda dengan jadwal yang dikembalikan
+		JadwalID: "JDW-999",
 	})
 
 	assert.Nil(t, result)
@@ -175,8 +167,8 @@ func TestStartSesi_JadwalIDTidakCocok(t *testing.T) {
 func TestStartSesi_Sukses_StatusOTW(t *testing.T) {
 	dbMock, repo, _, svc := newPgkSvc(t)
 
-	jadwalUUID := uuid.New()
-	jadwal := &models.Jadwal{JadwalID: jadwalUUID}
+	jadwalID := "JDW-001"
+	jadwal := &models.Jadwal{JadwalID: jadwalID}
 
 	repo.On("FindBankAktif", "BSI-001").Return(pgkBSI(), nil)
 	repo.On("FindBSUAktifByParent", "BSU-001", "BSI-001").Return(pgkBSU(), nil)
@@ -186,6 +178,10 @@ func TestStartSesi_Sukses_StatusOTW(t *testing.T) {
 	repo.On("CreateRiwayat", mock.Anything, mock.Anything).Return(nil)
 
 	dbMock.ExpectBegin()
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"pengangkutan_id"}))
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"riwayat_pengangkutan_id"}))
 	dbMock.ExpectCommit()
 
 	result, err := svc.StartSesi(services.StartSesiReq{
@@ -193,7 +189,7 @@ func TestStartSesi_Sukses_StatusOTW(t *testing.T) {
 		BSUID:      "BSU-001",
 		AdminBSIID: "ADM-001",
 		IsMandiri:  false,
-		JadwalID:   jadwalUUID.String(),
+		JadwalID:   jadwalID,
 	})
 
 	assert.NoError(t, err)
@@ -208,8 +204,8 @@ func TestStartSesi_Sukses_StatusOTW(t *testing.T) {
 func TestStartSesi_Sukses_Mandiri(t *testing.T) {
 	dbMock, repo, _, svc := newPgkSvc(t)
 
-	jadwalUUID := uuid.New()
-	jadwal := &models.Jadwal{JadwalID: jadwalUUID}
+	jadwalID := "JDW-001"
+	jadwal := &models.Jadwal{JadwalID: jadwalID}
 
 	repo.On("FindBankAktif", "BSI-001").Return(pgkBSI(), nil)
 	repo.On("FindBSUAktifByParent", "BSU-001", "BSI-001").Return(pgkBSU(), nil)
@@ -219,6 +215,10 @@ func TestStartSesi_Sukses_Mandiri(t *testing.T) {
 	repo.On("CreateRiwayat", mock.Anything, mock.Anything).Return(nil)
 
 	dbMock.ExpectBegin()
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"pengangkutan_id"}))
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"riwayat_pengangkutan_id"}))
 	dbMock.ExpectCommit()
 
 	result, err := svc.StartSesi(services.StartSesiReq{
@@ -226,15 +226,13 @@ func TestStartSesi_Sukses_Mandiri(t *testing.T) {
 		BSUID:      "BSU-001",
 		AdminBSIID: "ADM-001",
 		IsMandiri:  true,
-		JadwalID:   jadwalUUID.String(),
+		JadwalID:   jadwalID,
 	})
 
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
 	assert.True(t, result.IsMandiri)
 }
-
-// ── GetList ───────────────────────────────────────────────────────────────────
 
 func TestGetList_BankTidakDitemukan(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
@@ -292,12 +290,10 @@ func TestGetList_JenisBankTidakDiizinkan(t *testing.T) {
 	assert.Contains(t, err.Error(), "role bank")
 }
 
-// ── UpdateStatus ──────────────────────────────────────────────────────────────
-
 func TestUpdateStatus_PengangkutanTidakDitemukan(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
 
-	repo.On("FindPengangkutan", "PGK-XXX").Return(nil, errors.New("not found"))
+	repo.On("FindPengangkutan", mock.Anything, "PGK-XXX").Return(nil, errors.New("not found"))
 
 	result, err := svc.UpdateStatus("PGK-XXX", "ADM-001", services.UpdateStatusReq{
 		CurrentStatus: models.StatusOTW,
@@ -312,7 +308,7 @@ func TestUpdateStatus_PengangkutanTidakDitemukan(t *testing.T) {
 func TestUpdateStatus_AdminTidakBerhak(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
 
-	repo.On("FindPengangkutan", "PGK-001").Return(pgkPengangkutan(), nil)
+	repo.On("FindPengangkutan", mock.Anything, "PGK-001").Return(pgkPengangkutan(), nil)
 	repo.On("FindAdminByBank", "ADM-XXX", "BSI-001").Return(nil, errors.New("not found"))
 
 	result, err := svc.UpdateStatus("PGK-001", "ADM-XXX", services.UpdateStatusReq{
@@ -328,7 +324,7 @@ func TestUpdateStatus_AdminTidakBerhak(t *testing.T) {
 func TestUpdateStatus_RiwayatGagal(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
 
-	repo.On("FindPengangkutan", "PGK-001").Return(pgkPengangkutan(), nil)
+	repo.On("FindPengangkutan", mock.Anything, "PGK-001").Return(pgkPengangkutan(), nil)
 	repo.On("FindAdminByBank", "ADM-001", "BSI-001").Return(pgkAdmin(), nil)
 	repo.On("FindLastRiwayat", mock.Anything, "PGK-001").Return(nil, errors.New("db error"))
 
@@ -347,12 +343,12 @@ func TestUpdateStatus_StatusConflict(t *testing.T) {
 
 	riwayat := &models.RiwayatPengangkutan{StatusPengangkutan: models.StatusArrived}
 
-	repo.On("FindPengangkutan", "PGK-001").Return(pgkPengangkutan(), nil)
+	repo.On("FindPengangkutan", mock.Anything, "PGK-001").Return(pgkPengangkutan(), nil)
 	repo.On("FindAdminByBank", "ADM-001", "BSI-001").Return(pgkAdmin(), nil)
 	repo.On("FindLastRiwayat", mock.Anything, "PGK-001").Return(riwayat, nil)
 
 	result, err := svc.UpdateStatus("PGK-001", "ADM-001", services.UpdateStatusReq{
-		CurrentStatus: models.StatusOTW, // mismatch dengan db (Arrived)
+		CurrentStatus: models.StatusOTW,
 		NewStatus:     models.StatusArrived,
 	})
 
@@ -366,11 +362,10 @@ func TestUpdateStatus_TransisiTidakValid(t *testing.T) {
 
 	riwayat := &models.RiwayatPengangkutan{StatusPengangkutan: models.StatusOTW}
 
-	repo.On("FindPengangkutan", "PGK-001").Return(pgkPengangkutan(), nil)
+	repo.On("FindPengangkutan", mock.Anything, "PGK-001").Return(pgkPengangkutan(), nil)
 	repo.On("FindAdminByBank", "ADM-001", "BSI-001").Return(pgkAdmin(), nil)
 	repo.On("FindLastRiwayat", mock.Anything, "PGK-001").Return(riwayat, nil)
 
-	// OTW → Completed bukan transisi yang valid
 	result, err := svc.UpdateStatus("PGK-001", "ADM-001", services.UpdateStatusReq{
 		CurrentStatus: models.StatusOTW,
 		NewStatus:     models.StatusCompleted,
@@ -386,14 +381,14 @@ func TestUpdateStatus_RejectedTanpaNotes(t *testing.T) {
 
 	riwayat := &models.RiwayatPengangkutan{StatusPengangkutan: models.StatusRequested}
 
-	repo.On("FindPengangkutan", "PGK-001").Return(pgkPengangkutan(), nil)
+	repo.On("FindPengangkutan", mock.Anything, "PGK-001").Return(pgkPengangkutan(), nil)
 	repo.On("FindAdminByBank", "ADM-001", "BSI-001").Return(pgkAdmin(), nil)
 	repo.On("FindLastRiwayat", mock.Anything, "PGK-001").Return(riwayat, nil)
 
 	result, err := svc.UpdateStatus("PGK-001", "ADM-001", services.UpdateStatusReq{
 		CurrentStatus: models.StatusRequested,
 		NewStatus:     models.StatusRejected,
-		Notes:         "", // kosong
+		Notes:         "",
 	})
 
 	assert.Nil(t, result)
@@ -406,7 +401,7 @@ func TestUpdateStatus_CanceledTanpaNotes(t *testing.T) {
 
 	riwayat := &models.RiwayatPengangkutan{StatusPengangkutan: models.StatusOTW}
 
-	repo.On("FindPengangkutan", "PGK-001").Return(pgkPengangkutan(), nil)
+	repo.On("FindPengangkutan", mock.Anything, "PGK-001").Return(pgkPengangkutan(), nil)
 	repo.On("FindAdminByBank", "ADM-001", "BSI-001").Return(pgkAdmin(), nil)
 	repo.On("FindLastRiwayat", mock.Anything, "PGK-001").Return(riwayat, nil)
 
@@ -422,14 +417,19 @@ func TestUpdateStatus_CanceledTanpaNotes(t *testing.T) {
 }
 
 func TestUpdateStatus_Sukses(t *testing.T) {
-	_, repo, _, svc := newPgkSvc(t)
+	dbMock, repo, _, svc := newPgkSvc(t)
 
 	riwayat := &models.RiwayatPengangkutan{StatusPengangkutan: models.StatusOTW}
 
-	repo.On("FindPengangkutan", "PGK-001").Return(pgkPengangkutan(), nil)
+	repo.On("FindPengangkutan", mock.Anything, "PGK-001").Return(pgkPengangkutan(), nil)
 	repo.On("FindAdminByBank", "ADM-001", "BSI-001").Return(pgkAdmin(), nil)
 	repo.On("FindLastRiwayat", mock.Anything, "PGK-001").Return(riwayat, nil)
 	repo.On("CreateRiwayat", mock.Anything, mock.Anything).Return(nil)
+
+	dbMock.ExpectBegin()
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"riwayat_pengangkutan_id"}))
+	dbMock.ExpectCommit()
 
 	result, err := svc.UpdateStatus("PGK-001", "ADM-001", services.UpdateStatusReq{
 		CurrentStatus: models.StatusOTW,
@@ -441,8 +441,6 @@ func TestUpdateStatus_Sukses(t *testing.T) {
 	assert.Equal(t, models.StatusArrived, result.StatusPengangkutan)
 	assert.Equal(t, "ADM-001", result.ChangedBy)
 }
-
-// ── RequestByBSU ──────────────────────────────────────────────────────────────
 
 func TestRequestByBSU_FormatTanggalTidakValid(t *testing.T) {
 	_, _, _, svc := newPgkSvc(t)
@@ -575,6 +573,12 @@ func TestRequestByBSU_Sukses(t *testing.T) {
 		Return(nil).Maybe()
 
 	dbMock.ExpectBegin()
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"jadwal_id"}))
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"pengangkutan_id"}))
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"riwayat_pengangkutan_id"}))
 	dbMock.ExpectCommit()
 
 	result, err := svc.RequestByBSU("BSU-001", "ADM-BSU-001", services.RequestBSUReq{
@@ -590,12 +594,10 @@ func TestRequestByBSU_Sukses(t *testing.T) {
 	assert.Equal(t, "BSU-001", result.BSUId)
 }
 
-// ── Preview ───────────────────────────────────────────────────────────────────
-
 func TestPreview_PengangkutanTidakDitemukan(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
 
-	repo.On("FindPengangkutan", "PGK-XXX").Return(nil, errors.New("not found"))
+	repo.On("FindPengangkutan", mock.Anything, "PGK-XXX").Return(nil, errors.New("not found"))
 
 	result, err := svc.Preview("PGK-XXX", []services.ItemPengangkutanReq{{SampahID: "SMP-001", Qty: 1}})
 
@@ -607,7 +609,7 @@ func TestPreview_PengangkutanTidakDitemukan(t *testing.T) {
 func TestPreview_QtyNol(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
 
-	repo.On("FindPengangkutan", "PGK-001").Return(pgkPengangkutan(), nil)
+	repo.On("FindPengangkutan", mock.Anything, "PGK-001").Return(pgkPengangkutan(), nil)
 	repo.On("FindBank", "BSI-001").Return(pgkBSI(), nil)
 	repo.On("FindBank", "BSU-001").Return(pgkBSU(), nil)
 
@@ -621,7 +623,7 @@ func TestPreview_QtyNol(t *testing.T) {
 func TestPreview_QtyNegatif(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
 
-	repo.On("FindPengangkutan", "PGK-001").Return(pgkPengangkutan(), nil)
+	repo.On("FindPengangkutan", mock.Anything, "PGK-001").Return(pgkPengangkutan(), nil)
 	repo.On("FindBank", "BSI-001").Return(pgkBSI(), nil)
 	repo.On("FindBank", "BSU-001").Return(pgkBSU(), nil)
 
@@ -635,7 +637,7 @@ func TestPreview_QtyNegatif(t *testing.T) {
 func TestPreview_SampahTidakDitemukan(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
 
-	repo.On("FindPengangkutan", "PGK-001").Return(pgkPengangkutan(), nil)
+	repo.On("FindPengangkutan", mock.Anything, "PGK-001").Return(pgkPengangkutan(), nil)
 	repo.On("FindBank", "BSI-001").Return(pgkBSI(), nil)
 	repo.On("FindBank", "BSU-001").Return(pgkBSU(), nil)
 	repo.On("FindKatalogWithAll", "SMP-XXX").Return(nil, errors.New("not found"))
@@ -651,7 +653,7 @@ func TestPreview_Sukses_CukupStok(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
 
 	katalog := pgkKatalog("SMP-001", models.RewardEnumUang)
-	repo.On("FindPengangkutan", "PGK-001").Return(pgkPengangkutan(), nil)
+	repo.On("FindPengangkutan", mock.Anything, "PGK-001").Return(pgkPengangkutan(), nil)
 	repo.On("FindBank", "BSI-001").Return(pgkBSI(), nil)
 	repo.On("FindBank", "BSU-001").Return(pgkBSU(), nil)
 	repo.On("FindKatalogWithAll", "SMP-001").Return(katalog, nil)
@@ -679,7 +681,7 @@ func TestPreview_Sukses_StokKurang(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
 
 	katalog := pgkKatalog("SMP-001", models.RewardEnumUang)
-	repo.On("FindPengangkutan", "PGK-001").Return(pgkPengangkutan(), nil)
+	repo.On("FindPengangkutan", mock.Anything, "PGK-001").Return(pgkPengangkutan(), nil)
 	repo.On("FindBank", "BSI-001").Return(pgkBSI(), nil)
 	repo.On("FindBank", "BSU-001").Return(pgkBSU(), nil)
 	repo.On("FindKatalogWithAll", "SMP-001").Return(katalog, nil)
@@ -698,9 +700,9 @@ func TestPreview_Sukses_MultipleItem(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
 
 	katalog1 := pgkKatalog("SMP-001", models.RewardEnumUang)
-	katalog2 := pgkKatalog("SMP-002", models.RewardEnumSembako)
+	katalog2 := pgkKatalog("SMP-002", models.RewardEnumBarang)
 
-	repo.On("FindPengangkutan", "PGK-001").Return(pgkPengangkutan(), nil)
+	repo.On("FindPengangkutan", mock.Anything, "PGK-001").Return(pgkPengangkutan(), nil)
 	repo.On("FindBank", "BSI-001").Return(pgkBSI(), nil)
 	repo.On("FindBank", "BSU-001").Return(pgkBSU(), nil)
 	repo.On("FindKatalogWithAll", "SMP-001").Return(katalog1, nil)
@@ -719,10 +721,8 @@ func TestPreview_Sukses_MultipleItem(t *testing.T) {
 	assert.NotNil(t, result)
 	assert.Equal(t, 2, result.TotalItem)
 	assert.Len(t, result.Items, 2)
-	assert.Equal(t, string(models.RewardEnumSembako), result.Items[1].NamaReward)
+	assert.Equal(t, string(models.RewardEnumBarang), result.Items[1].NamaReward)
 }
-
-// ── GetDetailSampah ───────────────────────────────────────────────────────────
 
 func TestGetDetailSampah_HeaderTidakDitemukan(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
@@ -790,8 +790,6 @@ func TestGetDetailSampah_ItemsNil_Menghasilkan_EmptySlice(t *testing.T) {
 	assert.Len(t, result.Items, 0)
 }
 
-// ── GetSampahList ─────────────────────────────────────────────────────────────
-
 func TestGetSampahList_Error(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
 
@@ -819,8 +817,6 @@ func TestGetSampahList_Sukses(t *testing.T) {
 	assert.Len(t, result, 2)
 	assert.Equal(t, "SMP-001", result[0].SampahID)
 }
-
-// ── CheckSesiAktif ────────────────────────────────────────────────────────────
 
 func TestCheckSesiAktif_BankTidakDitemukan(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
@@ -912,12 +908,10 @@ func TestCheckSesiAktif_StatusAktif(t *testing.T) {
 	assert.Equal(t, string(models.StatusOTW), result.StatusTerkini)
 }
 
-// ── GetDetailSesiAktif ────────────────────────────────────────────────────────
-
 func TestGetDetailSesiAktif_TidakDitemukan(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
 
-	repo.On("FindPengangkutan", "PGK-XXX").Return(nil, errors.New("not found"))
+	repo.On("FindPengangkutan", mock.Anything, "PGK-XXX").Return(nil, errors.New("not found"))
 
 	result, err := svc.GetDetailSesiAktif("PGK-XXX")
 
@@ -929,7 +923,7 @@ func TestGetDetailSesiAktif_TidakDitemukan(t *testing.T) {
 func TestGetDetailSesiAktif_RiwayatGagal(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
 
-	repo.On("FindPengangkutan", "PGK-001").Return(pgkPengangkutan(), nil)
+	repo.On("FindPengangkutan", mock.Anything, "PGK-001").Return(pgkPengangkutan(), nil)
 	repo.On("FindBank", "BSI-001").Return(pgkBSI(), nil)
 	repo.On("FindBank", "BSU-001").Return(pgkBSU(), nil)
 	repo.On("GetRiwayatDetail", "PGK-001").Return(nil, errors.New("db error"))
@@ -950,7 +944,7 @@ func TestGetDetailSesiAktif_Sukses(t *testing.T) {
 		{Status: models.StatusRequested, ChangedAt: now.Add(-time.Hour), ChangedBy: "ADM-BSU-001", NamaPetugas: "", Notes: "Request pickup"},
 	}
 
-	repo.On("FindPengangkutan", "PGK-001").Return(pgkPengangkutan(), nil)
+	repo.On("FindPengangkutan", mock.Anything, "PGK-001").Return(pgkPengangkutan(), nil)
 	repo.On("FindBank", "BSI-001").Return(pgkBSI(), nil)
 	repo.On("FindBank", "BSU-001").Return(pgkBSU(), nil)
 	repo.On("GetRiwayatDetail", "PGK-001").Return(riwayatRows, nil)
@@ -965,10 +959,8 @@ func TestGetDetailSesiAktif_Sukses(t *testing.T) {
 	assert.Equal(t, models.StatusOTW, result.StatusTerkini)
 	assert.Len(t, result.Riwayat, 2)
 	assert.Equal(t, "Admin Utama", result.Riwayat[0].ChangedBy)
-	assert.Equal(t, "ADM-BSU-001", result.Riwayat[1].ChangedBy) // fallback ke ChangedBy jika NamaPetugas kosong
+	assert.Equal(t, "ADM-BSU-001", result.Riwayat[1].ChangedBy)
 }
-
-// ── GetAllAktif ───────────────────────────────────────────────────────────────
 
 func TestGetAllAktif_BSITidakDitemukan(t *testing.T) {
 	_, repo, _, svc := newPgkSvc(t)
@@ -1036,7 +1028,7 @@ func TestGetAllAktif_SkipBSUTerminal(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
-	assert.Len(t, result.Data, 1) // hanya BSU-001 yang aktif
+	assert.Len(t, result.Data, 1)
 	assert.Equal(t, "PGK-001", result.Data[0].PengangkutanID)
 	assert.Equal(t, models.StatusOTW, result.Data[0].StatusTerkini)
 	assert.Equal(t, "09:00", result.Data[0].JamMulai)
@@ -1052,7 +1044,7 @@ func TestGetAllAktif_IsActionAllowed(t *testing.T) {
 		PengangkutanID: "PGK-001",
 		BSIID:          "BSI-001",
 		BSUId:          "BSU-001",
-		AdminBSIID:     &adminLain, // bukan admin yang request
+		AdminBSIID:     &adminLain,
 	}
 	riwayat := &models.RiwayatPengangkutan{StatusPengangkutan: models.StatusOTW}
 	jadwal := &models.Jadwal{JamMulai: "09:00", JamSelesai: "11:00"}
@@ -1063,7 +1055,7 @@ func TestGetAllAktif_IsActionAllowed(t *testing.T) {
 	repo.On("FindLastRiwayat", mock.Anything, "PGK-001").Return(riwayat, nil)
 	repo.On("FindJadwal", mock.Anything).Return(jadwal, nil)
 
-	result, err := svc.GetAllAktif("BSI-001", "ADM-001") // ADM-001 beda dari ADM-002
+	result, err := svc.GetAllAktif("BSI-001", "ADM-001")
 
 	assert.NoError(t, err)
 	assert.NotNil(t, result)

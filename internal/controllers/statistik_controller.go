@@ -53,7 +53,6 @@ func (sc *StatistikController) GetBankSampahStatistik(c *gin.Context) {
 func (sc *StatistikController) GetStatistikSetoranSampahBank(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
-	// Filter range: bulan_mulai+tahun_mulai s/d bulan_selesai+tahun_selesai (inklusif bulan selesai)
 	var startDate, endDate time.Time
 	var filterTanggal bool
 
@@ -73,7 +72,6 @@ func (sc *StatistikController) GetStatistikSetoranSampahBank(c *gin.Context) {
 			return
 		}
 		startDate = time.Date(tm, time.Month(bm), 1, 0, 0, 0, 0, time.UTC)
-		// endDate = awal bulan setelah bulan_selesai (eksklusif) agar inklusif s/d akhir bulan_selesai
 		endDate = time.Date(ts, time.Month(bs+1), 1, 0, 0, 0, 0, time.UTC)
 		if endDate.Before(startDate) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Rentang tanggal tidak valid: bulan_selesai lebih awal dari bulan_mulai"})
@@ -116,7 +114,6 @@ func (sc *StatistikController) GetStatistikSetoranSampahBank(c *gin.Context) {
 		}
 	}
 
-	// Setoran nasabah langsung ke bank ini
 	nasabahQuery := `
 		SELECT
 			ks.sampah_id,
@@ -132,8 +129,7 @@ func (sc *StatistikController) GetStatistikSetoranSampahBank(c *gin.Context) {
 		JOIN sampah s ON s.sarok_id = ks.sarok_id
 		JOIN reward r ON ks.reward_id = r.reward_id
 		JOIN kategori_sampah k ON ks.kategori_id = k.kategori_id
-		WHERE sn.status_setoran = 'berhasil'
-		  AND a.bank_id = ?`
+		WHERE a.bank_id = ?`
 	nasabahArgs := []interface{}{bankID}
 	if filterTanggal {
 		nasabahQuery += ` AND sn.created_at >= ? AND sn.created_at < ?`
@@ -151,7 +147,6 @@ func (sc *StatistikController) GetStatistikSetoranSampahBank(c *gin.Context) {
 		addToAggregated(item)
 	}
 
-	// Setoran dari BSU via paket pengangkutan (khusus BSI)
 	if bank.JenisBank == models.BSI {
 		paketQuery := `
 			SELECT
@@ -214,9 +209,7 @@ func (sc *StatistikController) GetStatistikSetoranSampahBank(c *gin.Context) {
 	})
 }
 
-// GET /statistik/superadmin/ringkasan
 func (sc *StatistikController) GetRingkasanSuperadmin(c *gin.Context) {
-	// ── Bank per jenis + status aktif ────────────────────────────────────────
 	type bankStatRow struct {
 		JenisBank string `gorm:"column:jenis_bank"`
 		IsActive  bool   `gorm:"column:is_active"`
@@ -251,7 +244,6 @@ func (sc *StatistikController) GetRingkasanSuperadmin(c *gin.Context) {
 		s.Total += r.Count
 	}
 
-	// ── Nasabah per status ────────────────────────────────────────────────────
 	type nasabahStatRow struct {
 		Status string `gorm:"column:status"`
 		Count  int64  `gorm:"column:count"`
@@ -292,7 +284,6 @@ func (sc *StatistikController) GetRingkasanSuperadmin(c *gin.Context) {
 	})
 }
 
-// GET /statistik/superadmin/tren-penjualan?tahun=2026
 func (sc *StatistikController) GetTrenPenjualan(c *gin.Context) {
 	tahunStr := c.Query("tahun")
 	tahun := time.Now().Year()
@@ -325,11 +316,10 @@ func (sc *StatistikController) GetTrenPenjualan(c *gin.Context) {
 		return
 	}
 
-	// Susun ke 12 bulan, isi 0 untuk bulan yang tidak ada data
 	type bulanData struct {
-		Bulan    int     `json:"bulan"`
-		Uang     float64 `json:"uang"`
-		Sembako  float64 `json:"sembako"`
+		Bulan  int     `json:"bulan"`
+		Uang   float64 `json:"uang"`
+		Barang float64 `json:"barang"`
 	}
 	tren := make([]bulanData, 12)
 	for i := range tren {
@@ -343,7 +333,7 @@ func (sc *StatistikController) GetTrenPenjualan(c *gin.Context) {
 		case string(models.SatuanRewardEnumRp):
 			tren[r.Bulan-1].Uang = r.Total
 		case string(models.SatuanRewardEnumPoin):
-			tren[r.Bulan-1].Sembako = r.Total
+			tren[r.Bulan-1].Barang = r.Total
 		}
 	}
 
@@ -354,7 +344,6 @@ func (sc *StatistikController) GetTrenPenjualan(c *gin.Context) {
 	})
 }
 
-// GET /statistik/superadmin/ranking-bank?tahun=2026&limit=10
 func (sc *StatistikController) GetRankingBank(c *gin.Context) {
 	limit := 10
 	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 {
@@ -377,7 +366,7 @@ func (sc *StatistikController) GetRankingBank(c *gin.Context) {
 		NamaBank        string  `gorm:"column:nama_bank"`
 		JenisBank       string  `gorm:"column:jenis_bank"`
 		TotalUang       float64 `gorm:"column:total_uang"`
-		TotalSembako    float64 `gorm:"column:total_sembako"`
+		TotalBarang     float64 `gorm:"column:total_barang"`
 		JumlahPenjualan int     `gorm:"column:jumlah_penjualan"`
 	}
 
@@ -387,7 +376,7 @@ func (sc *StatistikController) GetRankingBank(c *gin.Context) {
 			bs.nama_bank,
 			bs.jenis_bank,
 			SUM(CASE WHEN p.satuan_reward = 'Rp'   THEN p.total_penjualan ELSE 0 END) AS total_uang,
-			SUM(CASE WHEN p.satuan_reward = 'poin' THEN p.total_penjualan ELSE 0 END) AS total_sembako,
+			SUM(CASE WHEN p.satuan_reward = 'poin' THEN p.total_penjualan ELSE 0 END) AS total_barang,
 			COUNT(*) AS jumlah_penjualan
 		FROM penjualan p
 		JOIN bank_sampah bs ON bs.bank_id = p.bank_id`
@@ -399,7 +388,7 @@ func (sc *StatistikController) GetRankingBank(c *gin.Context) {
 	}
 	query += `
 		GROUP BY p.bank_id, bs.nama_bank, bs.jenis_bank
-		ORDER BY total_uang DESC, total_sembako DESC
+		ORDER BY total_uang DESC, total_barang DESC
 		LIMIT ?`
 	args = append(args, limit)
 
@@ -421,11 +410,6 @@ func (sc *StatistikController) GetRankingBank(c *gin.Context) {
 	})
 }
 
-// GET /statistik/penjualan-sampah/:bank_id
-//
-// Query params (optional):
-//
-//	bulan_mulai, tahun_mulai, bulan_selesai, tahun_selesai
 func (sc *StatistikController) GetStatistikPenjualanSampahBank(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
@@ -521,11 +505,6 @@ func (sc *StatistikController) GetStatistikPenjualanSampahBank(c *gin.Context) {
 	})
 }
 
-// GET /statistik/masuk-sampah/:bank_id
-//
-// Query params (optional):
-//
-//	bulan_mulai, tahun_mulai, bulan_selesai, tahun_selesai
 func (sc *StatistikController) GetStatistikMasukSampahBSU(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
@@ -614,7 +593,6 @@ func (sc *StatistikController) GetStatistikMasukSampahBSU(c *gin.Context) {
 	})
 }
 
-// GET /statistik/superadmin/volume-sampah?bulan=3&tahun=2026
 func (sc *StatistikController) GetVolumeSampahNasabah(c *gin.Context) {
 	type VolumeRow struct {
 		Bulan    int     `gorm:"column:bulan"     json:"bulan"`
@@ -663,7 +641,6 @@ func (sc *StatistikController) GetVolumeSampahNasabah(c *gin.Context) {
 func (sc *StatistikController) GetKontribusiNasabah(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
-	// ── Date filter ──────────────────────────────────────────────────────────
 	var startDate, endDate time.Time
 	var filterTanggal bool
 
@@ -691,7 +668,6 @@ func (sc *StatistikController) GetKontribusiNasabah(c *gin.Context) {
 		filterTanggal = true
 	}
 
-	// ── Sort & pagination ────────────────────────────────────────────────────
 	validSorts := map[string]string{
 		"setoran": "jumlah_setoran",
 		"kg":      "total_kg",
@@ -715,14 +691,12 @@ func (sc *StatistikController) GetKontribusiNasabah(c *gin.Context) {
 	}
 	offset := (page - 1) * limit
 
-	// ── Bank validation ──────────────────────────────────────────────────────
 	var bank models.BankSampah
 	if err := sc.DB.Where("bank_id = ?", bankID).First(&bank).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Bank tidak ditemukan"})
 		return
 	}
 
-	// ── Build subqueries ─────────────────────────────────────────────────────
 	selectCols := `
 		n.nasabah_id,
 		u.nama AS nama_nasabah,
@@ -751,21 +725,18 @@ func (sc *StatistikController) GetKontribusiNasabah(c *gin.Context) {
 		dateArgs = []interface{}{startDate, endDate}
 	}
 
-	// q1: nasabah langsung bank ini
-	q1 := fmt.Sprintf(`SELECT %s %s JOIN admin a ON sn.admin_id = a.admin_id WHERE sn.status_setoran = 'berhasil' AND a.bank_id = ?%s%s`,
+	q1 := fmt.Sprintf(`SELECT %s %s JOIN admin a ON sn.admin_id = a.admin_id WHERE a.bank_id = ?%s%s`,
 		selectCols, joinClause, dateFilter, groupBy)
 	args1 := append([]interface{}{bankID}, dateArgs...)
 
-	// q2: nasabah BSU di bawah BSI (khusus BSI)
 	q2 := ""
 	args2 := []interface{}{}
 	if bank.JenisBank == models.BSI {
-		q2 = fmt.Sprintf(`SELECT %s %s WHERE sn.status_setoran = 'berhasil' AND b.parent_bank_id = ? AND b.jenis_bank = 'bsu'%s%s`,
+		q2 = fmt.Sprintf(`SELECT %s %s WHERE b.parent_bank_id = ? AND b.jenis_bank = 'bsu'%s%s`,
 			selectCols, joinClause, dateFilter, groupBy)
 		args2 = append([]interface{}{bankID}, dateArgs...)
 	}
 
-	// ── Paginated data query ─────────────────────────────────────────────────
 	type KontribusiItem struct {
 		NasabahID     string  `gorm:"column:nasabah_id" json:"nasabah_id"`
 		NamaNasabah   string  `gorm:"column:nama_nasabah" json:"nama_nasabah"`
@@ -804,20 +775,17 @@ func (sc *StatistikController) GetKontribusiNasabah(c *gin.Context) {
 		return
 	}
 
-	// ── Bank totals (untuk kalkulasi persentase di frontend) ─────────────────
 	type BankTotals struct {
 		SumKg    float64 `gorm:"column:sum_kg"`
 		SumPcs   float64 `gorm:"column:sum_pcs"`
 		SumLiter float64 `gorm:"column:sum_liter"`
 	}
 
-	// totalsSelectRaw: dipakai langsung di query dengan table alias (untuk non-BSI)
 	totalsSelectRaw := `
 		COALESCE(SUM(CASE WHEN s.satuan = 'kg'    THEN dsn.qty ELSE 0 END), 0) AS sum_kg,
 		COALESCE(SUM(CASE WHEN s.satuan = 'pcs'   THEN dsn.qty ELSE 0 END), 0) AS sum_pcs,
 		COALESCE(SUM(CASE WHEN s.satuan = 'liter' THEN dsn.qty ELSE 0 END), 0) AS sum_liter`
 
-	// totalsSelectCTE: dipakai pada outer SELECT dari CTE combined (kolom tanpa alias tabel)
 	totalsSelectCTE := `
 		COALESCE(SUM(CASE WHEN satuan = 'kg'    THEN qty ELSE 0 END), 0) AS sum_kg,
 		COALESCE(SUM(CASE WHEN satuan = 'pcs'   THEN qty ELSE 0 END), 0) AS sum_pcs,
@@ -829,17 +797,17 @@ func (sc *StatistikController) GetKontribusiNasabah(c *gin.Context) {
 		totalsQuery = fmt.Sprintf(`
 			WITH t1 AS (
 				SELECT dsn.qty, s.satuan %s JOIN admin a ON sn.admin_id = a.admin_id
-				WHERE sn.status_setoran = 'berhasil' AND a.bank_id = ?%s
+				WHERE a.bank_id = ?%s
 			), t2 AS (
 				SELECT dsn.qty, s.satuan %s
-				WHERE sn.status_setoran = 'berhasil' AND b.parent_bank_id = ? AND b.jenis_bank = 'bsu'%s
+				WHERE b.parent_bank_id = ? AND b.jenis_bank = 'bsu'%s
 			), combined AS (SELECT * FROM t1 UNION ALL SELECT * FROM t2)
 			SELECT %s FROM combined`, joinClause, dateFilter, joinClause, dateFilter, totalsSelectCTE)
 		totalsArgs = append(append([]interface{}{bankID}, dateArgs...), append([]interface{}{bankID}, dateArgs...)...)
 	} else {
 		totalsQuery = fmt.Sprintf(`
 			SELECT %s %s JOIN admin a ON sn.admin_id = a.admin_id
-			WHERE sn.status_setoran = 'berhasil' AND a.bank_id = ?%s`,
+			WHERE a.bank_id = ?%s`,
 			totalsSelectRaw, joinClause, dateFilter)
 		totalsArgs = append([]interface{}{bankID}, dateArgs...)
 	}
@@ -850,7 +818,6 @@ func (sc *StatistikController) GetKontribusiNasabah(c *gin.Context) {
 		return
 	}
 
-	// ── Pagination metadata ──────────────────────────────────────────────────
 	totalCount := 0
 	if len(hasil) > 0 {
 		totalCount = hasil[0].TotalCount

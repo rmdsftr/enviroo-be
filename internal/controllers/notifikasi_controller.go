@@ -19,8 +19,6 @@ func NewNotifikasiController(svc services.NotifikasiService) *NotifikasiControll
 	return &NotifikasiController{Svc: svc}
 }
 
-// roleTarget menentukan role_target berdasarkan role JWT:
-// nasabah → "nasabah", semua admin/petugas → "admin"
 func roleTarget(role models.RoleAdmin) string {
 	if role == models.RoleNasabah {
 		return "nasabah"
@@ -28,7 +26,6 @@ func roleTarget(role models.RoleAdmin) string {
 	return "admin"
 }
 
-// GET /notifikasi/list?page=1&limit=20
 func (nc *NotifikasiController) GetList(c *gin.Context) {
 	claims, ok := middleware.GetClaims(c)
 	if !ok {
@@ -57,7 +54,6 @@ func (nc *NotifikasiController) GetList(c *gin.Context) {
 	})
 }
 
-// PATCH /notifikasi/read/:notifikasi_id
 func (nc *NotifikasiController) MarkAsRead(c *gin.Context) {
 	notifikasiID := c.Param("notifikasi_id")
 
@@ -75,7 +71,6 @@ func (nc *NotifikasiController) MarkAsRead(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Notifikasi ditandai sudah dibaca"})
 }
 
-// PATCH /notifikasi/read-all
 func (nc *NotifikasiController) MarkAllAsRead(c *gin.Context) {
 	claims, ok := middleware.GetClaims(c)
 	if !ok {
@@ -91,7 +86,6 @@ func (nc *NotifikasiController) MarkAllAsRead(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Semua notifikasi ditandai sudah dibaca"})
 }
 
-// GET /notifikasi/unread-count
 func (nc *NotifikasiController) UnreadCount(c *gin.Context) {
 	claims, ok := middleware.GetClaims(c)
 	if !ok {

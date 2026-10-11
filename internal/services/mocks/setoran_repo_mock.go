@@ -52,6 +52,11 @@ func (m *MockSetoranRepo) FindKatalogSampah(sampahID string) (*models.KatalogSam
 	return args.Get(0).(*models.KatalogSampah), args.Error(1)
 }
 
+func (m *MockSetoranRepo) InsentifSampahDilayani(tx *gorm.DB, bankID, sampahID string) (bool, error) {
+	args := m.Called(tx, bankID, sampahID)
+	return args.Bool(0), args.Error(1)
+}
+
 func (m *MockSetoranRepo) FindBankSampah(bankID string) (*models.BankSampah, error) {
 	args := m.Called(bankID)
 	if args.Get(0) == nil {

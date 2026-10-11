@@ -1,12 +1,12 @@
 package services
 
 import (
+	"enviroo-be/internal/idgen"
 	"enviroo-be/internal/models"
-	"enviroo-be/pkg/utils"
+	"enviroo-be/internal/repositories"
+	"enviroo-be/internal/utils"
+	"errors"
 	"fmt"
-	"regexp"
-	"sort"
-	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -15,7 +15,7 @@ import (
 type PenjualanRepoIface interface {
 	GetBankByID(bankID string) (*models.BankSampah, error)
 	GetRewardByID(db *gorm.DB, rewardID int) (*models.Reward, error)
-	GetPersenNasabah(db *gorm.DB, bankID string, rewardID int) float64
+	GetPersenNasabah(db *gorm.DB, bankID string, rewardID int) (float64, error)
 	GetKatalogSampah(db *gorm.DB, sampahID string) (*models.KatalogSampah, error)
 	GetStokSampah(db *gorm.DB, bankID, sampahID string) (*models.StokSampah, error)
 	GetSchemaHarga(db *gorm.DB, sampahID string, level models.LevelUser) (*models.SchemaHargaSampah, error)
@@ -25,22 +25,21 @@ type PenjualanRepoIface interface {
 	DecrStokSampah(db *gorm.DB, bankID, sampahID string, newStok float64) error
 	CreatePenjualan(db *gorm.DB, p *models.Penjualan) error
 	CreateDetailPenjualan(db *gorm.DB, details []models.DetailPenjualan) error
+	GetRiwayatPenjualan(bankID string, start, end *time.Time) ([]repositories.RiwayatPenjualanRow, error)
 	GetPenjualan(penjualanID string) (*models.Penjualan, error)
 	GetDetailItems(penjualanID string) ([]models.DetailPenjualan, error)
 	GetAdminNama(adminID string) string
-	GetDistinctMitra(bankID string) ([]string, error)
 }
 
 type PenjualanService struct {
-	db   *gorm.DB
-	repo PenjualanRepoIface
+	db        *gorm.DB
+	repo      PenjualanRepoIface
+	mitraRepo MitraRepoIface
 }
 
-func NewPenjualanService(db *gorm.DB, repo PenjualanRepoIface) *PenjualanService {
-	return &PenjualanService{db: db, repo: repo}
+func NewPenjualanService(db *gorm.DB, repo PenjualanRepoIface, mitraRepo MitraRepoIface) *PenjualanService {
+	return &PenjualanService{db: db, repo: repo, mitraRepo: mitraRepo}
 }
-
-// ── Request types ───────────────────────────────────────────────────────────
 
 type ItemSampahDijual struct {
 	SampahID  string  `json:"sampah_id" binding:"required"`
@@ -48,11 +47,10 @@ type ItemSampahDijual struct {
 	HargaJual float64 `json:"harga_jual" binding:"required"`
 }
 
-// ── Response types ──────────────────────────────────────────────────────────
-
 type DetailKalkulasiItem struct {
 	SampahID             string  `json:"sampah_id"`
 	NamaSampah           string  `json:"nama_sampah"`
+	Satuan               models.SatuanEnum  `json:"satuan"`
 	Qty                  float64 `json:"qty"`
 	HargaJual            float64 `json:"harga_jual"`
 	Subtotal             float64 `json:"subtotal"`
@@ -67,70 +65,73 @@ type PreviewPenjualanResp struct {
 }
 
 type SubmitPenjualanResp struct {
-	PenjualanID     string                    `json:"penjualan_id"`
-	TotalPenjualan  float64                   `json:"total_penjualan"`
-	Satuan          models.SatuanRewardEnum   `json:"satuan"`
+	PenjualanID     string                     `json:"penjualan_id"`
+	TotalPenjualan  float64                    `json:"total_penjualan"`
+	Satuan          models.SatuanRewardEnum    `json:"satuan"`
 	StatusBagiHasil models.StatusBagiHasilEnum `json:"status_bagi_hasil"`
 }
 
 type RiwayatPenjualanItem struct {
-	PenjualanID      string                    `json:"penjualan_id"`
-	IdentitasPembeli string                    `json:"identitas_pembeli"`
-	TotalItem        int                       `json:"total_item"`
-	TotalPenjualan   float64                   `json:"total_penjualan"`
-	NamaReward       string                    `json:"nama_reward"`
-	SatuanReward     models.SatuanRewardEnum   `json:"satuan_reward"`
-	BuktiFoto        string                    `json:"bukti_foto"`
-	CreatedAt        time.Time                 `json:"created_at"`
-	AdminName        string                    `json:"admin_name"`
-	StatusBagiHasil  models.StatusBagiHasilEnum `json:"status_bagi_hasil"`
+	PenjualanID     string                     `json:"penjualan_id"`
+	MitraID         string                     `json:"mitra_id"`
+	NamaMitra       string                     `json:"nama_mitra"`
+	TotalItem       int                        `json:"total_item"`
+	TotalPenjualan  float64                    `json:"total_penjualan"`
+	NamaReward      string                     `json:"nama_reward"`
+	SatuanReward    models.SatuanRewardEnum    `json:"satuan_reward"`
+	BuktiFoto       string                     `json:"bukti_foto"`
+	CreatedAt       time.Time                  `json:"created_at"`
+	AdminName       string                     `json:"admin_name"`
+	StatusBagiHasil models.StatusBagiHasilEnum `json:"status_bagi_hasil"`
 }
 
 type SampahDetailItem struct {
-	SampahID             string  `json:"sampah_id"`
-	NamaSampah           string  `json:"nama_sampah"`
-	Qty                  float64 `json:"qty"`
-	HargaJual            float64 `json:"harga_jual"`
-	SubtotalPenjualan    float64 `json:"subtotal_penjualan"`
-	HargaNasabahSnapshot float64 `json:"harga_nasabah_snapshot"`
+	SampahID             string            `json:"sampah_id"`
+	NamaSampah           string            `json:"nama_sampah"`
+	Satuan               models.SatuanEnum `json:"satuan"`
+	Qty                  float64           `json:"qty"`
+	HargaJual            float64           `json:"harga_jual"`
+	SubtotalPenjualan    float64           `json:"subtotal_penjualan"`
+	HargaNasabahSnapshot float64           `json:"harga_nasabah_snapshot"`
 }
 
 type DetailPenjualanResp struct {
-	PenjualanID      string                    `json:"penjualan_id"`
-	BankID           string                    `json:"bank_id"`
-	IdentitasPembeli string                    `json:"identitas_pembeli"`
-	TotalItem        int                       `json:"total_item"`
-	TotalPenjualan   float64                   `json:"total_penjualan"`
-	SatuanReward     models.SatuanRewardEnum   `json:"satuan_reward"`
-	NamaReward       models.RewardEnum         `json:"nama_reward"`
-	BuktiFoto        string                    `json:"bukti_foto"`
-	CreatedAt        time.Time                 `json:"created_at"`
-	AdminName        string                    `json:"admin_name"`
-	StatusBagiHasil  models.StatusBagiHasilEnum `json:"status_bagi_hasil"`
-	ItemsSampah      []SampahDetailItem        `json:"items_sampah"`
+	PenjualanID     string                     `json:"penjualan_id"`
+	BankID          string                     `json:"bank_id"`
+	NamaBank        string                     `json:"nama_bank"`
+	MitraID         string                     `json:"mitra_id"`
+	NamaMitra       string                     `json:"nama_mitra"`
+	TotalItem       int                        `json:"total_item"`
+	TotalPenjualan  float64                    `json:"total_penjualan"`
+	SatuanReward    models.SatuanRewardEnum    `json:"satuan_reward"`
+	NamaReward      models.RewardEnum          `json:"nama_reward"`
+	BuktiFoto       string                     `json:"bukti_foto"`
+	CreatedAt       time.Time                  `json:"created_at"`
+	AdminName       string                     `json:"admin_name"`
+	StatusBagiHasil models.StatusBagiHasilEnum `json:"status_bagi_hasil"`
+	ItemsSampah     []SampahDetailItem         `json:"items_sampah"`
 }
-
-type MitraResp struct {
-	Nama string `json:"nama"`
-}
-
-// ── Private helpers ─────────────────────────────────────────────────────────
 
 func satuanFromReward(r *models.Reward) models.SatuanRewardEnum {
-	if r.NamaReward == models.RewardEnumSembako {
+	if r.NamaReward == models.RewardEnumBarang {
 		return models.SatuanRewardEnumPoin
 	}
 	return models.SatuanRewardEnumRp
 }
 
-// hitungKalkulasi is a pure read-only calculation. db can be main or tx.
 func (s *PenjualanService) hitungKalkulasi(
 	db *gorm.DB,
 	bankID string,
 	rewardID int,
 	items []ItemSampahDijual,
 ) (*PreviewPenjualanResp, error) {
-	persenNasabah := s.repo.GetPersenNasabah(db, bankID, rewardID)
+	persenNasabah, err := s.repo.GetPersenNasabah(db, bankID, rewardID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errBadRequest("Bank belum mengatur bagi hasil untuk jenis insentif ini. Atur dulu di menu nilai reward sebelum melakukan penjualan")
+		}
+		return nil, errInternal("Gagal mengambil persentase bagi hasil: " + err.Error())
+	}
 
 	reward, err := s.repo.GetRewardByID(db, rewardID)
 	if err != nil {
@@ -162,6 +163,7 @@ func (s *PenjualanService) hitungKalkulasi(
 		detailItems = append(detailItems, DetailKalkulasiItem{
 			SampahID:             item.SampahID,
 			NamaSampah:           sampah.Sarok.NamaSampah,
+			Satuan:               sampah.Sarok.Satuan,
 			Qty:                  item.Qty,
 			HargaJual:            item.HargaJual,
 			Subtotal:             subtotal,
@@ -176,8 +178,6 @@ func (s *PenjualanService) hitungKalkulasi(
 		DetailItems:    detailItems,
 	}, nil
 }
-
-// ── Service Methods ──────────────────────────────────────────────────────────
 
 func (s *PenjualanService) PreviewPenjualan(bankID string, rewardID int, items []ItemSampahDijual) (*PreviewPenjualanResp, error) {
 	bank, err := s.repo.GetBankByID(bankID)
@@ -198,7 +198,7 @@ func (s *PenjualanService) PreviewPenjualan(bankID string, rewardID int, items [
 func (s *PenjualanService) SubmitPenjualan(
 	bankID, adminID string,
 	rewardID int,
-	identitas, fotoURL string,
+	mitraID, namaMitra, fotoURL string,
 	items []ItemSampahDijual,
 ) (*SubmitPenjualanResp, error) {
 	bank, err := s.repo.GetBankByID(bankID)
@@ -209,18 +209,26 @@ func (s *PenjualanService) SubmitPenjualan(
 		return nil, errForbidden("BSU tidak diizinkan melakukan penjualan eksternal. Hanya BSI/BSM.")
 	}
 
-	// Fetch reward outside transaction (read-only, needed for satuan)
 	reward, err := s.repo.GetRewardByID(s.db, rewardID)
 	if err != nil {
 		return nil, errBadRequest("Reward tidak ditemukan")
 	}
 	satuan := satuanFromReward(reward)
-	persenNasabah := s.repo.GetPersenNasabah(s.db, bankID, rewardID)
+	persenNasabah, err := s.repo.GetPersenNasabah(s.db, bankID, rewardID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errBadRequest("Bank belum mengatur bagi hasil untuk jenis insentif ini. Atur dulu di menu nilai reward sebelum melakukan penjualan")
+		}
+		return nil, errInternal("Gagal mengambil persentase bagi hasil: " + err.Error())
+	}
 
 	var result *SubmitPenjualanResp
 
 	txErr := s.db.Transaction(func(tx *gorm.DB) error {
-		penjualanID := utils.GenerateBankRelatedID(bankID)
+		penjualanID, err := idgen.GeneratePenjualanID(tx, rewardID, bankID)
+		if err != nil {
+			return errInternal("Gagal generate penjualan ID: " + err.Error())
+		}
 		var totalPenjualan float64
 		detailPenjualans := make([]models.DetailPenjualan, 0, len(items))
 
@@ -239,12 +247,15 @@ func (s *PenjualanService) SubmitPenjualan(
 					sampah.Sarok.NamaSampah, utils.FormatFloat(stok.Stok), utils.FormatFloat(item.Qty)))
 			}
 
-			// Schema harga: create if missing, update+history if price changed
 			schema, schemaErr := s.repo.GetSchemaHarga(tx, item.SampahID, models.LevelEksternal)
 			if schemaErr != nil {
-				// Not found — create new schema
 				rewardSampah, _ := s.repo.GetRewardByID(tx, sampah.RewardID)
+				schemaID, genErr := idgen.GenerateSchemaHargaID(item.SampahID, models.LevelEksternal)
+				if genErr != nil {
+					return errInternal("Gagal generate schema harga ID: " + genErr.Error())
+				}
 				newSchema := &models.SchemaHargaSampah{
+					SchemaID:  schemaID,
 					SampahID:  item.SampahID,
 					LevelUser: models.LevelEksternal,
 					Harga:     item.HargaJual,
@@ -256,12 +267,16 @@ func (s *PenjualanService) SubmitPenjualan(
 					return errInternal("Gagal membuat schema harga: " + err.Error())
 				}
 			} else if schema.Harga != item.HargaJual {
-				// Price changed — record history then update
+				historyID, genErr := idgen.GenerateHistorySampahID(tx, schema.SchemaID)
+				if genErr != nil {
+					return errInternal("Gagal generate history sampah ID: " + genErr.Error())
+				}
 				history := &models.KatalogSampahHistory{
-					SchemaID:  int(schema.SchemaID),
-					HargaLama: schema.Harga,
-					HargaBaru: item.HargaJual,
-					ChangedBy: adminID,
+					HistorySampahID: historyID,
+					SchemaID:        schema.SchemaID,
+					HargaLama:       schema.Harga,
+					HargaBaru:       item.HargaJual,
+					ChangedBy:       adminID,
 				}
 				if err := s.repo.CreateHistoryHarga(tx, history); err != nil {
 					return errInternal("Gagal mencatat history harga: " + err.Error())
@@ -289,18 +304,23 @@ func (s *PenjualanService) SubmitPenjualan(
 			})
 		}
 
+		mitra, err := resolveOrCreateMitra(tx, s.mitraRepo, bankID, mitraID, namaMitra)
+		if err != nil {
+			return err
+		}
+
 		penjualan := &models.Penjualan{
-			PenjualanID:      penjualanID,
-			BankID:           bankID,
-			RewardID:         rewardID,
-			IdentitasPembeli: identitas,
-			TotalItem:        len(items),
-			TotalPenjualan:   totalPenjualan,
-			SatuanReward:     satuan,
-			SoldBy:           adminID,
-			BuktiFoto:        fotoURL,
-			CreatedAt:        time.Now(),
-			StatusBagiHasil:  models.BagiHasilPending,
+			PenjualanID:     penjualanID,
+			BankID:          bankID,
+			RewardID:        rewardID,
+			MitraID:         mitra.MitraID,
+			TotalItem:       len(items),
+			TotalPenjualan:  totalPenjualan,
+			SatuanReward:    satuan,
+			SoldBy:          adminID,
+			BuktiFoto:       fotoURL,
+			CreatedAt:       time.Now(),
+			StatusBagiHasil: models.BagiHasilPending,
 		}
 		if err := s.repo.CreatePenjualan(tx, penjualan); err != nil {
 			return errInternal("Gagal menyimpan data penjualan: " + err.Error())
@@ -333,30 +353,27 @@ func (s *PenjualanService) GetRiwayat(bankID, startDate, endDate string) ([]Riwa
 		return nil, errForbidden("Fitur ini hanya untuk BSI dan BSM")
 	}
 
-	q := s.db.Table("penjualan").
-		Select(`penjualan.penjualan_id, penjualan.identitas_pembeli,
-		        penjualan.total_item, penjualan.total_penjualan, penjualan.satuan_reward,
-		        penjualan.bukti_foto, penjualan.created_at, penjualan.status_bagi_hasil,
-		        users.nama as admin_name, reward.nama_reward as nama_reward`).
-		Joins("LEFT JOIN admin ON penjualan.sold_by = admin.admin_id").
-		Joins("LEFT JOIN users ON admin.user_id = users.user_id").
-		Joins("LEFT JOIN reward ON penjualan.reward_id = reward.reward_id").
-		Where("penjualan.bank_id = ?", bankID)
-
-	if startDate != "" {
-		if t, err := time.Parse("2006-01-02", startDate); err == nil {
-			q = q.Where("penjualan.created_at >= ?", t)
-		}
-	}
-	if endDate != "" {
-		if t, err := time.Parse("2006-01-02", endDate); err == nil {
-			q = q.Where("penjualan.created_at <= ?", t.Add(24*time.Hour-time.Second))
-		}
-	}
-
-	var riwayat []RiwayatPenjualanItem
-	if err := q.Order("penjualan.created_at DESC").Find(&riwayat).Error; err != nil {
+	start, end := rentangTanggal(startDate, endDate)
+	rows, err := s.repo.GetRiwayatPenjualan(bankID, start, end)
+	if err != nil {
 		return nil, errInternal("Gagal mengambil riwayat penjualan")
+	}
+
+	riwayat := make([]RiwayatPenjualanItem, 0, len(rows))
+	for _, row := range rows {
+		riwayat = append(riwayat, RiwayatPenjualanItem{
+			PenjualanID:     row.PenjualanID,
+			MitraID:         row.MitraID,
+			NamaMitra:       row.NamaMitra,
+			TotalItem:       row.TotalItem,
+			TotalPenjualan:  row.TotalPenjualan,
+			NamaReward:      row.NamaReward,
+			SatuanReward:    row.SatuanReward,
+			BuktiFoto:       row.BuktiFoto,
+			CreatedAt:       row.CreatedAt,
+			AdminName:       row.AdminName,
+			StatusBagiHasil: row.StatusBagiHasil,
+		})
 	}
 	return riwayat, nil
 }
@@ -384,6 +401,7 @@ func (s *PenjualanService) GetDetail(penjualanID string) (*DetailPenjualanResp, 
 		items = append(items, SampahDetailItem{
 			SampahID:             d.SampahID,
 			NamaSampah:           namaSampah,
+			Satuan:               d.Sampah.Sarok.Satuan,
 			Qty:                  d.Qty,
 			HargaJual:            d.HargaJual,
 			SubtotalPenjualan:    d.SubtotalPenjualan,
@@ -394,52 +412,19 @@ func (s *PenjualanService) GetDetail(penjualanID string) (*DetailPenjualanResp, 
 	adminName := s.repo.GetAdminNama(penjualan.SoldBy)
 
 	return &DetailPenjualanResp{
-		PenjualanID:      penjualan.PenjualanID,
-		BankID:           penjualan.BankID,
-		IdentitasPembeli: penjualan.IdentitasPembeli,
-		TotalItem:        penjualan.TotalItem,
-		TotalPenjualan:   penjualan.TotalPenjualan,
-		SatuanReward:     penjualan.SatuanReward,
-		NamaReward:       penjualan.Reward.NamaReward,
-		BuktiFoto:        penjualan.BuktiFoto,
-		CreatedAt:        penjualan.CreatedAt,
-		AdminName:        adminName,
-		StatusBagiHasil:  penjualan.StatusBagiHasil,
-		ItemsSampah:      items,
+		PenjualanID:     penjualan.PenjualanID,
+		BankID:          penjualan.BankID,
+		NamaBank:        penjualan.BankSampah.NamaBank,
+		MitraID:         penjualan.MitraID,
+		NamaMitra:       penjualan.MitraPengepul.NamaMitra,
+		TotalItem:       penjualan.TotalItem,
+		TotalPenjualan:  penjualan.TotalPenjualan,
+		SatuanReward:    penjualan.SatuanReward,
+		NamaReward:      penjualan.Reward.NamaReward,
+		BuktiFoto:       penjualan.BuktiFoto,
+		CreatedAt:       penjualan.CreatedAt,
+		AdminName:       adminName,
+		StatusBagiHasil: penjualan.StatusBagiHasil,
+		ItemsSampah:     items,
 	}, nil
-}
-
-func (s *PenjualanService) GetMitra(bankID string) ([]MitraResp, error) {
-	bank, err := s.repo.GetBankByID(bankID)
-	if err != nil {
-		return nil, errNotFound("Bank tidak ditemukan")
-	}
-	if bank.JenisBank != models.BSI && bank.JenisBank != models.BSM {
-		return nil, errForbidden("Fitur ini hanya untuk BSI dan BSM")
-	}
-
-	rawNames, err := s.repo.GetDistinctMitra(bankID)
-	if err != nil {
-		return nil, errInternal("Gagal mengambil data mitra: " + err.Error())
-	}
-
-	// Deduplicate case-insensitively
-	uniqueMap := make(map[string]string)
-	reg := regexp.MustCompile(`[^a-zA-Z0-9]+`)
-	for _, name := range rawNames {
-		key := reg.ReplaceAllString(strings.ToLower(name), "")
-		if _, exists := uniqueMap[key]; !exists {
-			uniqueMap[key] = name
-		}
-	}
-
-	mitraList := make([]MitraResp, 0, len(uniqueMap))
-	for _, name := range uniqueMap {
-		mitraList = append(mitraList, MitraResp{Nama: name})
-	}
-	sort.Slice(mitraList, func(i, j int) bool {
-		return mitraList[i].Nama < mitraList[j].Nama
-	})
-
-	return mitraList, nil
 }

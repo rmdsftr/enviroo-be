@@ -1,4 +1,4 @@
-package utils 
+package fcm
 
 import (
 	"context"
@@ -10,14 +10,11 @@ import (
 	"google.golang.org/api/option"
 )
 
-// FCMClient wraps Firebase Cloud Messaging.
-type FCMClient struct {
+type Client struct {
 	client *messaging.Client
 }
 
-// NewFCMClient initialises FCM using a service-account JSON key file.
-// credentialsFile is the path to your Firebase service-account JSON.
-func NewFCMClient(ctx context.Context, credentialsFile string) (*FCMClient, error) {
+func New(ctx context.Context, credentialsFile string) (*Client, error) {
 	app, err := firebase.NewApp(ctx, nil, option.WithCredentialsFile(credentialsFile))
 	if err != nil {
 		return nil, fmt.Errorf("gagal inisialisasi firebase app: %w", err)
@@ -28,24 +25,19 @@ func NewFCMClient(ctx context.Context, credentialsFile string) (*FCMClient, erro
 		return nil, fmt.Errorf("gagal inisialisasi fcm client: %w", err)
 	}
 
-	return &FCMClient{client: client}, nil
+	return &Client{client: client}, nil
 }
 
-// FCMPayload holds the data needed to send a push notification.
-type FCMPayload struct {
-	Token string // device FCM token
+type Payload struct {
+	Token string
 
 	Title string
 	Body  string
 
-	// Data is an optional key-value map sent alongside the notification.
-	// Useful for deep-linking in Flutter (e.g. ref_id, ref_type).
 	Data map[string]string
 }
 
-// SendToDevice sends a notification to a single device token.
-// Returns the FCM message ID on success.
-func (f *FCMClient) SendToDevice(ctx context.Context, payload FCMPayload) (string, error) {
+func (f *Client) SendToDevice(ctx context.Context, payload Payload) (string, error) {
 	if payload.Token == "" {
 		return "", fmt.Errorf("fcm token kosong")
 	}
@@ -84,8 +76,7 @@ func (f *FCMClient) SendToDevice(ctx context.Context, payload FCMPayload) (strin
 	return messageID, nil
 }
 
-// SendToMultipleDevices sends the same notification to up to 500 tokens at once.
-func (f *FCMClient) SendToMultipleDevices(ctx context.Context, tokens []string, payload FCMPayload) (*messaging.BatchResponse, error) {
+func (f *Client) SendToMultipleDevices(ctx context.Context, tokens []string, payload Payload) (*messaging.BatchResponse, error) {
 	if len(tokens) == 0 {
 		return nil, fmt.Errorf("daftar token kosong")
 	}
@@ -124,7 +115,6 @@ func (f *FCMClient) SendToMultipleDevices(ctx context.Context, tokens []string, 
 	return resp, nil
 }
 
-// maskToken menyembunyikan sebagian token untuk log aman.
 func maskToken(token string) string {
 	if len(token) <= 10 {
 		return "***"

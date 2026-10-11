@@ -5,41 +5,41 @@ import "time"
 type StatusPenarikanEnum string
 
 const (
-	StatusPenarikanPending    StatusPenarikanEnum = "pending"
-	StatusPenarikanBerhasil   StatusPenarikanEnum = "berhasil"
-	StatusPenarikanKadaluarsa StatusPenarikanEnum = "kadaluarsa"
-	StatusPenarikanDibatalkan StatusPenarikanEnum = "dibatalkan"
+	StatusPenarikanPending        StatusPenarikanEnum = "pending"
+	StatusPenarikanCanceled       StatusPenarikanEnum = "canceled"
+	StatusPenarikanRequestExpired StatusPenarikanEnum = "request_expired"
+	StatusPenarikanRejected       StatusPenarikanEnum = "rejected"
+	StatusPenarikanApproved       StatusPenarikanEnum = "approved"
+	StatusPenarikanPickupExpired  StatusPenarikanEnum = "pickup_expired"
+	StatusPenarikanCompleted      StatusPenarikanEnum = "completed"
 )
 
 type Penarikan struct {
-	PenarikanID string `gorm:"column:penarikan_id;type:varchar(100);primaryKey" json:"penarikan_id"`
+	PenarikanID string `gorm:"column:penarikan_id;type:varchar(24);primaryKey" json:"penarikan_id"`
 
-	NasabahID *string `gorm:"column:nasabah_id;type:varchar(100)" json:"nasabah_id"`
+	NasabahID *string `gorm:"column:nasabah_id;type:varchar(15);not null;index" json:"nasabah_id"`
 
-	BankID *string `gorm:"column:bank_id;type:varchar(100)" json:"bank_id"`
+	BankID *string `gorm:"column:bank_id;type:varchar(9);not null;index" json:"bank_id"`
 
-	RewardID *int `gorm:"column:reward_id" json:"reward_id"`
+	RewardID *int `gorm:"column:reward_id;not null" json:"reward_id"`
 
-	NominalPenarikan float64 `gorm:"column:nominal_penarikan;type:decimal(20,4)" json:"nominal_penarikan"`
+	NominalPenarikan float64 `gorm:"column:nominal_penarikan;type:decimal(20,4);not null" json:"nominal_penarikan"`
 
-	SatuanPenarikan SatuanRewardEnum `gorm:"column:satuan_penarikan;type:satuan_reward_enum" json:"satuan_penarikan"`
+	SatuanPenarikan SatuanRewardEnum `gorm:"column:satuan_penarikan;type:satuan_reward_enum;not null" json:"satuan_penarikan"`
 
-	StatusPenarikan StatusPenarikanEnum `gorm:"column:status_penarikan;type:status_penarikan_enum" json:"status_penarikan"`
+	StatusPenarikan StatusPenarikanEnum `gorm:"column:status_penarikan;type:status_penarikan_enum;not null" json:"status_penarikan"`
 
-	KadaluarsaAt *time.Time `gorm:"column:kadaluarsa_at" json:"kadaluarsa_at"`
+	DeadlineKonfirmasi *time.Time `gorm:"column:deadline_konfirmasi" json:"deadline_konfirmasi"`
+
+	DeadlineJemput *time.Time `gorm:"column:deadline_jemput" json:"deadline_jemput"`
 
 	BuktiFoto *string `gorm:"column:bukti_foto;type:varchar(255)" json:"bukti_foto"`
 
-	CreatedAt time.Time `gorm:"column:created_at;default:CURRENT_TIMESTAMP" json:"created_at"`
-	CreatedBy *string   `gorm:"column:created_by;type:varchar(100)" json:"created_by"`
-
-	UpdatedAt time.Time `gorm:"column:updated_at;default:CURRENT_TIMESTAMP" json:"updated_at"`
-	UpdatedBy *string   `gorm:"column:updated_by;type:varchar(100)" json:"updated_by"`
-
-	Nasabah                *Nasabah                 `gorm:"foreignKey:NasabahID;references:NasabahID"`
-	Bank                   *BankSampah              `gorm:"foreignKey:BankID;references:BankID"`
-	Reward                 *Reward                  `gorm:"foreignKey:RewardID;references:RewardID"`
-	DetailPenarikanSembako []DetailPenarikanSembako `gorm:"foreignKey:PenarikanID;references:PenarikanID"`
+	Nasabah                *Nasabah                 `gorm:"foreignKey:NasabahID;references:NasabahID;constraint:OnDelete:RESTRICT"`
+	Bank                   *BankSampah              `gorm:"foreignKey:BankID;references:BankID;constraint:OnDelete:RESTRICT"`
+	Reward                 *Reward                  `gorm:"foreignKey:RewardID;references:RewardID;constraint:OnDelete:RESTRICT"`
+	DetailPenarikanBarang  []DetailPenarikanBarang  `gorm:"foreignKey:PenarikanID;references:PenarikanID"`
+	RiwayatPenarikan       []RiwayatPenarikan       `gorm:"foreignKey:PenarikanID;references:PenarikanID"`
 }
 
 func (Penarikan) TableName() string {

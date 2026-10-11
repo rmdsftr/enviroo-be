@@ -1,9 +1,10 @@
 package services
 
 import (
+	"enviroo-be/internal/idgen"
 	"enviroo-be/internal/models"
 	"enviroo-be/internal/repositories"
-	"enviroo-be/pkg/utils"
+	"errors"
 	"math"
 	"time"
 
@@ -53,8 +54,6 @@ func NewBagiHasilServiceWithRepo(db *gorm.DB, repo BagiHasilRepoIface) *BagiHasi
 	return &BagiHasilService{db: db, repo: repo}
 }
 
-// ── Shared response types ───────────────────────────────────────────────────
-
 type NasabahPenerimaItem struct {
 	PenerimaID     string                  `json:"penerima_id"`
 	NasabahID      string                  `json:"nasabah_id"`
@@ -69,7 +68,6 @@ type BankPenerimaGroup struct {
 	NasabahPenerima []NasabahPenerimaItem `json:"nasabah_penerima"`
 }
 
-// NasabahNotifItem carries pre-fetched notification data for the goroutine.
 type NasabahNotifItem struct {
 	PenerimaID string
 	NasabahID  string
@@ -79,7 +77,29 @@ type NasabahNotifItem struct {
 	Satuan     models.SatuanRewardEnum
 }
 
-// ── Preview ─────────────────────────────────────────────────────────────────
+func (s *BagiHasilService) siapkanBagiHasil(penjualanID, bankID string) (*models.Penjualan, *models.BankSampah, []models.DetailPenjualan, error) {
+	penjualan, err := s.repo.GetPenjualanWithReward(penjualanID, bankID)
+	if err != nil {
+		return nil, nil, nil, errNotFound("Penjualan tidak ditemukan")
+	}
+	if penjualan.StatusBagiHasil == models.BagiHasilBerhasil {
+		return nil, nil, nil, errBadRequest("Bagi hasil untuk penjualan ini sudah dilakukan")
+	}
+
+	bank, err := s.repo.GetBankByID(bankID)
+	if err != nil {
+		return nil, nil, nil, errNotFound("Bank tidak ditemukan")
+	}
+	if bank.JenisBank == models.BSU {
+		return nil, nil, nil, errForbidden("BSU tidak dapat melakukan bagi hasil")
+	}
+
+	detailPenjualans, err := s.repo.GetDetailPenjualan(s.db, penjualanID)
+	if err != nil {
+		return nil, nil, nil, errInternal("Gagal mengambil detail penjualan")
+	}
+	return penjualan, bank, detailPenjualans, nil
+}
 
 type PreviewBagiHasilSummary struct {
 	GrossBank              float64 `json:"gross_bank"`
@@ -107,43 +127,27 @@ type PreviewBagiHasilResp struct {
 }
 
 func (s *BagiHasilService) Preview(penjualanID, bankID string) (*PreviewBagiHasilResp, error) {
-	penjualan, err := s.repo.GetPenjualanWithReward(penjualanID, bankID)
+	penjualan, bank, detailPenjualans, err := s.siapkanBagiHasil(penjualanID, bankID)
 	if err != nil {
-		return nil, errNotFound("Penjualan tidak ditemukan")
+		return nil, err
 	}
-	if penjualan.StatusBagiHasil == models.BagiHasilBerhasil {
-		return nil, errBadRequest("Bagi hasil untuk penjualan ini sudah dilakukan")
-	}
-
-	bank, err := s.repo.GetBankByID(bankID)
-	if err != nil {
-		return nil, errNotFound("Bank tidak ditemukan")
-	}
-	if bank.JenisBank == models.BSU {
-		return nil, errForbidden("BSU tidak dapat melakukan bagi hasil")
-	}
-
-	detailPenjualans, err := s.repo.GetDetailPenjualan(s.db, penjualanID)
-	if err != nil {
-		return nil, errInternal("Gagal mengambil detail penjualan")
-	}
-
-	bankIDsNasabah := []string{bankID}
 	if bank.JenisBank == models.BSI {
-		bsuList, err := s.repo.GetBSUList(s.db, bankID)
-		if err != nil {
-			return nil, errInternal("Gagal mengambil daftar BSU")
-		}
-		for _, bsu := range bsuList {
-			bankIDsNasabah = append(bankIDsNasabah, bsu.BankID)
-		}
+		return s.previewBSI(penjualan, bankID, detailPenjualans)
 	}
 
+	return s.hitungPreview(penjualan, detailPenjualans, []string{bankID})
+}
+
+func (s *BagiHasilService) hitungPreview(penjualan *models.Penjualan, detailPenjualans []models.DetailPenjualan, bankIDsNasabah []string) (*PreviewBagiHasilResp, error) {
 	totalDibagikanKeNasabah := make(map[string]float64)
 
 	for _, detail := range detailPenjualans {
-		if detail.Qty <= 0 || detail.HargaNasabahSnapshot <= 0 {
+		if detail.Qty <= 0 {
 			continue
+		}
+		if detail.HargaNasabahSnapshot <= 0 {
+			return nil, errBadRequest("Penjualan ini dibuat tanpa persentase bagi hasil yang sah untuk sampah " +
+				detail.SampahID + ", jadi bagi hasilnya tidak bisa dihitung")
 		}
 		tabungan, err := s.repo.GetTabunganNasabah(s.db, detail.SampahID, bankIDsNasabah)
 		if err != nil {
@@ -218,7 +222,7 @@ func (s *BagiHasilService) Preview(penjualanID, bankID string) (*PreviewBagiHasi
 	}
 
 	return &PreviewBagiHasilResp{
-		PenjualanID: penjualanID,
+		PenjualanID: penjualan.PenjualanID,
 		Reward:      string(penjualan.Reward.NamaReward),
 		Summary: PreviewBagiHasilSummary{
 			GrossBank:              grossBank,
@@ -229,8 +233,6 @@ func (s *BagiHasilService) Preview(penjualanID, bankID string) (*PreviewBagiHasi
 	}, nil
 }
 
-// ── Submit ──────────────────────────────────────────────────────────────────
-
 type SubmitBagiHasilResp struct {
 	BagiHasilID            string             `json:"bagi_hasil_id"`
 	GrossBank              float64            `json:"gross_bank"`
@@ -240,262 +242,43 @@ type SubmitBagiHasilResp struct {
 }
 
 func (s *BagiHasilService) Submit(penjualanID, bankID, adminID string) (*SubmitBagiHasilResp, error) {
-	penjualan, err := s.repo.GetPenjualanWithReward(penjualanID, bankID)
+	penjualan, bank, detailPenjualans, err := s.siapkanBagiHasil(penjualanID, bankID)
 	if err != nil {
-		return nil, errNotFound("Penjualan tidak ditemukan")
+		return nil, err
 	}
-	if penjualan.StatusBagiHasil == models.BagiHasilBerhasil {
-		return nil, errBadRequest("Bagi hasil untuk penjualan ini sudah dilakukan")
-	}
-
-	bank, err := s.repo.GetBankByID(bankID)
-	if err != nil {
-		return nil, errNotFound("Bank tidak ditemukan")
-	}
-	if bank.JenisBank == models.BSU {
-		return nil, errForbidden("BSU tidak dapat melakukan bagi hasil")
-	}
-
-	detailPenjualans, err := s.repo.GetDetailPenjualan(s.db, penjualanID)
-	if err != nil {
-		return nil, errInternal("Gagal mengambil detail penjualan")
-	}
-
-	bankIDsNasabah := []string{bankID}
-	var bsuIDs []string
 	if bank.JenisBank == models.BSI {
-		bsuList, err := s.repo.GetBSUList(s.db, bankID)
-		if err != nil {
-			return nil, errInternal("Gagal mengambil daftar BSU")
-		}
-		for _, bsu := range bsuList {
-			bankIDsNasabah = append(bankIDsNasabah, bsu.BankID)
-			bsuIDs = append(bsuIDs, bsu.BankID)
-		}
+		return s.submitBSI(penjualan, bankID, detailPenjualans, adminID)
 	}
-
-	bankGetsSisa := bank.JenisBank == models.BSM ||
-		(bank.JenisBank == models.BSI && penjualan.Reward.NamaReward == models.RewardEnumSembako)
 
 	var result *SubmitBagiHasilResp
 
 	txErr := s.db.Transaction(func(tx *gorm.DB) error {
 		now := time.Now()
 
-		type itemAccum struct {
-			sampahID string
-			qty      float64
-			harga    float64
-			subtotal float64
+		dist, err := s.distribusikanKeNasabah(tx, penjualan, detailPenjualans, []string{bankID}, adminID)
+		if err != nil {
+			return err
 		}
-		type bsuPerhitunganAccum struct {
-			tabunganID   string
-			qtyDipakai   float64
-			nilaiDipakai float64
+		bh, err := s.simpanBagiHasil(tx, penjualan, bankID, dist.total, adminID, now)
+		if err != nil {
+			return err
 		}
-		nasabahItems := make(map[string]map[string]*itemAccum)
-		nasabahTabungan := make(map[string]map[string]float64)
-		nasabahTotals := make(map[string]float64)
-		var bsuPerhitungan []bsuPerhitunganAccum
-
-		for _, detail := range detailPenjualans {
-			if detail.Qty <= 0 {
-				return errBadRequest("qty tidak valid untuk sampah_id: " + detail.SampahID)
-			}
-			if detail.HargaNasabahSnapshot <= 0 {
-				continue
-			}
-
-			tabunganList, err := s.repo.GetTabunganNasabah(tx, detail.SampahID, bankIDsNasabah)
-			if err != nil {
-				return errInternal("Gagal mengambil tabungan nasabah")
-			}
-
-			sisaQty := detail.Qty
-			for i := range tabunganList {
-				if sisaQty <= 0 {
-					break
-				}
-				t := &tabunganList[i]
-				nasabahID := *t.NasabahID
-				qtyDiambil := math.Min(t.SisaQty, sisaQty)
-				nilaiDapat := qtyDiambil * detail.HargaNasabahSnapshot
-
-				if nasabahItems[nasabahID] == nil {
-					nasabahItems[nasabahID] = make(map[string]*itemAccum)
-				}
-				if nasabahItems[nasabahID][detail.SampahID] == nil {
-					nasabahItems[nasabahID][detail.SampahID] = &itemAccum{
-						sampahID: detail.SampahID,
-						harga:    detail.HargaNasabahSnapshot,
-					}
-				}
-				nasabahItems[nasabahID][detail.SampahID].qty += qtyDiambil
-				nasabahItems[nasabahID][detail.SampahID].subtotal += nilaiDapat
-
-				if nasabahTabungan[nasabahID] == nil {
-					nasabahTabungan[nasabahID] = make(map[string]float64)
-				}
-				nasabahTabungan[nasabahID][t.TabunganID] += qtyDiambil
-				nasabahTotals[nasabahID] += nilaiDapat
-				sisaQty -= qtyDiambil
-
-				t.SisaQty -= qtyDiambil
-				if err := s.repo.SaveTabungan(tx, t); err != nil {
-					return errInternal("Gagal update tabungan nasabah")
-				}
-			}
-			if sisaQty > 0 {
-				return &ServiceError{
-					Code:    422,
-					Message: "Stok tabungan nasabah tidak mencukupi",
-					Data:    map[string]interface{}{"sampah_id": detail.SampahID, "kurang_qty": sisaQty},
-				}
-			}
-
-			if len(bsuIDs) > 0 {
-				tabunganBSU, err := s.repo.GetTabunganBSU(tx, detail.SampahID, bsuIDs)
-				if err != nil {
-					return errInternal("Gagal mengambil tabungan BSU")
-				}
-				sisaQtyBSU := detail.Qty
-				for i := range tabunganBSU {
-					if sisaQtyBSU <= 0 {
-						break
-					}
-					t := &tabunganBSU[i]
-					qtyDiambil := math.Min(t.SisaQty, sisaQtyBSU)
-					nilaiDipakai := qtyDiambil * detail.HargaNasabahSnapshot
-					bsuPerhitungan = append(bsuPerhitungan, bsuPerhitunganAccum{
-						tabunganID:   t.TabunganID,
-						qtyDipakai:   qtyDiambil,
-						nilaiDipakai: nilaiDipakai,
-					})
-					t.SisaQty -= qtyDiambil
-					if err := s.repo.SaveTabungan(tx, t); err != nil {
-						return errInternal("Gagal update tabungan BSU")
-					}
-					sisaQtyBSU -= qtyDiambil
-				}
-			}
-
-			if err := s.repo.UpsertSchemaHargaNasabah(tx, detail.SampahID,
-				detail.HargaNasabahSnapshot, penjualan.SatuanReward, adminID); err != nil {
-				return errInternal("Gagal update schema harga nasabah: " + err.Error())
-			}
+		nasabahNotifs, err := s.simpanPenerimaNasabah(tx, penjualan, bh.BagiHasilID, dist, adminID, now)
+		if err != nil {
+			return err
 		}
-
-		grossBank := penjualan.TotalPenjualan
-		var totalDistribusiNasabah float64
-		for _, v := range nasabahTotals {
-			totalDistribusiNasabah += v
+		if err := s.masukkanSisaKeBank(tx, penjualan, bankID, bh.SisaBagiHasil, adminID, now); err != nil {
+			return err
 		}
-		sisaBagiHasil := grossBank - totalDistribusiNasabah
-
-		bhID := utils.GenerateID("BGH")
-		bh := &models.BagiHasil{
-			BagiHasilID:            bhID,
-			BankID:                 &bankID,
-			PenjualanID:            &penjualanID,
-			GrossBank:              grossBank,
-			TotalDistribusiNasabah: totalDistribusiNasabah,
-			SisaBagiHasil:          sisaBagiHasil,
-			SatuanBagiHasil:        penjualan.SatuanReward,
-			CreatedAt:              now,
-			CreatedBy:              &adminID,
-		}
-		if err := s.repo.CreateBagiHasil(tx, bh); err != nil {
-			return errInternal("Gagal menyimpan bagi hasil")
-		}
-
-		for _, ps := range bsuPerhitungan {
-			if err := s.repo.CreatePerhitunganSisa(tx, &models.PerhitunganSisa{
-				BagiHasilID:  bhID,
-				TabunganID:   ps.tabunganID,
-				QtyDipakai:   ps.qtyDipakai,
-				NilaiDipakai: ps.nilaiDipakai,
-			}); err != nil {
-				return errInternal("Gagal menyimpan perhitungan sisa BSU")
-			}
-		}
-
-		var nasabahNotifs []NasabahNotifItem
-		for nasabahID, sampahMap := range nasabahItems {
-			nasabahIDCopy := nasabahID
-			total := nasabahTotals[nasabahID]
-			penerimaID := utils.GenerateID("PBH")
-
-			pbh := &models.PenerimaBagiHasil{
-				PenerimaID:     penerimaID,
-				BagiHasilID:    &bhID,
-				RewardID:       &penjualan.RewardID,
-				NasabahID:      &nasabahIDCopy,
-				TotalItem:      len(sampahMap),
-				TotalDiterima:  total,
-				SatuanDiterima: penjualan.SatuanReward,
-				CreatedAt:      now,
-				CreatedBy:      &adminID,
-			}
-			if err := s.repo.CreatePenerimaBagiHasil(tx, pbh); err != nil {
-				return errInternal("Gagal menyimpan penerima bagi hasil nasabah")
-			}
-			for _, item := range sampahMap {
-				if err := s.repo.CreateDetailBagiHasil(tx, &models.DetailBagiHasil{
-					PenerimaID:    penerimaID,
-					SampahID:      item.sampahID,
-					Qty:           item.qty,
-					HargaItem:     item.harga,
-					SubtotalHarga: item.subtotal,
-				}); err != nil {
-					return errInternal("Gagal menyimpan detail bagi hasil nasabah")
-				}
-			}
-			for tabunganID, qtyDipakai := range nasabahTabungan[nasabahID] {
-				if err := s.repo.CreatePencairanTabungan(tx, &models.PencairanTabungan{
-					PenerimaID: penerimaID,
-					TabunganID: tabunganID,
-					QtyDipakai: qtyDipakai,
-				}); err != nil {
-					return errInternal("Gagal menyimpan pencairan tabungan nasabah")
-				}
-			}
-
-			if err := s.repo.UpdateSaldoRekening(tx, nil, &nasabahIDCopy,
-				penjualan.RewardID, penjualan.Reward,
-				total, models.EntitasNasabah, adminID, now); err != nil {
-				return errInternal("Gagal update saldo nasabah: " + err.Error())
-			}
-
-			nasabah, err := s.repo.GetNasabahWithUser(nasabahIDCopy)
-			if err == nil {
-				nasabahNotifs = append(nasabahNotifs, NasabahNotifItem{
-					PenerimaID: penerimaID,
-					NasabahID:  nasabahIDCopy,
-					UserID:     nasabah.User.UserID,
-					FCMToken:   nasabah.User.FCMToken,
-					Total:      total,
-					Satuan:     penjualan.SatuanReward,
-				})
-			}
-		}
-
-		if bankGetsSisa && sisaBagiHasil > 0 {
-			if err := s.repo.UpdateSaldoRekening(tx, &bankID, nil,
-				penjualan.RewardID, penjualan.Reward,
-				sisaBagiHasil, models.EntitasBankSampah, adminID, now); err != nil {
-				return errInternal("Gagal update saldo bank: " + err.Error())
-			}
-		}
-
 		if err := s.repo.UpdatePenjualanStatus(tx, penjualan, models.BagiHasilBerhasil); err != nil {
 			return errInternal("Gagal update status penjualan")
 		}
 
 		result = &SubmitBagiHasilResp{
-			BagiHasilID:            bhID,
-			GrossBank:              grossBank,
-			TotalDistribusiNasabah: totalDistribusiNasabah,
-			SisaBagiHasil:          sisaBagiHasil,
+			BagiHasilID:            bh.BagiHasilID,
+			GrossBank:              bh.GrossBank,
+			TotalDistribusiNasabah: bh.TotalDistribusiNasabah,
+			SisaBagiHasil:          bh.SisaBagiHasil,
 			NasabahNotifs:          nasabahNotifs,
 		}
 		return nil
@@ -507,21 +290,209 @@ func (s *BagiHasilService) Submit(penjualanID, bankID, adminID string) (*SubmitB
 	return result, nil
 }
 
-// ── GetDetail ───────────────────────────────────────────────────────────────
+type itemBagiHasil struct {
+	sampahID string
+	qty      float64
+	harga    float64
+	subtotal float64
+}
+
+type distribusiNasabah struct {
+	items    map[string]map[string]*itemBagiHasil
+	tabungan map[string]map[string]float64
+	totals   map[string]float64
+	total    float64
+}
+
+func (s *BagiHasilService) distribusikanKeNasabah(tx *gorm.DB, penjualan *models.Penjualan, detailPenjualans []models.DetailPenjualan, bankIDsNasabah []string, adminID string) (*distribusiNasabah, error) {
+	dist := &distribusiNasabah{
+		items:    make(map[string]map[string]*itemBagiHasil),
+		tabungan: make(map[string]map[string]float64),
+		totals:   make(map[string]float64),
+	}
+
+	for _, detail := range detailPenjualans {
+		if detail.Qty <= 0 {
+			return nil, errBadRequest("qty tidak valid untuk sampah_id: " + detail.SampahID)
+		}
+		if detail.HargaNasabahSnapshot <= 0 {
+			return nil, errBadRequest("Penjualan ini dibuat tanpa persentase bagi hasil yang sah untuk sampah " +
+				detail.SampahID + ", jadi bagi hasilnya tidak bisa diproses")
+		}
+
+		tabunganList, err := s.repo.GetTabunganNasabah(tx, detail.SampahID, bankIDsNasabah)
+		if err != nil {
+			return nil, errInternal("Gagal mengambil tabungan nasabah")
+		}
+
+		sisaQty := detail.Qty
+		for i := range tabunganList {
+			if sisaQty <= 0 {
+				break
+			}
+			t := &tabunganList[i]
+			nasabahID := *t.NasabahID
+			qtyDiambil := math.Min(t.SisaQty, sisaQty)
+			nilaiDapat := qtyDiambil * detail.HargaNasabahSnapshot
+
+			if dist.items[nasabahID] == nil {
+				dist.items[nasabahID] = make(map[string]*itemBagiHasil)
+			}
+			if dist.items[nasabahID][detail.SampahID] == nil {
+				dist.items[nasabahID][detail.SampahID] = &itemBagiHasil{
+					sampahID: detail.SampahID,
+					harga:    detail.HargaNasabahSnapshot,
+				}
+			}
+			dist.items[nasabahID][detail.SampahID].qty += qtyDiambil
+			dist.items[nasabahID][detail.SampahID].subtotal += nilaiDapat
+
+			if dist.tabungan[nasabahID] == nil {
+				dist.tabungan[nasabahID] = make(map[string]float64)
+			}
+			dist.tabungan[nasabahID][t.TabunganID] += qtyDiambil
+			dist.totals[nasabahID] += nilaiDapat
+			sisaQty -= qtyDiambil
+
+			t.SisaQty -= qtyDiambil
+			if err := s.repo.SaveTabungan(tx, t); err != nil {
+				return nil, errInternal("Gagal update tabungan nasabah")
+			}
+		}
+		if sisaQty > 0 {
+			return nil, &ServiceError{
+				Code:    422,
+				Message: "Stok tabungan nasabah tidak mencukupi",
+				Data:    map[string]interface{}{"sampah_id": detail.SampahID, "kurang_qty": sisaQty},
+			}
+		}
+
+		if err := s.repo.UpsertSchemaHargaNasabah(tx, detail.SampahID,
+			detail.HargaNasabahSnapshot, penjualan.SatuanReward, adminID); err != nil {
+			return nil, errInternal("Gagal update schema harga nasabah: " + err.Error())
+		}
+	}
+
+	for _, v := range dist.totals {
+		dist.total += v
+	}
+	return dist, nil
+}
+
+func (s *BagiHasilService) simpanBagiHasil(tx *gorm.DB, penjualan *models.Penjualan, bankID string, totalDistribusiNasabah float64, adminID string, now time.Time) (*models.BagiHasil, error) {
+	penjualanID := penjualan.PenjualanID
+	grossBank := penjualan.TotalPenjualan
+	bh := &models.BagiHasil{
+		BagiHasilID:            idgen.GenerateBagiHasilID(penjualanID),
+		BankID:                 &bankID,
+		PenjualanID:            &penjualanID,
+		GrossBank:              grossBank,
+		TotalDistribusiNasabah: totalDistribusiNasabah,
+		SisaBagiHasil:          grossBank - totalDistribusiNasabah,
+		SatuanBagiHasil:        penjualan.SatuanReward,
+		CreatedAt:              now,
+		CreatedBy:              &adminID,
+	}
+	if err := s.repo.CreateBagiHasil(tx, bh); err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			return nil, errBadRequest("Bagi hasil untuk penjualan ini sudah dilakukan")
+		}
+		return nil, errInternal("Gagal menyimpan bagi hasil")
+	}
+	return bh, nil
+}
+
+func (s *BagiHasilService) simpanPenerimaNasabah(tx *gorm.DB, penjualan *models.Penjualan, bagiHasilID string, dist *distribusiNasabah, adminID string, now time.Time) ([]NasabahNotifItem, error) {
+	var nasabahNotifs []NasabahNotifItem
+	for nasabahID, sampahMap := range dist.items {
+		nasabahIDCopy := nasabahID
+		total := dist.totals[nasabahID]
+		penerimaID, err := idgen.GeneratePenerimaBagiHasilID(tx, penjualan.PenjualanID)
+		if err != nil {
+			return nil, errInternal("Gagal generate penerima bagi hasil ID: " + err.Error())
+		}
+
+		pbh := &models.PenerimaBagiHasil{
+			PenerimaID:     penerimaID,
+			BagiHasilID:    &bagiHasilID,
+			RewardID:       &penjualan.RewardID,
+			NasabahID:      &nasabahIDCopy,
+			TotalItem:      len(sampahMap),
+			TotalDiterima:  total,
+			SatuanDiterima: penjualan.SatuanReward,
+			CreatedAt:      now,
+			CreatedBy:      &adminID,
+		}
+		if err := s.repo.CreatePenerimaBagiHasil(tx, pbh); err != nil {
+			return nil, errInternal("Gagal menyimpan penerima bagi hasil nasabah")
+		}
+		for _, item := range sampahMap {
+			if err := s.repo.CreateDetailBagiHasil(tx, &models.DetailBagiHasil{
+				PenerimaID:    penerimaID,
+				SampahID:      item.sampahID,
+				Qty:           item.qty,
+				HargaItem:     item.harga,
+				SubtotalHarga: item.subtotal,
+			}); err != nil {
+				return nil, errInternal("Gagal menyimpan detail bagi hasil nasabah")
+			}
+		}
+		for tabunganID, qtyDipakai := range dist.tabungan[nasabahID] {
+			if err := s.repo.CreatePencairanTabungan(tx, &models.PencairanTabungan{
+				PenerimaID: penerimaID,
+				TabunganID: tabunganID,
+				QtyDipakai: qtyDipakai,
+			}); err != nil {
+				return nil, errInternal("Gagal menyimpan pencairan tabungan nasabah")
+			}
+		}
+
+		if err := s.repo.UpdateSaldoRekening(tx, nil, &nasabahIDCopy,
+			penjualan.RewardID, penjualan.Reward,
+			total, models.EntitasNasabah, adminID, now); err != nil {
+			return nil, errInternal("Gagal update saldo nasabah: " + err.Error())
+		}
+
+		nasabah, err := s.repo.GetNasabahWithUser(nasabahIDCopy)
+		if err == nil {
+			nasabahNotifs = append(nasabahNotifs, NasabahNotifItem{
+				PenerimaID: penerimaID,
+				NasabahID:  nasabahIDCopy,
+				UserID:     nasabah.User.UserID,
+				FCMToken:   nasabah.User.FCMToken,
+				Total:      total,
+				Satuan:     penjualan.SatuanReward,
+			})
+		}
+	}
+	return nasabahNotifs, nil
+}
+
+func (s *BagiHasilService) masukkanSisaKeBank(tx *gorm.DB, penjualan *models.Penjualan, bankID string, sisaBagiHasil float64, adminID string, now time.Time) error {
+	if sisaBagiHasil <= 0 {
+		return nil
+	}
+	if err := s.repo.UpdateSaldoRekening(tx, &bankID, nil,
+		penjualan.RewardID, penjualan.Reward,
+		sisaBagiHasil, models.EntitasBankSampah, adminID, now); err != nil {
+		return errInternal("Gagal update saldo bank: " + err.Error())
+	}
+	return nil
+}
 
 type DetailBagiHasilResp struct {
-	BagiHasilID            string                `json:"bagi_hasil_id"`
-	Tanggal                time.Time             `json:"tanggal"`
-	PenjualanID            string                `json:"penjualan_id"`
-	NamaPetugas            string                `json:"nama_petugas"`
-	Reward                 string                `json:"reward"`
-	GrossBank              float64               `json:"gross_bank"`
-	TotalDistribusiNasabah float64               `json:"total_distribusi_nasabah"`
-	SisaBagiHasil          float64               `json:"sisa_bagi_hasil"`
+	BagiHasilID            string                  `json:"bagi_hasil_id"`
+	Tanggal                time.Time               `json:"tanggal"`
+	PenjualanID            string                  `json:"penjualan_id"`
+	NamaPetugas            string                  `json:"nama_petugas"`
+	Reward                 string                  `json:"reward"`
+	GrossBank              float64                 `json:"gross_bank"`
+	TotalDistribusiNasabah float64                 `json:"total_distribusi_nasabah"`
+	SisaBagiHasil          float64                 `json:"sisa_bagi_hasil"`
 	Satuan                 models.SatuanRewardEnum `json:"satuan"`
-	DistribusiID           *string               `json:"distribusi_id"`
-	NasabahLangsung        []NasabahPenerimaItem `json:"nasabah_langsung"`
-	Penerima               []BankPenerimaGroup   `json:"penerima,omitempty"`
+	DistribusiID           *string                 `json:"distribusi_id"`
+	NasabahLangsung        []NasabahPenerimaItem   `json:"nasabah_langsung"`
+	Penerima               []BankPenerimaGroup     `json:"penerima,omitempty"`
 }
 
 func (s *BagiHasilService) GetDetail(penjualanID string) (*DetailBagiHasilResp, error) {
@@ -540,21 +511,6 @@ func (s *BagiHasilService) GetDetail(penjualanID string) (*DetailBagiHasilResp, 
 		return nil, errInternal("Gagal mengambil data penerima")
 	}
 
-	// non-nil bsuIDSet so non-matching nasabah go to langsung (works for both BSM and BSI)
-	bsuIDSet := make(map[string]bool)
-	if bh.BankID != nil {
-		bsuList, err := s.repo.GetBSUList(s.db, *bh.BankID)
-		if err != nil {
-			return nil, errInternal("Gagal mengambil daftar BSU")
-		}
-		for _, bsu := range bsuList {
-			bsuIDSet[bsu.BankID] = true
-		}
-	}
-
-	grouped, langsung := groupNasabahByBank(semuaPenerima, bsuIDSet)
-	distribusiID := s.repo.FindDistribusiSisaID(bh.BagiHasilID)
-
 	resp := &DetailBagiHasilResp{
 		BagiHasilID:            bh.BagiHasilID,
 		Tanggal:                bh.CreatedAt,
@@ -565,16 +521,21 @@ func (s *BagiHasilService) GetDetail(penjualanID string) (*DetailBagiHasilResp, 
 		TotalDistribusiNasabah: bh.TotalDistribusiNasabah,
 		SisaBagiHasil:          bh.SisaBagiHasil,
 		Satuan:                 bh.SatuanBagiHasil,
-		DistribusiID:           distribusiID,
-		NasabahLangsung:        langsung,
+		DistribusiID:           s.repo.FindDistribusiSisaID(bh.BagiHasilID),
 	}
-	if bh.Bank != nil && bh.Bank.JenisBank != models.BSM {
-		resp.Penerima = grouped
+	if bh.Bank != nil && bh.Bank.JenisBank == models.BSI {
+		return s.detailBSI(bh, semuaPenerima, resp)
+	}
+
+	resp.NasabahLangsung = make([]NasabahPenerimaItem, 0, len(semuaPenerima))
+	for _, p := range semuaPenerima {
+		if p.Nasabah == nil {
+			continue
+		}
+		resp.NasabahLangsung = append(resp.NasabahLangsung, toNasabahPenerimaItem(p))
 	}
 	return resp, nil
 }
-
-// ── GetListNasabah ──────────────────────────────────────────────────────────
 
 type ListBagiHasilNasabahItem struct {
 	PenerimaID     string                  `json:"penerima_id"`
@@ -623,8 +584,6 @@ func (s *BagiHasilService) GetListNasabah(nasabahID, startDate, endDate string) 
 		RiwayatBagiHasil: list,
 	}, nil
 }
-
-// ── GetDetailNasabah ────────────────────────────────────────────────────────
 
 type DetailBagiHasilItemResp struct {
 	SampahID      string  `json:"sampah_id"`
@@ -688,8 +647,6 @@ func (s *BagiHasilService) GetDetailNasabah(penerimaID string) (*DetailBagiHasil
 	}, nil
 }
 
-// ── GetListBankPusat ────────────────────────────────────────────────────────
-
 type ListBagiHasilBankPusatItem struct {
 	BagiHasilID      string `json:"bagi_hasil_id"`
 	RewardID         int    `json:"reward_id"`
@@ -739,8 +696,6 @@ func (s *BagiHasilService) GetListBankPusat(bankID string, startTime, endTime ti
 	}, nil
 }
 
-// ── GetDetailBankPusat ──────────────────────────────────────────────────────
-
 type DetailBagiHasilBankPusatResp struct {
 	BagiHasilID            string                `json:"bagi_hasil_id"`
 	PenjualanID            string                `json:"penjualan_id"`
@@ -782,47 +737,24 @@ func (s *BagiHasilService) GetDetailBankPusat(bagiHasilID string) (*DetailBagiHa
 		DistribusiID:           distribusiID,
 		Penerima:               []BankPenerimaGroup{},
 	}
-
-	if bh.Bank.JenisBank == models.BSM {
-		penerimaNasabah, err := s.repo.GetPenerimaNasabahFull(bagiHasilID)
-		if err != nil {
-			return nil, errInternal("Gagal mengambil data nasabah penerima")
-		}
-		// nil bsuIDSet: all nasabah grouped by their own bank
-		grouped, _ := groupNasabahByBank(penerimaNasabah, nil)
-		nasabahList := make([]NasabahPenerimaItem, 0, len(penerimaNasabah))
-		for _, p := range penerimaNasabah {
-			nasabahList = append(nasabahList, toNasabahPenerimaItem(p))
-		}
-		resp.GrossBSM = bh.GrossBank
-		resp.Penerima = grouped
-		resp.NasabahBSM = nasabahList
-		return resp, nil
+	if bh.Bank.JenisBank == models.BSI {
+		return s.detailBankPusatBSI(bh, resp)
 	}
 
-	// BSI: group by BSU children; direct BSI nasabah go to langsung
-	semuaPenerima, err := s.repo.GetPenerimaBagiHasil(bagiHasilID)
+	penerimaNasabah, err := s.repo.GetPenerimaNasabahFull(bagiHasilID)
 	if err != nil {
-		return nil, errInternal("Gagal mengambil data penerima")
+		return nil, errInternal("Gagal mengambil data nasabah penerima")
 	}
-
-	bsuIDSet := make(map[string]bool)
-	bsuList, err := s.repo.GetBSUList(s.db, *bh.BankID)
-	if err != nil {
-		return nil, errInternal("Gagal mengambil daftar BSU")
+	grouped, _ := groupNasabahByBank(penerimaNasabah, nil)
+	nasabahList := make([]NasabahPenerimaItem, 0, len(penerimaNasabah))
+	for _, p := range penerimaNasabah {
+		nasabahList = append(nasabahList, toNasabahPenerimaItem(p))
 	}
-	for _, bsu := range bsuList {
-		bsuIDSet[bsu.BankID] = true
-	}
-
-	grouped, langsung := groupNasabahByBank(semuaPenerima, bsuIDSet)
-	resp.GrossBSI = bh.GrossBank
+	resp.GrossBSM = bh.GrossBank
 	resp.Penerima = grouped
-	resp.NasabahBSI = langsung
+	resp.NasabahBSM = nasabahList
 	return resp, nil
 }
-
-// ── Private helpers ─────────────────────────────────────────────────────────
 
 func toNasabahPenerimaItem(p models.PenerimaBagiHasil) NasabahPenerimaItem {
 	nasabahID, nama := "", ""
@@ -839,9 +771,6 @@ func toNasabahPenerimaItem(p models.PenerimaBagiHasil) NasabahPenerimaItem {
 	}
 }
 
-// groupNasabahByBank splits penerima into BSU-grouped and direct lists.
-//   - bsuIDSet == nil: ALL nasabah grouped by their bank (langsung stays empty)
-//   - bsuIDSet != nil: only members of bsuIDSet go into grouped; others → langsung
 func groupNasabahByBank(penerima []models.PenerimaBagiHasil, bsuIDSet map[string]bool) (grouped []BankPenerimaGroup, langsung []NasabahPenerimaItem) {
 	bankMap := make(map[string]*BankPenerimaGroup)
 	var bankOrder []string

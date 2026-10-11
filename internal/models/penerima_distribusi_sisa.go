@@ -13,14 +13,12 @@ const (
 	JenisTerimaBagiHasilBSI JenisTerimaEnum = "bagi_hasil_bsi"
 )
 
-// TransportDetailItem menyimpan rincian transport yang diterima BSI dari satu BSU.
 type TransportDetailItem struct {
 	BsuID     string  `json:"bsu_id"`
 	NamaBsu   string  `json:"nama_bsu"`
 	Transport float64 `json:"transport"`
 }
 
-// TransportDetail adalah slice yang bisa disimpan sebagai JSONB di PostgreSQL.
 type TransportDetail []TransportDetailItem
 
 func (t TransportDetail) Value() (driver.Value, error) {
@@ -48,25 +46,24 @@ func (t *TransportDetail) Scan(value interface{}) error {
 }
 
 type PenerimaDistribusiSisa struct {
-	PenerimaSisaID string `json:"penerima_sisa_id" gorm:"column:penerima_sisa_id;primaryKey;size:100"`
+	PenerimaSisaID string `json:"penerima_sisa_id" gorm:"column:penerima_sisa_id;primaryKey;size:22"`
 
-	DistribusiID string `json:"distribusi_id" gorm:"column:distribusi_id;size:100"`
+	DistribusiID string `json:"distribusi_id" gorm:"column:distribusi_id;size:19;not null;uniqueIndex:idx_penerima_distribusi_sisa_distribusi_bank"`
 
-	BankID string `json:"bank_id" gorm:"column:bank_id;size:100"`
+	BankID string `json:"bank_id" gorm:"column:bank_id;size:9;not null;index;uniqueIndex:idx_penerima_distribusi_sisa_distribusi_bank"`
 
-	JenisPenerimaan JenisTerimaEnum `json:"jenis_penerimaan" gorm:"column:jenis_penerimaan;type:jenis_terima_enum"`
+	JenisPenerimaan JenisTerimaEnum `json:"jenis_penerimaan" gorm:"column:jenis_penerimaan;type:jenis_terima_enum;not null"`
 
-	NominalDiterima float64 `json:"nominal_diterima" gorm:"column:nominal_diterima;type:decimal(20,4)"`
-	Transportasi    float64 `json:"transportasi"     gorm:"column:transportasi;type:decimal(20,4)"`
-	Porsi           float64 `json:"porsi"            gorm:"column:porsi;type:decimal(20,4)"`
+	NominalDiterima float64 `json:"nominal_diterima" gorm:"column:nominal_diterima;type:decimal(20,4);not null"`
+	Transportasi    float64 `json:"transportasi"     gorm:"column:transportasi;type:decimal(20,4);not null"`
+	Porsi           float64 `json:"porsi"            gorm:"column:porsi;type:decimal(20,4);not null"`
 
-	SatuanNominal string `json:"satuan_nominal" gorm:"column:satuan_nominal;type:satuan_reward_enum"`
+	SatuanNominal SatuanRewardEnum `json:"satuan_nominal" gorm:"column:satuan_nominal;type:satuan_reward_enum;not null"`
 
-	// Hanya diisi untuk row BSI: rincian transport yang diterima dari masing-masing BSU.
 	TransportDetail TransportDetail `json:"transport_detail,omitempty" gorm:"column:transport_detail;type:jsonb"`
 
-	DistribusiSisa DistribusiSisa `json:"distribusi_sisa,omitempty" gorm:"foreignKey:DistribusiID;references:DistribusiID"`
-	BankSampah     BankSampah     `json:"bank_sampah,omitempty"     gorm:"foreignKey:BankID;references:BankID"`
+	DistribusiSisa DistribusiSisa `json:"distribusi_sisa,omitempty" gorm:"foreignKey:DistribusiID;references:DistribusiID;constraint:OnDelete:CASCADE"`
+	BankSampah     BankSampah     `json:"bank_sampah,omitempty"     gorm:"foreignKey:BankID;references:BankID;constraint:OnDelete:RESTRICT"`
 }
 
 func (PenerimaDistribusiSisa) TableName() string {
