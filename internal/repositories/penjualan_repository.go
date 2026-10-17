@@ -40,7 +40,7 @@ func (r *PenjualanRepo) GetPersenNasabah(db *gorm.DB, bankID string, rewardID in
 
 func (r *PenjualanRepo) GetKatalogSampah(db *gorm.DB, sampahID string) (*models.KatalogSampah, error) {
 	var sampah models.KatalogSampah
-	err := db.Preload("Sarok").Where("sampah_id = ?", sampahID).First(&sampah).Error
+	err := db.Preload("Sarok.Satuan").Where("sampah_id = ?", sampahID).First(&sampah).Error
 	return &sampah, err
 }
 
@@ -91,7 +91,7 @@ func (r *PenjualanRepo) GetPenjualan(penjualanID string) (*models.Penjualan, err
 
 func (r *PenjualanRepo) GetDetailItems(penjualanID string) ([]models.DetailPenjualan, error) {
 	var details []models.DetailPenjualan
-	err := r.DB.Preload("Sampah.Sarok").Where("penjualan_id = ?", penjualanID).Find(&details).Error
+	err := r.DB.Preload("Sampah.Sarok.Satuan").Where("penjualan_id = ?", penjualanID).Find(&details).Error
 	return details, err
 }
 

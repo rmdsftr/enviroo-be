@@ -38,6 +38,16 @@ const (
 
 var useColor = os.Getenv("NO_COLOR") == ""
 
+// File test yang dilewati: tidak dijalankan, dan file sumber pasangannya tidak dihitung di coverage.
+var excludedTests = map[string]bool{
+	"internal/services/distribusi_sisa_service_test.go": true,
+	"internal/services/pengangkutan_service_test.go":    true,
+}
+
+func excludedSource(name string) bool {
+	return excludedTests[strings.TrimSuffix(name, ".go")+"_test.go"]
+}
+
 func paint(code, s string) string {
 	if !useColor {
 		return s
@@ -195,6 +205,9 @@ func collectTestFiles(root string) ([]testFile, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if excludedTests[rel] {
+			return nil
+		}
 		tf := testFile{rel: rel, dir: path.Dir(rel)}
 
 		f, err := parser.ParseFile(fset, p, nil, parser.SkipObjectResolution)
@@ -370,6 +383,9 @@ func parseProfile(file, module string) coverProfile {
 			continue
 		}
 		name := strings.TrimPrefix(l[:colon], module+"/")
+		if excludedSource(name) {
+			continue
+		}
 		if p[name] == nil {
 			p[name] = map[string]*block{}
 		}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -118,7 +119,7 @@ func (sc *StatistikController) GetStatistikSetoranSampahBank(c *gin.Context) {
 		SELECT
 			ks.sampah_id,
 			s.nama_sampah,
-			s.satuan,
+			sat.satuan,
 			r.nama_reward AS jenis_reward,
 			k.kategori,
 			SUM(dsn.qty) AS total_qty
@@ -127,6 +128,7 @@ func (sc *StatistikController) GetStatistikSetoranSampahBank(c *gin.Context) {
 		JOIN detail_setoran_nasabah dsn ON sn.setoran_id = dsn.setoran_id
 		JOIN katalog_sampah ks ON dsn.sampah_id = ks.sampah_id
 		JOIN sampah s ON s.sarok_id = ks.sarok_id
+		JOIN satuan sat ON sat.satuan_id = s.satuan_id
 		JOIN reward r ON ks.reward_id = r.reward_id
 		JOIN kategori_sampah k ON ks.kategori_id = k.kategori_id
 		WHERE a.bank_id = ?`
@@ -135,7 +137,7 @@ func (sc *StatistikController) GetStatistikSetoranSampahBank(c *gin.Context) {
 		nasabahQuery += ` AND sn.created_at >= ? AND sn.created_at < ?`
 		nasabahArgs = append(nasabahArgs, startDate, endDate)
 	}
-	nasabahQuery += ` GROUP BY ks.sampah_id, s.nama_sampah, s.satuan, r.nama_reward, k.kategori`
+	nasabahQuery += ` GROUP BY ks.sampah_id, s.nama_sampah, sat.satuan, r.nama_reward, k.kategori`
 
 	var hasilNasabah []StatistikItem
 	if err := sc.DB.Raw(nasabahQuery, nasabahArgs...).Scan(&hasilNasabah).Error; err != nil {
@@ -152,7 +154,7 @@ func (sc *StatistikController) GetStatistikSetoranSampahBank(c *gin.Context) {
 			SELECT
 				ks.sampah_id,
 				s.nama_sampah,
-				s.satuan,
+				sat.satuan,
 				r.nama_reward AS jenis_reward,
 				k.kategori,
 				SUM(dp.qty) AS total_qty
@@ -160,6 +162,7 @@ func (sc *StatistikController) GetStatistikSetoranSampahBank(c *gin.Context) {
 			JOIN detail_pengangkutan dp ON dp.pengangkutan_id = ps.pengangkutan_id
 			JOIN katalog_sampah ks ON ks.sampah_id = dp.sampah_id
 			JOIN sampah s ON s.sarok_id = ks.sarok_id
+			JOIN satuan sat ON sat.satuan_id = s.satuan_id
 			JOIN reward r ON r.reward_id = ks.reward_id
 			JOIN kategori_sampah k ON k.kategori_id = ks.kategori_id
 			JOIN riwayat_pengangkutan rp ON rp.pengangkutan_id = ps.pengangkutan_id
@@ -170,7 +173,7 @@ func (sc *StatistikController) GetStatistikSetoranSampahBank(c *gin.Context) {
 			paketQuery += ` AND rp.changed_at >= ? AND rp.changed_at < ?`
 			paketArgs = append(paketArgs, startDate, endDate)
 		}
-		paketQuery += ` GROUP BY ks.sampah_id, s.nama_sampah, s.satuan, r.nama_reward, k.kategori`
+		paketQuery += ` GROUP BY ks.sampah_id, s.nama_sampah, sat.satuan, r.nama_reward, k.kategori`
 
 		var hasilPaket []StatistikItem
 		if err := sc.DB.Raw(paketQuery, paketArgs...).Scan(&hasilPaket).Error; err != nil {
@@ -465,7 +468,7 @@ func (sc *StatistikController) GetStatistikPenjualanSampahBank(c *gin.Context) {
 		SELECT
 			ks.sampah_id,
 			s.nama_sampah,
-			s.satuan,
+			sat.satuan,
 			k.kategori,
 			r.nama_reward  AS jenis_reward,
 			SUM(dp.qty)                   AS total_qty,
@@ -475,6 +478,7 @@ func (sc *StatistikController) GetStatistikPenjualanSampahBank(c *gin.Context) {
 		JOIN penjualan p     ON p.penjualan_id = dp.penjualan_id
 		JOIN katalog_sampah ks ON ks.sampah_id = dp.sampah_id
 		JOIN sampah s ON s.sarok_id = ks.sarok_id
+		JOIN satuan sat ON sat.satuan_id = s.satuan_id
 		JOIN reward r          ON r.reward_id  = ks.reward_id
 		JOIN kategori_sampah k ON k.kategori_id = ks.kategori_id
 		WHERE p.bank_id = ?`
@@ -485,7 +489,7 @@ func (sc *StatistikController) GetStatistikPenjualanSampahBank(c *gin.Context) {
 		args = append(args, startDate, endDate)
 	}
 	query += `
-		GROUP BY ks.sampah_id, s.nama_sampah, s.satuan, k.kategori, r.nama_reward, p.satuan_reward
+		GROUP BY ks.sampah_id, s.nama_sampah, sat.satuan, k.kategori, r.nama_reward, p.satuan_reward
 		ORDER BY total_qty DESC`
 
 	var hasil []penjualanSampahItem
@@ -558,13 +562,14 @@ func (sc *StatistikController) GetStatistikMasukSampahBSU(c *gin.Context) {
 		SELECT
 			ks.sampah_id,
 			s.nama_sampah,
-			s.satuan,
+			sat.satuan,
 			k.kategori,
 			SUM(ts.qty)      AS total_masuk,
 			SUM(ts.sisa_qty) AS stok_tersisa
 		FROM tabungan_sampah ts
 		JOIN katalog_sampah ks  ON ks.sampah_id  = ts.sampah_id
 		JOIN sampah s ON s.sarok_id = ks.sarok_id
+		JOIN satuan sat ON sat.satuan_id = s.satuan_id
 		JOIN kategori_sampah k  ON k.kategori_id = ks.kategori_id
 		WHERE ts.bank_id = ? AND ts.entitas = ?`
 
@@ -574,7 +579,7 @@ func (sc *StatistikController) GetStatistikMasukSampahBSU(c *gin.Context) {
 		args = append(args, startDate, endDate)
 	}
 	query += `
-		GROUP BY ks.sampah_id, s.nama_sampah, s.satuan, k.kategori
+		GROUP BY ks.sampah_id, s.nama_sampah, sat.satuan, k.kategori
 		ORDER BY total_masuk DESC`
 
 	var hasil []masukItem
@@ -605,11 +610,12 @@ func (sc *StatistikController) GetVolumeSampahNasabah(c *gin.Context) {
 		SELECT
 			EXTRACT(MONTH FROM ts.created_at)::int AS bulan,
 			EXTRACT(YEAR  FROM ts.created_at)::int AS tahun,
-			s.satuan,
+			sat.satuan,
 			SUM(ts.qty) AS total_qty
 		FROM tabungan_sampah ts
 		JOIN katalog_sampah ks ON ks.sampah_id = ts.sampah_id
 		JOIN sampah s          ON s.sarok_id   = ks.sarok_id
+		JOIN satuan sat        ON sat.satuan_id = s.satuan_id
 		WHERE ts.entitas = ?`
 	args := []interface{}{models.EntitasNasabah}
 
@@ -623,8 +629,8 @@ func (sc *StatistikController) GetVolumeSampahNasabah(c *gin.Context) {
 	}
 
 	query += `
-		GROUP BY tahun, bulan, s.satuan
-		ORDER BY tahun ASC, bulan ASC, s.satuan ASC`
+		GROUP BY tahun, bulan, sat.satuan
+		ORDER BY tahun ASC, bulan ASC, sat.satuan ASC`
 
 	var results []VolumeRow
 	if err := sc.DB.Raw(query, args...).Scan(&results).Error; err != nil {
@@ -668,17 +674,26 @@ func (sc *StatistikController) GetKontribusiNasabah(c *gin.Context) {
 		filterTanggal = true
 	}
 
-	validSorts := map[string]string{
-		"setoran": "jumlah_setoran",
-		"kg":      "total_kg",
-		"pcs":     "total_pcs",
-		"liter":   "total_liter",
-	}
-	sortBy := c.DefaultQuery("sort_by", "setoran")
-	sortCol, ok := validSorts[sortBy]
-	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "sort_by tidak valid. Gunakan: setoran, kg, pcs, liter"})
+	var daftarSatuan []models.Satuan
+	if err := sc.DB.Find(&daftarSatuan).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data satuan"})
 		return
+	}
+
+	sortBy := c.DefaultQuery("sort_by", "setoran")
+	sortCol, sortSatuanID := "jumlah_setoran", 0
+	if sortBy != "setoran" {
+		pilihan := []string{"setoran"}
+		for _, sat := range daftarSatuan {
+			if sat.Satuan == sortBy {
+				sortCol, sortSatuanID = "total_qty", sat.SatuanID
+			}
+			pilihan = append(pilihan, sat.Satuan)
+		}
+		if sortSatuanID == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "sort_by tidak valid. Gunakan: " + strings.Join(pilihan, ", ")})
+			return
+		}
 	}
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
@@ -703,9 +718,7 @@ func (sc *StatistikController) GetKontribusiNasabah(c *gin.Context) {
 		n.bank_id,
 		b.nama_bank,
 		COUNT(DISTINCT sn.setoran_id) AS jumlah_setoran,
-		COALESCE(SUM(CASE WHEN s.satuan = 'kg'    THEN dsn.qty ELSE 0 END), 0) AS total_kg,
-		COALESCE(SUM(CASE WHEN s.satuan = 'pcs'   THEN dsn.qty ELSE 0 END), 0) AS total_pcs,
-		COALESCE(SUM(CASE WHEN s.satuan = 'liter' THEN dsn.qty ELSE 0 END), 0) AS total_liter`
+		COALESCE(SUM(CASE WHEN s.satuan_id = ? THEN dsn.qty ELSE 0 END), 0) AS total_qty`
 
 	joinClause := `
 		FROM setoran_nasabah sn
@@ -727,14 +740,14 @@ func (sc *StatistikController) GetKontribusiNasabah(c *gin.Context) {
 
 	q1 := fmt.Sprintf(`SELECT %s %s JOIN admin a ON sn.admin_id = a.admin_id WHERE a.bank_id = ?%s%s`,
 		selectCols, joinClause, dateFilter, groupBy)
-	args1 := append([]interface{}{bankID}, dateArgs...)
+	args1 := append([]interface{}{sortSatuanID, bankID}, dateArgs...)
 
 	q2 := ""
 	args2 := []interface{}{}
 	if bank.JenisBank == models.BSI {
 		q2 = fmt.Sprintf(`SELECT %s %s WHERE b.parent_bank_id = ? AND b.jenis_bank = 'bsu'%s%s`,
 			selectCols, joinClause, dateFilter, groupBy)
-		args2 = append([]interface{}{bankID}, dateArgs...)
+		args2 = append([]interface{}{sortSatuanID, bankID}, dateArgs...)
 	}
 
 	type KontribusiItem struct {
@@ -743,9 +756,7 @@ func (sc *StatistikController) GetKontribusiNasabah(c *gin.Context) {
 		BankID        string  `gorm:"column:bank_id" json:"bank_id"`
 		NamaBank      string  `gorm:"column:nama_bank" json:"nama_bank"`
 		JumlahSetoran int     `gorm:"column:jumlah_setoran" json:"jumlah_setoran"`
-		TotalKg       float64 `gorm:"column:total_kg" json:"total_kg"`
-		TotalPcs      float64 `gorm:"column:total_pcs" json:"total_pcs"`
-		TotalLiter    float64 `gorm:"column:total_liter" json:"total_liter"`
+		TotalQty      float64 `gorm:"column:total_qty" json:"total_qty"`
 		TotalCount    int     `gorm:"column:total_count" json:"-"`
 	}
 
@@ -775,47 +786,47 @@ func (sc *StatistikController) GetKontribusiNasabah(c *gin.Context) {
 		return
 	}
 
-	type BankTotals struct {
-		SumKg    float64 `gorm:"column:sum_kg"`
-		SumPcs   float64 `gorm:"column:sum_pcs"`
-		SumLiter float64 `gorm:"column:sum_liter"`
+	type TotalSatuanRow struct {
+		SatuanID int     `gorm:"column:satuan_id"`
+		Total    float64 `gorm:"column:total"`
 	}
-
-	totalsSelectRaw := `
-		COALESCE(SUM(CASE WHEN s.satuan = 'kg'    THEN dsn.qty ELSE 0 END), 0) AS sum_kg,
-		COALESCE(SUM(CASE WHEN s.satuan = 'pcs'   THEN dsn.qty ELSE 0 END), 0) AS sum_pcs,
-		COALESCE(SUM(CASE WHEN s.satuan = 'liter' THEN dsn.qty ELSE 0 END), 0) AS sum_liter`
-
-	totalsSelectCTE := `
-		COALESCE(SUM(CASE WHEN satuan = 'kg'    THEN qty ELSE 0 END), 0) AS sum_kg,
-		COALESCE(SUM(CASE WHEN satuan = 'pcs'   THEN qty ELSE 0 END), 0) AS sum_pcs,
-		COALESCE(SUM(CASE WHEN satuan = 'liter' THEN qty ELSE 0 END), 0) AS sum_liter`
 
 	var totalsQuery string
 	var totalsArgs []interface{}
 	if bank.JenisBank == models.BSI {
 		totalsQuery = fmt.Sprintf(`
 			WITH t1 AS (
-				SELECT dsn.qty, s.satuan %s JOIN admin a ON sn.admin_id = a.admin_id
+				SELECT dsn.qty, s.satuan_id %s JOIN admin a ON sn.admin_id = a.admin_id
 				WHERE a.bank_id = ?%s
 			), t2 AS (
-				SELECT dsn.qty, s.satuan %s
+				SELECT dsn.qty, s.satuan_id %s
 				WHERE b.parent_bank_id = ? AND b.jenis_bank = 'bsu'%s
 			), combined AS (SELECT * FROM t1 UNION ALL SELECT * FROM t2)
-			SELECT %s FROM combined`, joinClause, dateFilter, joinClause, dateFilter, totalsSelectCTE)
+			SELECT satuan_id, COALESCE(SUM(qty), 0) AS total FROM combined GROUP BY satuan_id`,
+			joinClause, dateFilter, joinClause, dateFilter)
 		totalsArgs = append(append([]interface{}{bankID}, dateArgs...), append([]interface{}{bankID}, dateArgs...)...)
 	} else {
 		totalsQuery = fmt.Sprintf(`
-			SELECT %s %s JOIN admin a ON sn.admin_id = a.admin_id
-			WHERE a.bank_id = ?%s`,
-			totalsSelectRaw, joinClause, dateFilter)
+			SELECT s.satuan_id, COALESCE(SUM(dsn.qty), 0) AS total %s JOIN admin a ON sn.admin_id = a.admin_id
+			WHERE a.bank_id = ?%s
+			GROUP BY s.satuan_id`,
+			joinClause, dateFilter)
 		totalsArgs = append([]interface{}{bankID}, dateArgs...)
 	}
 
-	var totals BankTotals
-	if err := sc.DB.Raw(totalsQuery, totalsArgs...).Scan(&totals).Error; err != nil {
+	var totalRows []TotalSatuanRow
+	if err := sc.DB.Raw(totalsQuery, totalsArgs...).Scan(&totalRows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil total kontribusi bank"})
 		return
+	}
+
+	totalPerSatuanID := make(map[int]float64, len(totalRows))
+	for _, row := range totalRows {
+		totalPerSatuanID[row.SatuanID] = row.Total
+	}
+	totals := make(map[string]float64, len(daftarSatuan))
+	for _, sat := range daftarSatuan {
+		totals[sat.Satuan] = totalPerSatuanID[sat.SatuanID]
 	}
 
 	totalCount := 0
@@ -832,11 +843,7 @@ func (sc *StatistikController) GetKontribusiNasabah(c *gin.Context) {
 			"jenis_bank": bank.JenisBank,
 		},
 		"sort_by": sortBy,
-		"totals": gin.H{
-			"total_kg":    totals.SumKg,
-			"total_pcs":   totals.SumPcs,
-			"total_liter": totals.SumLiter,
-		},
+		"totals":  totals,
 		"pagination": gin.H{
 			"page":        page,
 			"limit":       limit,

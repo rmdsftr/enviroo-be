@@ -1,6 +1,8 @@
 package services_test
 
 import (
+	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -17,7 +19,7 @@ func tabunganKatalog(sampahID, namaSampah string) *models.KatalogSampah {
 	return &models.KatalogSampah{
 		SampahID: sampahID,
 		RewardID: 1,
-		Sarok:    models.Sampah{NamaSampah: namaSampah, Satuan: models.SatuanKG},
+		Sarok:    models.Sampah{NamaSampah: namaSampah, SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}},
 		Reward:   models.Reward{RewardID: 1, NamaReward: models.RewardEnumUang, Satuan: models.SatuanRewardEnumRp},
 	}
 }
@@ -68,6 +70,8 @@ func TestBukuTabunganNasabah_BelumCair(t *testing.T) {
 	assert.Equal(t, "Botol Plastik", kelompok.NamaSampah)
 	assert.Equal(t, "kg", kelompok.SatuanSampah)
 	assert.Equal(t, "Rp", kelompok.SatuanDiterima)
+	assert.NotNil(t, kelompok.Antrian, "antrian harus [] di JSON, bukan null")
+	assert.Empty(t, kelompok.Antrian)
 
 	assert.Len(t, kelompok.Tabungan, 1)
 	item := kelompok.Tabungan[0]
@@ -199,4 +203,106 @@ func TestBukuTabunganBSU_BelumCairHargaNil(t *testing.T) {
 	assert.Nil(t, item.HargaItem)
 	assert.Nil(t, item.NilaiTotal)
 	assert.Equal(t, "Belum Cair", item.Status)
+}
+
+func tabKode(t *testing.T, err error) int {
+	t.Helper()
+	se, ok := err.(*services.ServiceError)
+	if !ok {
+		t.Fatalf("expected *services.ServiceError, got %T (%v)", err, err)
+	}
+	return se.Code
+}
+
+func tabBank(jenis models.JenisBank) *models.BankSampah {
+	return &models.BankSampah{BankID: "BNK-001", NamaBank: "Bank Uji", JenisBank: jenis, IsActive: true}
+}
+
+func tabunganBarisBank(tabunganID, sampahID string, qty, sisaQty float64) models.TabunganSampah {
+	baris := tabunganBaris(tabunganID, sampahID, "STR-001", qty, sisaQty)
+	bankID := "BNK-001"
+	baris.BankID = &bankID
+	return baris
+}
+
+func siapkanRepoAntrian(rows []models.TabunganSampah) *mocks.MockTabunganRepo {
+	repo := new(mocks.MockTabunganRepo)
+	repo.On("ListTabunganNasabah", "NSB-001", mock.Anything, mock.Anything).Return(rows, nil)
+	repo.On("ListPencairanTabungan", mock.Anything).Return(nil, nil)
+	return repo
+}
+
+func TestBukuTabunganNasabah_AntrianBSM(t *testing.T) {
+	rows := []models.TabunganSampah{
+		tabunganBarisBank("TAB-004", "SMP-001", 1.5, 1.5),
+		tabunganBarisBank("TAB-010", "SMP-002", 4, 0),
+	}
+	tanggal := func(hari int) time.Time { return time.Date(2026, 10, hari, 8, 0, 0, 0, time.UTC) }
+	antrian := []repositories.AntrianSampahRow{
+		{SampahID: "SMP-001", Nomor: 1, NasabahID: "NSB-ANI", NamaNasabah: "Ani", SisaQty: 2, TanggalSetor: tanggal(1)},
+		{SampahID: "SMP-001", Nomor: 2, NasabahID: "NSB-BUDI", NamaNasabah: "Budi", SisaQty: 3, TanggalSetor: tanggal(2)},
+		{SampahID: "SMP-001", Nomor: 3, NasabahID: "NSB-BUDI", NamaNasabah: "Budi", SisaQty: 1, TanggalSetor: tanggal(3)},
+		{SampahID: "SMP-001", Nomor: 4, NasabahID: "NSB-001", NamaNasabah: "Levi", SisaQty: 1.5, TanggalSetor: tanggal(4)},
+	}
+
+	repo := siapkanRepoAntrian(rows)
+	repo.On("FindBank", "BNK-001").Return(tabBank(models.BSM), nil)
+	repo.On("ListAntrianSampaiNasabah", "BNK-001", "NSB-001").Return(antrian, nil)
+
+	hasil, err := services.NewTabunganService(repo).BukuTabunganNasabah("NSB-001", "", "")
+
+	assert.NoError(t, err)
+	assert.Len(t, hasil.Sampah, 2)
+
+	botol := hasil.Sampah[0].Antrian
+	if assert.Len(t, botol, 4) {
+		for i, item := range botol {
+			assert.Equal(t, i+1, item.Nomor)
+		}
+		assert.Equal(t, "NSB-BUDI", botol[1].NasabahID)
+		assert.Equal(t, "NSB-BUDI", botol[2].NasabahID, "satu baris = satu tabungan, nasabah lain boleh muncul berkali-kali")
+
+		terakhir := botol[3]
+		assert.Equal(t, "NSB-001", terakhir.NasabahID)
+		assert.Equal(t, "Levi", terakhir.NamaNasabah)
+		assert.Equal(t, 1.5, terakhir.SisaQty)
+		assert.Equal(t, tanggal(4), terakhir.TanggalSetor)
+	}
+
+	assert.NotNil(t, hasil.Sampah[1].Antrian, "sampah yang sudah cair semua tetap [] di JSON, bukan null")
+	assert.Empty(t, hasil.Sampah[1].Antrian)
+}
+
+func TestBukuTabunganNasabah_AntrianBukanBSM(t *testing.T) {
+	repo := siapkanRepoAntrian([]models.TabunganSampah{tabunganBarisBank("TAB-001", "SMP-001", 10, 10)})
+	repo.On("FindBank", "BNK-001").Return(tabBank(models.BSI), nil)
+
+	hasil, err := services.NewTabunganService(repo).BukuTabunganNasabah("NSB-001", "", "")
+
+	assert.NoError(t, err)
+	assert.NotNil(t, hasil.Sampah[0].Antrian)
+	assert.Empty(t, hasil.Sampah[0].Antrian)
+	repo.AssertNotCalled(t, "ListAntrianSampaiNasabah", mock.Anything, mock.Anything)
+}
+
+func TestBukuTabunganNasabah_AntrianCekBankError(t *testing.T) {
+	repo := siapkanRepoAntrian([]models.TabunganSampah{tabunganBarisBank("TAB-001", "SMP-001", 10, 10)})
+	repo.On("FindBank", "BNK-001").Return(nil, errors.New("db error"))
+
+	hasil, err := services.NewTabunganService(repo).BukuTabunganNasabah("NSB-001", "", "")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, tabKode(t, err))
+	repo.AssertNotCalled(t, "ListAntrianSampaiNasabah", mock.Anything, mock.Anything)
+}
+
+func TestBukuTabunganNasabah_AntrianQueryError(t *testing.T) {
+	repo := siapkanRepoAntrian([]models.TabunganSampah{tabunganBarisBank("TAB-001", "SMP-001", 10, 10)})
+	repo.On("FindBank", "BNK-001").Return(tabBank(models.BSM), nil)
+	repo.On("ListAntrianSampaiNasabah", "BNK-001", "NSB-001").Return(nil, errors.New("db error"))
+
+	hasil, err := services.NewTabunganService(repo).BukuTabunganNasabah("NSB-001", "", "")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, tabKode(t, err))
 }

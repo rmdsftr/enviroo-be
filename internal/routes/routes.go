@@ -264,10 +264,15 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 		katalog.DELETE("/delete-sampah/:sampah_id", allAdmin, katalogController.DeleteKatalogSampah)
 		katalog.GET("/get-sampah/:bank_id", middleware.RequireRole(models.AdminBSI, models.PetugasBSI, models.AdminBSU, models.PetugasBSU, models.AdminBSM, models.PetugasBSM, models.RoleNasabah), bankParamOrBSI, katalogController.GetKatalogSampahBank)
 		katalog.GET("/get-detail/:sampah_id", middleware.RequireRole(models.AdminBSI, models.PetugasBSI, models.AdminBSU, models.PetugasBSU, models.AdminBSM, models.PetugasBSM, models.RoleNasabah), katalogController.GetDetailSampah)
+		katalog.GET("/history-harga/:sampah_id", middleware.RequireRole(models.AdminBSI, models.PetugasBSI, models.AdminBSU, models.PetugasBSU, models.AdminBSM, models.PetugasBSM, models.RoleNasabah), katalogController.GetHistoryHargaSampah)
 		katalog.POST("/add-kategori", superadminRole, katalogController.AddNewKategori)
 		katalog.GET("/get-kategori", katalogController.GetKategori)
 		katalog.PATCH("/update-kategori/:kategori_id", superadminRole, katalogController.UpdateKategori)
 		katalog.DELETE("/delete-kategori/:kategori_id", superadminRole, katalogController.DeleteKategori)
+		katalog.POST("/add-satuan", superadminRole, katalogController.AddNewSatuan)
+		katalog.GET("/get-satuan", katalogController.GetSatuan)
+		katalog.PATCH("/update-satuan/:satuan_id", superadminRole, katalogController.UpdateSatuan)
+		katalog.DELETE("/delete-satuan/:satuan_id", superadminRole, katalogController.DeleteSatuan)
 	}
 
 	barang := r.Group("/barang", requireAuth)
@@ -311,7 +316,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 		jadwal.GET("/get-all", superadminRole, jadwalController.GetAllJadwal)
 		jadwal.GET("/get-jadwal/:bank_id", allStaff, bankParamOrBSI, jadwalController.GetJadwalBank)
 		jadwal.GET("/penimbangan/:bank_id", bankParam, jadwalController.GetJadwalPenimbanganBank)
-		jadwal.GET("/master-penimbangan/:bank_id", allAdmin, bankParam, jadwalController.GetMasterJadwalPenimbanganBank)
+		jadwal.GET("/master-penimbangan/:bank_id", middleware.RequireRole(models.AdminBSI, models.PetugasBSI, models.AdminBSU, models.PetugasBSU, models.AdminBSM, models.PetugasBSM, models.RoleNasabah), bankParam, jadwalController.GetMasterJadwalPenimbanganBank)
 		jadwal.POST("/add-jadwal/:bank_id", allAdmin, bankParam, jadwalController.AddNewJadwal)
 		jadwal.POST("/add-jadwal-batch/:bank_id", allAdmin, bankParam, jadwalController.AddJadwalBatch)
 		jadwal.DELETE("/delete-jadwal/:jadwal_id", allAdmin, jadwalController.DeleteJadwal)
@@ -412,7 +417,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 		penjualan.GET("/detail-eksternal/:penjualan_id", staffBSIBSM, penjualanController.DetailPenjualanEksternal)
 
 		mitraController := controllers.NewMitraController(db)
-		penjualan.GET("/mitra/:bank_id", staffBSIBSM, bankParam, mitraController.ListMitra)
+		penjualan.GET("/mitra/:bank_id", middleware.RequireRole(models.AdminBSI, models.PetugasBSI, models.AdminBSM, models.PetugasBSM, models.RoleNasabah), bankParam, mitraController.ListMitra)
 		penjualan.POST("/mitra/:bank_id", staffBSIBSM, bankParam, mitraController.CreateMitra)
 		penjualan.PATCH("/mitra/:bank_id/:mitra_id", staffBSIBSM, bankParam, mitraController.UpdateMitra)
 		penjualan.DELETE("/mitra/:bank_id/:mitra_id", staffBSIBSM, bankParam, mitraController.DeleteMitra)
@@ -467,6 +472,9 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 		penarikan.GET("/detail/:penarikan_id", penarikanController.DetailPenarikanNasabah)
 		penarikan.PATCH("/batal/:penarikan_id", nasabahRole, penarikanController.BatalPenarikan)
 		penarikan.PATCH("/selesai", petugasAll, penarikanController.SelesaiPenarikan)
+		penarikan.GET("/setting/:bank_id", middleware.RequireRole(models.AdminBSI, models.PetugasBSI, models.AdminBSU, models.PetugasBSU, models.AdminBSM, models.PetugasBSM, models.RoleNasabah), bankParam, penarikanController.GetSettingPenarikan)
+		penarikan.PUT("/setting-waktu/:bank_id", allAdmin, bankParam, penarikanController.SimpanSettingWaktuPenarikan)
+		penarikan.PUT("/setting-saldo/:bank_id", allAdmin, bankParam, penarikanController.SimpanSettingSaldoPenarikan)
 	}
 
 	notifikasi := r.Group("/notifikasi", requireAuth)

@@ -224,9 +224,10 @@ func (r *PengangkutanRepo) GetDetailHeader(pengangkutanID string) (*Pengangkutan
 func (r *PengangkutanRepo) GetDetailItems(pengangkutanID string) ([]PengangkutanDetailItem, error) {
 	var items []PengangkutanDetailItem
 	err := r.db.Table("detail_pengangkutan dp").
-		Select("dp.sampah_id, s.nama_sampah, s.satuan, dp.qty").
+		Select("dp.sampah_id, s.nama_sampah, sat.satuan, dp.qty").
 		Joins("LEFT JOIN katalog_sampah ks ON ks.sampah_id = dp.sampah_id").
 		Joins("LEFT JOIN sampah s ON s.sarok_id = ks.sarok_id").
+		Joins("LEFT JOIN satuan sat ON sat.satuan_id = s.satuan_id").
 		Where("dp.pengangkutan_id = ?", pengangkutanID).
 		Find(&items).Error
 	return items, err
@@ -235,8 +236,9 @@ func (r *PengangkutanRepo) GetDetailItems(pengangkutanID string) ([]Pengangkutan
 func (r *PengangkutanRepo) GetSampahList(bsiID, bsuID string) ([]SampahPengangkutanRow, error) {
 	var rows []SampahPengangkutanRow
 	err := r.db.Table("katalog_sampah ks").
-		Select("ks.sampah_id, sampah.nama_sampah, ks.photo_url AS foto_sampah, sampah.satuan, r.nama_reward, COALESCE(ss.stok, 0) AS stok").
+		Select("ks.sampah_id, sampah.nama_sampah, ks.photo_url AS foto_sampah, satuan.satuan, r.nama_reward, COALESCE(ss.stok, 0) AS stok").
 		Joins("LEFT JOIN sampah ON sampah.sarok_id = ks.sarok_id").
+		Joins("LEFT JOIN satuan ON satuan.satuan_id = sampah.satuan_id").
 		Joins("LEFT JOIN stok_sampah ss ON ss.sampah_id = ks.sampah_id AND ss.bank_id = ?", bsuID).
 		Joins("LEFT JOIN reward r ON r.reward_id = ks.reward_id").
 		Where("ks.bank_id = ?", bsiID).

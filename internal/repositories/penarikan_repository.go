@@ -1,6 +1,7 @@
 package repositories
 
 import (
+	"database/sql"
 	"enviroo-be/internal/models"
 	"time"
 
@@ -244,6 +245,43 @@ func (r *PenarikanRepo) UpdateStok(tx *gorm.DB, produkID, bankID string, delta f
 
 func (r *PenarikanRepo) UpdateStatus(tx *gorm.DB, p *models.Penarikan, updates map[string]interface{}) error {
 	return tx.Model(p).Updates(updates).Error
+}
+
+func (r *PenarikanRepo) FindSettingPenarikan(bankID string) (*models.SettingPenarikan, error) {
+	var s models.SettingPenarikan
+	err := r.db.Where("bank_id = ?", bankID).First(&s).Error
+	return &s, err
+}
+
+func (r *PenarikanRepo) CreateSettingPenarikan(s *models.SettingPenarikan) error {
+	return r.db.Create(s).Error
+}
+
+func (r *PenarikanRepo) SaveSettingPenarikan(s *models.SettingPenarikan) error {
+	return r.db.Save(s).Error
+}
+
+func (r *PenarikanRepo) FindTanggalSetoranPertama(nasabahID string) (*time.Time, error) {
+	var pertama sql.NullTime
+	err := r.db.Raw(`SELECT MIN(created_at) FROM setoran_nasabah WHERE nasabah_id = ?`, nasabahID).
+		Row().Scan(&pertama)
+	if err != nil || !pertama.Valid {
+		return nil, err
+	}
+	return &pertama.Time, nil
+}
+
+func (r *PenarikanRepo) PunyaSaldoAwal(nasabahID string) (bool, error) {
+	var ada bool
+	err := r.db.Raw(`
+		SELECT EXISTS (
+			SELECT 1
+			FROM riwayat_arus_saldo ras
+			JOIN saldo_rekening sr ON sr.rekening_id = ras.rekening_id
+			WHERE sr.nasabah_id = ? AND ras.keterangan = ? AND ras.nominal_sesudah > 0
+		)`, nasabahID, models.KeteranganSaldoAwal).
+		Row().Scan(&ada)
+	return ada, err
 }
 
 func (r *PenarikanRepo) penarikanBaseQuery() *gorm.DB {

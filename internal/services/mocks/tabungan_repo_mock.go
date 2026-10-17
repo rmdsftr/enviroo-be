@@ -44,3 +44,19 @@ func (m *MockTabunganRepo) ListTanggalPengangkutanCompleted(pengangkutanIDs []st
 	}
 	return args.Get(0).(map[string]string), args.Error(1)
 }
+
+func (m *MockTabunganRepo) FindBank(bankID string) (*models.BankSampah, error) {
+	args := m.Called(bankID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.BankSampah), args.Error(1)
+}
+
+func (m *MockTabunganRepo) ListAntrianSampaiNasabah(bankID, nasabahID string) ([]repositories.AntrianSampahRow, error) {
+	args := m.Called(bankID, nasabahID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]repositories.AntrianSampahRow), args.Error(1)
+}

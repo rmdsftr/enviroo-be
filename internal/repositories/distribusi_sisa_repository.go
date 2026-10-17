@@ -200,7 +200,7 @@ func (r *DistribusiSisaRepo) GetPenerimaSisaWithDetails(penerimaSisaID string) (
 
 func (r *DistribusiSisaRepo) GetPerhitunganSisa(penerimaSisaID string) ([]models.PerhitunganSisa, error) {
 	var ph []models.PerhitunganSisa
-	err := r.DB.Preload("TabunganSampah.KatalogSampah.Sarok").
+	err := r.DB.Preload("TabunganSampah.KatalogSampah.Sarok.Satuan").
 		Where("penerima_sisa_id = ?", penerimaSisaID).Find(&ph).Error
 	return ph, err
 }

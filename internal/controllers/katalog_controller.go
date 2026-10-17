@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"enviroo-be/internal/middleware"
-	"enviroo-be/internal/models"
 	"enviroo-be/internal/services"
 	"enviroo-be/internal/adapters/storage"
 	"enviroo-be/internal/utils"
@@ -62,12 +61,12 @@ func (kc *KatalogController) GetMasterSampah(c *gin.Context) {
 
 func (kc *KatalogController) AddKatalog(c *gin.Context) {
 	var req struct {
-		NamaSampah      string            `form:"nama_sampah" binding:"required"`
-		SarokID         int               `form:"sarok_id"`
-		Satuan          models.SatuanEnum `form:"satuan" binding:"required"`
-		KategoriID      int               `form:"kategori_id" binding:"required"`
-		RewardID        int               `form:"reward_id" binding:"required"`
-		SyaratPemilahan string            `form:"syarat_pemilahan"`
+		NamaSampah      string `form:"nama_sampah" binding:"required"`
+		SarokID         int    `form:"sarok_id"`
+		SatuanID        int    `form:"satuan_id" binding:"required"`
+		KategoriID      int    `form:"kategori_id" binding:"required"`
+		RewardID        int    `form:"reward_id" binding:"required"`
+		SyaratPemilahan string `form:"syarat_pemilahan"`
 	}
 	if err := c.ShouldBind(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -83,7 +82,7 @@ func (kc *KatalogController) AddKatalog(c *gin.Context) {
 		BankID:          c.Param("bank_id"),
 		NamaSampah:      req.NamaSampah,
 		SarokID:         req.SarokID,
-		Satuan:          req.Satuan,
+		SatuanID:        req.SatuanID,
 		KategoriID:      req.KategoriID,
 		RewardID:        req.RewardID,
 		SyaratPemilahan: req.SyaratPemilahan,
@@ -169,6 +168,23 @@ func (kc *KatalogController) GetDetailSampah(c *gin.Context) {
 	})
 }
 
+func (kc *KatalogController) GetHistoryHargaSampah(c *gin.Context) {
+	akses, ok := aksesKatalog(c)
+	if !ok {
+		return
+	}
+
+	histories, err := kc.Svc.HistoryHargaKatalog(c.Param("sampah_id"), c.Query("start_date"), c.Query("end_date"), akses)
+	if err := handleServiceError(c, err); err != nil {
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Riwayat harga berhasil diambil",
+		"data":    histories,
+	})
+}
+
 func (kc *KatalogController) DeleteKatalogSampah(c *gin.Context) {
 	akses, ok := aksesKatalog(c)
 	if !ok {
@@ -244,4 +260,64 @@ func (kc *KatalogController) DeleteKategori(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Kategori berhasil dihapus"})
+}
+
+func (kc *KatalogController) AddNewSatuan(c *gin.Context) {
+	var req struct {
+		Satuan string `form:"satuan" binding:"required"`
+	}
+	if err := c.ShouldBind(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	satuan, err := kc.Svc.TambahSatuan(req.Satuan)
+	if err := handleServiceError(c, err); err != nil {
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"message": "Satuan berhasil ditambahkan",
+		"data":    satuan,
+	})
+}
+
+func (kc *KatalogController) GetSatuan(c *gin.Context) {
+	satuan, err := kc.Svc.ListSatuan()
+	if err := handleServiceError(c, err); err != nil {
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Satuan berhasil diambil",
+		"data":    satuan,
+	})
+}
+
+func (kc *KatalogController) UpdateSatuan(c *gin.Context) {
+	var req struct {
+		Satuan string `json:"satuan" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	satuan, err := kc.Svc.UbahSatuan(c.Param("satuan_id"), req.Satuan)
+	if err := handleServiceError(c, err); err != nil {
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Satuan berhasil diupdate",
+		"data":    satuan,
+	})
+}
+
+func (kc *KatalogController) DeleteSatuan(c *gin.Context) {
+	if err := handleServiceError(c, kc.Svc.HapusSatuan(c.Param("satuan_id"))); err != nil {
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Satuan berhasil dihapus"})
 }

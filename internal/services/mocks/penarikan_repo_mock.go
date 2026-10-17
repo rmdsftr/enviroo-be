@@ -1,6 +1,8 @@
 package mocks
 
 import (
+	"time"
+
 	"enviroo-be/internal/models"
 	"enviroo-be/internal/repositories"
 
@@ -187,4 +189,35 @@ func (m *MockPenarikanRepo) UpdateStok(tx *gorm.DB, produkID, bankID string, del
 func (m *MockPenarikanRepo) UpdateStatus(tx *gorm.DB, p *models.Penarikan, updates map[string]interface{}) error {
 	args := m.Called(tx, p, updates)
 	return args.Error(0)
+}
+
+func (m *MockPenarikanRepo) FindSettingPenarikan(bankID string) (*models.SettingPenarikan, error) {
+	args := m.Called(bankID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.SettingPenarikan), args.Error(1)
+}
+
+func (m *MockPenarikanRepo) CreateSettingPenarikan(s *models.SettingPenarikan) error {
+	args := m.Called(s)
+	return args.Error(0)
+}
+
+func (m *MockPenarikanRepo) SaveSettingPenarikan(s *models.SettingPenarikan) error {
+	args := m.Called(s)
+	return args.Error(0)
+}
+
+func (m *MockPenarikanRepo) FindTanggalSetoranPertama(nasabahID string) (*time.Time, error) {
+	args := m.Called(nasabahID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*time.Time), args.Error(1)
+}
+
+func (m *MockPenarikanRepo) PunyaSaldoAwal(nasabahID string) (bool, error) {
+	args := m.Called(nasabahID)
+	return args.Bool(0), args.Error(1)
 }

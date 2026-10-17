@@ -97,7 +97,11 @@ func (dsc *DistribusiSisaController) SubmitDistribusiSisa(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	for _, item := range result.PenerimaBSU {
-		pesanNilai := utils.FormatBagiHasilNilai(item.Nominal, result.Satuan)
+		pesanNilai, err := utils.FormatBagiHasilNilai(item.Nominal, result.Satuan)
+		if err != nil {
+			log.Printf("[DistribusiSisa] lewati notif BSU %s: %v", item.BankID, err)
+			continue
+		}
 		admins, err := dsc.Svc.GetAdminsByBankID(item.BankID)
 		if err != nil {
 			log.Printf("[DistribusiSisa] gagal ambil admin BSU %s: %v", item.BankID, err)

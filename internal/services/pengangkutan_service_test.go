@@ -46,7 +46,7 @@ func pgkPengangkutan() *models.PengangkutanSampah {
 func pgkKatalog(sampahID string, reward models.RewardEnum) *models.KatalogSampah {
 	return &models.KatalogSampah{
 		SampahID: sampahID,
-		Sarok:    models.Sampah{NamaSampah: "Botol Plastik", Satuan: models.SatuanKG},
+		Sarok:    models.Sampah{NamaSampah: "Botol Plastik", SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}},
 		Reward:   models.Reward{NamaReward: reward},
 	}
 }

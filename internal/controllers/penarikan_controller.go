@@ -197,6 +197,66 @@ func bindPenarikanFilter(c *gin.Context) repositories.PenarikanFilter {
 	return f
 }
 
+func (pc *PenarikanController) GetSettingPenarikan(c *gin.Context) {
+	setting, err := pc.Svc.GetSettingPenarikan(c.Param("bank_id"))
+	if err := handleServiceError(c, err); err != nil {
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Ketentuan penarikan berhasil diambil",
+		"data":    setting,
+	})
+}
+
+func (pc *PenarikanController) SimpanSettingWaktuPenarikan(c *gin.Context) {
+	claims, ok := middleware.GetClaims(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Sesi tidak valid"})
+		return
+	}
+
+	var req services.SimpanSettingWaktuReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Format request tidak valid: " + err.Error()})
+		return
+	}
+
+	setting, err := pc.Svc.SimpanSettingWaktuPenarikan(c.Param("bank_id"), claims.UserID, req)
+	if err := handleServiceError(c, err); err != nil {
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Syarat waktu penarikan berhasil disimpan",
+		"data":    setting,
+	})
+}
+
+func (pc *PenarikanController) SimpanSettingSaldoPenarikan(c *gin.Context) {
+	claims, ok := middleware.GetClaims(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Sesi tidak valid"})
+		return
+	}
+
+	var req services.SimpanSettingSaldoReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Format request tidak valid: " + err.Error()})
+		return
+	}
+
+	setting, err := pc.Svc.SimpanSettingSaldoPenarikan(c.Param("bank_id"), claims.UserID, req)
+	if err := handleServiceError(c, err); err != nil {
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Syarat saldo penarikan berhasil disimpan",
+		"data":    setting,
+	})
+}
+
 func handleServiceError(c *gin.Context, err error) error {
 	if err == nil {
 		return nil

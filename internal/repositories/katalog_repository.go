@@ -3,6 +3,7 @@ package repositories
 import (
 	"errors"
 	"regexp"
+	"time"
 
 	"enviroo-be/internal/models"
 
@@ -45,7 +46,7 @@ func (r *KatalogRepo) FindBank(bankID string) (*models.BankSampah, error) {
 }
 
 func (r *KatalogRepo) ListMasterSampah(q string) ([]models.Sampah, error) {
-	db := r.db.Model(&models.Sampah{})
+	db := r.db.Model(&models.Sampah{}).Preload("Satuan")
 	if q != "" {
 		db = db.Where("nama_sampah ~* ?", q)
 	}
@@ -78,7 +79,7 @@ func (r *KatalogRepo) FindKatalog(sampahID string) (*models.KatalogSampah, error
 func (r *KatalogRepo) FindKatalogWithRelasi(sampahID string) (*models.KatalogSampah, error) {
 	var katalog models.KatalogSampah
 	err := r.db.
-		Preload("Sarok").
+		Preload("Sarok.Satuan").
 		Preload("Kategori").
 		Preload("Reward").
 		Preload("Bank").
@@ -97,7 +98,7 @@ func (r *KatalogRepo) FindKatalogSejenis(sarokID int, bankID string) (*models.Ka
 }
 
 func (r *KatalogRepo) ListKatalogByBank(bankID string, limit, offset int) ([]models.KatalogSampah, error) {
-	q := r.db.Preload("Sarok").Preload("Kategori").Preload("Reward").
+	q := r.db.Preload("Sarok.Satuan").Preload("Kategori").Preload("Reward").
 		Where("bank_id = ?", bankID)
 
 	if limit > 0 {
@@ -198,9 +199,8 @@ func (r *KatalogRepo) ListSchemaHarga(sampahID string) ([]models.SchemaHargaSamp
 	return schemas, err
 }
 
-func (r *KatalogRepo) ListHistoryHarga(sampahID string) ([]HistoryHargaRow, error) {
-	var histories []HistoryHargaRow
-	err := r.db.Model(&models.KatalogSampahHistory{}).
+func (r *KatalogRepo) ListHistoryHarga(sampahID string, start, end *time.Time) ([]HistoryHargaRow, error) {
+	q := r.db.Model(&models.KatalogSampahHistory{}).
 		Select(`katalog_sampah_history.history_sampah_id,
 			katalog_sampah_history.schema_id,
 			schema_harga_sampah.level_user,
@@ -212,9 +212,17 @@ func (r *KatalogRepo) ListHistoryHarga(sampahID string) ([]HistoryHargaRow, erro
 		Joins("JOIN schema_harga_sampah ON schema_harga_sampah.schema_id = katalog_sampah_history.schema_id").
 		Joins("JOIN admin ON admin.admin_id = katalog_sampah_history.changed_by").
 		Joins("JOIN users ON users.user_id = admin.user_id").
-		Where("schema_harga_sampah.sampah_id = ?", sampahID).
-		Order("katalog_sampah_history.changed_at DESC").
-		Find(&histories).Error
+		Where("schema_harga_sampah.sampah_id = ?", sampahID)
+
+	if start != nil {
+		q = q.Where("katalog_sampah_history.changed_at >= ?", *start)
+	}
+	if end != nil {
+		q = q.Where("katalog_sampah_history.changed_at <= ?", *end)
+	}
+
+	var histories []HistoryHargaRow
+	err := q.Order("katalog_sampah_history.changed_at DESC").Find(&histories).Error
 	return histories, err
 }
 
@@ -260,7 +268,49 @@ func (r *KatalogRepo) CountKatalogByKategori(kategoriID string) (int64, error) {
 	return count, err
 }
 
-func (r *KatalogRepo) FindOrCreateMasterSampah(tx *gorm.DB, namaSampah string, satuan models.SatuanEnum) (*models.Sampah, error) {
+func (r *KatalogRepo) ListSatuan() ([]models.Satuan, error) {
+	var satuan []models.Satuan
+	err := r.db.Find(&satuan).Error
+	return satuan, err
+}
+
+func (r *KatalogRepo) FindSatuan(satuanID string) (*models.Satuan, error) {
+	var satuan models.Satuan
+	err := r.db.Where("satuan_id = ?", satuanID).First(&satuan).Error
+	return &satuan, err
+}
+
+func (r *KatalogRepo) CountSatuanDenganNama(namaNormal, exceptID string) (int64, error) {
+	q := r.db.Model(&models.Satuan{}).
+		Where("LOWER(REGEXP_REPLACE(satuan, '[^a-zA-Z0-9]', '', 'g')) = ?", namaNormal)
+	if exceptID != "" {
+		q = q.Where("satuan_id != ?", exceptID)
+	}
+
+	var count int64
+	err := q.Count(&count).Error
+	return count, err
+}
+
+func (r *KatalogRepo) CreateSatuan(satuan *models.Satuan) error {
+	return r.db.Create(satuan).Error
+}
+
+func (r *KatalogRepo) SaveSatuan(satuan *models.Satuan) error {
+	return r.db.Save(satuan).Error
+}
+
+func (r *KatalogRepo) DeleteSatuan(satuan *models.Satuan) error {
+	return r.db.Delete(satuan).Error
+}
+
+func (r *KatalogRepo) CountSampahBySatuan(satuanID string) (int64, error) {
+	var count int64
+	err := r.db.Model(&models.Sampah{}).Where("satuan_id = ?", satuanID).Count(&count).Error
+	return count, err
+}
+
+func (r *KatalogRepo) FindOrCreateMasterSampah(tx *gorm.DB, namaSampah string, satuanID int) (*models.Sampah, error) {
 	if namaSampah == "" {
 		return nil, errors.New("nama sampah tidak boleh kosong")
 	}
@@ -269,7 +319,7 @@ func (r *KatalogRepo) FindOrCreateMasterSampah(tx *gorm.DB, namaSampah string, s
 	pattern := "^" + regexp.QuoteMeta(namaSampah) + "$"
 
 	var existing models.Sampah
-	err := db.Where("nama_sampah ~* ? AND satuan = ?", pattern, satuan).First(&existing).Error
+	err := db.Where("nama_sampah ~* ? AND satuan_id = ?", pattern, satuanID).First(&existing).Error
 	if err == nil {
 		return &existing, nil
 	}
@@ -277,7 +327,7 @@ func (r *KatalogRepo) FindOrCreateMasterSampah(tx *gorm.DB, namaSampah string, s
 		return nil, err
 	}
 
-	baru := models.Sampah{NamaSampah: namaSampah, Satuan: satuan}
+	baru := models.Sampah{NamaSampah: namaSampah, SatuanID: satuanID}
 	if err := db.Create(&baru).Error; err != nil {
 		return nil, err
 	}

@@ -196,7 +196,7 @@ func TestPreviewSetoran_TolakInsentifTidakDilayani(t *testing.T) {
 	repo.On("FindNasabahWithUser", "NSB-001").Return(setoranNasabahAktif(), nil)
 	repo.On("FindKatalogSampah", "SMP-001").Return(&models.KatalogSampah{
 		SampahID: "SMP-001",
-		Sarok:    models.Sampah{NamaSampah: "Botol Plastik", Satuan: models.SatuanKG},
+		Sarok:    models.Sampah{NamaSampah: "Botol Plastik", SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}},
 		Reward:   models.Reward{NamaReward: models.RewardEnumBarang},
 	}, nil)
 	repo.On("InsentifSampahDilayani", mock.Anything, "BSM-001", "SMP-001").Return(false, nil)
@@ -251,7 +251,7 @@ func TestPreviewSetoran_Sukses_SingleItem(t *testing.T) {
 
 	katalog := &models.KatalogSampah{
 		SampahID: "SMP-001",
-		Sarok:    models.Sampah{NamaSampah: "Botol Plastik", Satuan: models.SatuanKG},
+		Sarok:    models.Sampah{NamaSampah: "Botol Plastik", SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}},
 		Reward:   models.Reward{NamaReward: models.RewardEnumUang},
 	}
 	repo.On("FindNasabahWithUser", "NSB-001").Return(setoranNasabahAktif(), nil)
@@ -275,8 +275,8 @@ func TestPreviewSetoran_Sukses_SingleItem(t *testing.T) {
 func TestPreviewSetoran_Sukses_MultipleItem(t *testing.T) {
 	_, repo, _, svc := newSetoranSvc(t)
 
-	katalog1 := &models.KatalogSampah{SampahID: "SMP-001", Sarok: models.Sampah{NamaSampah: "Botol Plastik", Satuan: models.SatuanKG}, Reward: models.Reward{NamaReward: models.RewardEnumUang}}
-	katalog2 := &models.KatalogSampah{SampahID: "SMP-002", Sarok: models.Sampah{NamaSampah: "Kertas", Satuan: models.SatuanKG}, Reward: models.Reward{NamaReward: models.RewardEnumBarang}}
+	katalog1 := &models.KatalogSampah{SampahID: "SMP-001", Sarok: models.Sampah{NamaSampah: "Botol Plastik", SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}}, Reward: models.Reward{NamaReward: models.RewardEnumUang}}
+	katalog2 := &models.KatalogSampah{SampahID: "SMP-002", Sarok: models.Sampah{NamaSampah: "Kertas", SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}}, Reward: models.Reward{NamaReward: models.RewardEnumBarang}}
 
 	repo.On("FindNasabahWithUser", "NSB-001").Return(setoranNasabahAktif(), nil)
 	repo.On("FindKatalogSampah", "SMP-001").Return(katalog1, nil)

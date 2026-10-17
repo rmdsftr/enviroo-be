@@ -163,7 +163,7 @@ func (s *setoranService) Preview(penimbanganID, nasabahID string, items []ItemSe
 			NamaSampah:  katalog.Sarok.NamaSampah,
 			JenisReward: string(katalog.Reward.NamaReward),
 			Qty:         item.Qty,
-			Satuan:      string(katalog.Sarok.Satuan),
+			Satuan:      katalog.Sarok.Satuan.Satuan,
 		})
 	}
 

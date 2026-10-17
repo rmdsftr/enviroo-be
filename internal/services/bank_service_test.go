@@ -21,7 +21,13 @@ const (
 	bnkBSU   = "301002001"
 	bnkUser  = "1371010101010001"
 	bnkActor = "100001"
+
+	bnkActorUser = "1371010101010099"
 )
+
+func bnkPelaku(bankID string) *models.Admin {
+	return &models.Admin{AdminID: bnkActor, UserID: bnkActorUser, BankID: &bankID, Role: models.AdminBSU, StatusAdmin: models.Aktif}
+}
 
 func newBnkSvc(t *testing.T) (sqlmock.Sqlmock, *mocks.MockBankRepo, *mocks.MockMailer, services.BankService) {
 	t.Helper()
@@ -1122,7 +1128,7 @@ func TestDeleteStaffBank_TidakDitemukan(t *testing.T) {
 	_, repo, _, svc := newBnkSvc(t)
 	repo.On("FindAdminWithUserBank", "33301002001001").Return(nil, gorm.ErrRecordNotFound)
 
-	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActor)
+	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActorUser)
 
 	assert.Nil(t, hasil)
 	assert.Equal(t, http.StatusNotFound, bnkKode(t, err))
@@ -1132,7 +1138,7 @@ func TestDeleteStaffBank_ErrorDBLain(t *testing.T) {
 	_, repo, _, svc := newBnkSvc(t)
 	repo.On("FindAdminWithUserBank", "33301002001001").Return(nil, errors.New("db error"))
 
-	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActor)
+	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActorUser)
 
 	assert.Nil(t, hasil)
 	assert.Equal(t, http.StatusInternalServerError, bnkKode(t, err))
@@ -1144,7 +1150,7 @@ func TestDeleteStaffBank_TanpaBank(t *testing.T) {
 	admin.BankID = nil
 	repo.On("FindAdminWithUserBank", "33301002001001").Return(admin, nil)
 
-	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActor)
+	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActorUser)
 
 	assert.Nil(t, hasil)
 	assert.Equal(t, http.StatusBadRequest, bnkKode(t, err))
@@ -1155,13 +1161,15 @@ func TestDeleteStaffBank_PendingHardDelete(t *testing.T) {
 	dbMock, repo, _, svc := newBnkSvc(t)
 	repo.On("FindAdminWithUserBank", "33301002001001").
 		Return(bnkAdmin("33301002001001", models.PetugasBSU, models.Pending), nil)
+	repo.On("FindAdminAktifByUser", bnkActorUser).Return(bnkPelaku(bnkBSU), nil)
+	repo.On("AdminPernahAktif", "33301002001001").Return(false, nil)
 	repo.On("FindNamaAdmin", bnkActor).Return("Admin Utama")
 	repo.On("DeleteAktivasiAdminBelumDipakai", mock.Anything, bnkUser, (*models.TujuanEnum)(nil)).Return(nil)
 	repo.On("CreateHistoryAkunBank", mock.Anything, mock.Anything).Return(nil)
 	repo.On("DeleteAdmin", mock.Anything, "33301002001001").Return(nil)
 	expectTx(dbMock, 1)
 
-	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActor)
+	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActorUser)
 
 	assert.NoError(t, err)
 	if assert.NotNil(t, hasil) {
@@ -1176,6 +1184,7 @@ func TestDeleteStaffBank_AktifSoftDelete(t *testing.T) {
 	dbMock, repo, mailerMock, svc := newBnkSvc(t)
 	repo.On("FindAdminWithUserBank", "33301002001001").
 		Return(bnkAdmin("33301002001001", models.PetugasBSU, models.Aktif), nil)
+	repo.On("FindAdminAktifByUser", bnkActorUser).Return(bnkPelaku(bnkBSU), nil)
 	repo.On("FindNamaAdmin", bnkActor).Return("Admin Utama")
 
 	var history *models.HistoryAkunBank
@@ -1185,15 +1194,17 @@ func TestDeleteStaffBank_AktifSoftDelete(t *testing.T) {
 	mailerMock.On("SendEmail", mock.Anything).Return(nil).Maybe()
 	expectTx(dbMock, 1)
 
-	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActor)
+	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActorUser)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, hasil)
 	repo.AssertNotCalled(t, "DeleteAdmin", mock.Anything, mock.Anything)
 	repo.AssertNotCalled(t, "DeleteAktivasiAdminBelumDipakai", mock.Anything, mock.Anything, mock.Anything)
+	repo.AssertNotCalled(t, "AdminPernahAktif", mock.Anything)
 	if assert.NotNil(t, history) {
 		assert.Equal(t, "DELETE", history.Action)
 		assert.Contains(t, string(history.OldValue), "Budi Santoso", "snapshot staff tersimpan sebelum dihapus")
+		assert.Equal(t, bnkActor, history.CreatedBy, "pelaku diambil dari token, bukan dari body")
 	}
 }
 
@@ -1205,13 +1216,15 @@ func TestDeleteStaffBank_FallbackNama(t *testing.T) {
 	repo.On("FindAdminWithUserBank", "33301002001001").Return(admin, nil)
 	repo.On("FindUser", bnkUser).Return(bnkUserModel(), nil)
 	repo.On("FindBank", bnkBSU).Return(bnkBank(bnkBSU, models.BSU), nil)
+	repo.On("FindAdminAktifByUser", bnkActorUser).Return(bnkPelaku(bnkBSU), nil)
+	repo.On("AdminPernahAktif", "33301002001001").Return(false, nil)
 	repo.On("FindNamaAdmin", bnkActor).Return("")
 	repo.On("DeleteAktivasiAdminBelumDipakai", mock.Anything, bnkUser, mock.Anything).Return(nil)
 	repo.On("CreateHistoryAkunBank", mock.Anything, mock.Anything).Return(nil)
 	repo.On("DeleteAdmin", mock.Anything, "33301002001001").Return(nil)
 	expectTx(dbMock, 1)
 
-	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActor)
+	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActorUser)
 
 	assert.NoError(t, err)
 	if assert.NotNil(t, hasil) {
@@ -1226,13 +1239,15 @@ func TestDeleteStaffBank_FallbackNamaKeUserID(t *testing.T) {
 	admin.User = models.User{}
 	repo.On("FindAdminWithUserBank", "33301002001001").Return(admin, nil)
 	repo.On("FindUser", bnkUser).Return(nil, errors.New("not found"))
+	repo.On("FindAdminAktifByUser", bnkActorUser).Return(bnkPelaku(bnkBSU), nil)
+	repo.On("AdminPernahAktif", "33301002001001").Return(false, nil)
 	repo.On("FindNamaAdmin", bnkActor).Return("Admin Utama")
 	repo.On("DeleteAktivasiAdminBelumDipakai", mock.Anything, bnkUser, mock.Anything).Return(nil)
 	repo.On("CreateHistoryAkunBank", mock.Anything, mock.Anything).Return(nil)
 	repo.On("DeleteAdmin", mock.Anything, "33301002001001").Return(nil)
 	expectTx(dbMock, 1)
 
-	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActor)
+	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActorUser)
 
 	assert.NoError(t, err)
 	assert.Equal(t, bnkUser, hasil.StaffName)
@@ -1242,12 +1257,14 @@ func TestDeleteStaffBank_HapusTokenError(t *testing.T) {
 	dbMock, repo, _, svc := newBnkSvc(t)
 	repo.On("FindAdminWithUserBank", "33301002001001").
 		Return(bnkAdmin("33301002001001", models.PetugasBSU, models.Pending), nil)
+	repo.On("FindAdminAktifByUser", bnkActorUser).Return(bnkPelaku(bnkBSU), nil)
+	repo.On("AdminPernahAktif", "33301002001001").Return(false, nil)
 	repo.On("FindNamaAdmin", bnkActor).Return("Admin Utama")
 	repo.On("DeleteAktivasiAdminBelumDipakai", mock.Anything, bnkUser, mock.Anything).
 		Return(errors.New("db error"))
 	expectTxRollback(dbMock)
 
-	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActor)
+	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActorUser)
 
 	assert.Nil(t, hasil)
 	assert.Equal(t, http.StatusInternalServerError, bnkKode(t, err))
@@ -1258,6 +1275,8 @@ func TestDeleteStaffBank_DeleteAdminError(t *testing.T) {
 	dbMock, repo, _, svc := newBnkSvc(t)
 	repo.On("FindAdminWithUserBank", "33301002001001").
 		Return(bnkAdmin("33301002001001", models.PetugasBSU, models.Pending), nil)
+	repo.On("FindAdminAktifByUser", bnkActorUser).Return(bnkPelaku(bnkBSU), nil)
+	repo.On("AdminPernahAktif", "33301002001001").Return(false, nil)
 	repo.On("FindNamaAdmin", bnkActor).Return("Admin Utama")
 	repo.On("DeleteAktivasiAdminBelumDipakai", mock.Anything, bnkUser, mock.Anything).Return(nil)
 	repo.On("CreateHistoryAkunBank", mock.Anything, mock.Anything).Return(nil)
@@ -1266,7 +1285,7 @@ func TestDeleteStaffBank_DeleteAdminError(t *testing.T) {
 	expectQueries(dbMock, 1)
 	dbMock.ExpectRollback()
 
-	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActor)
+	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActorUser)
 
 	assert.Nil(t, hasil)
 	assert.Equal(t, http.StatusInternalServerError, bnkKode(t, err))
@@ -1276,6 +1295,7 @@ func TestDeleteStaffBank_UpdateStatusError(t *testing.T) {
 	dbMock, repo, _, svc := newBnkSvc(t)
 	repo.On("FindAdminWithUserBank", "33301002001001").
 		Return(bnkAdmin("33301002001001", models.PetugasBSU, models.Aktif), nil)
+	repo.On("FindAdminAktifByUser", bnkActorUser).Return(bnkPelaku(bnkBSU), nil)
 	repo.On("FindNamaAdmin", bnkActor).Return("Admin Utama")
 	repo.On("CreateHistoryAkunBank", mock.Anything, mock.Anything).Return(nil)
 	repo.On("UpdateStatusAdmin", mock.Anything, "33301002001001", models.Nonaktif).
@@ -1284,9 +1304,114 @@ func TestDeleteStaffBank_UpdateStatusError(t *testing.T) {
 	expectQueries(dbMock, 1)
 	dbMock.ExpectRollback()
 
-	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActor)
+	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActorUser)
 
 	assert.Nil(t, hasil)
 	assert.Equal(t, http.StatusInternalServerError, bnkKode(t, err))
 	assert.Contains(t, err.Error(), "deactivate")
+}
+
+func TestDeleteStaffBank_PelakuTidakDitemukan(t *testing.T) {
+	dbMock, repo, _, svc := newBnkSvc(t)
+	repo.On("FindAdminWithUserBank", "33301002001001").
+		Return(bnkAdmin("33301002001001", models.PetugasBSU, models.Aktif), nil)
+	repo.On("FindAdminAktifByUser", bnkActorUser).Return(nil, gorm.ErrRecordNotFound)
+
+	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActorUser)
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusForbidden, bnkKode(t, err))
+	assert.NoError(t, dbMock.ExpectationsWereMet(), "transaksi gak boleh dibuka")
+}
+
+func TestDeleteStaffBank_BankLainDitolak(t *testing.T) {
+	dbMock, repo, _, svc := newBnkSvc(t)
+	repo.On("FindAdminWithUserBank", "33301002001001").
+		Return(bnkAdmin("33301002001001", models.PetugasBSU, models.Aktif), nil)
+	repo.On("FindAdminAktifByUser", bnkActorUser).Return(bnkPelaku(bnkBSI), nil)
+
+	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActorUser)
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusForbidden, bnkKode(t, err))
+	assert.Contains(t, err.Error(), "bank sampah Anda sendiri")
+	repo.AssertNotCalled(t, "CreateHistoryAkunBank", mock.Anything, mock.Anything)
+	repo.AssertNotCalled(t, "UpdateStatusAdmin", mock.Anything, mock.Anything, mock.Anything)
+	assert.NoError(t, dbMock.ExpectationsWereMet(), "transaksi gak boleh dibuka")
+}
+
+func TestDeleteStaffBank_HapusDiriSendiriDitolak(t *testing.T) {
+	dbMock, repo, _, svc := newBnkSvc(t)
+	repo.On("FindAdminWithUserBank", bnkActor).
+		Return(bnkAdmin(bnkActor, models.AdminBSU, models.Aktif), nil)
+	repo.On("FindAdminAktifByUser", bnkActorUser).Return(bnkPelaku(bnkBSU), nil)
+
+	hasil, err := svc.DeleteStaffBank(bnkActor, bnkActorUser)
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusForbidden, bnkKode(t, err))
+	assert.Contains(t, err.Error(), "akun sendiri")
+	repo.AssertNotCalled(t, "UpdateStatusAdmin", mock.Anything, mock.Anything, mock.Anything)
+	assert.NoError(t, dbMock.ExpectationsWereMet(), "transaksi gak boleh dibuka")
+}
+
+func TestDeleteStaffBank_SudahNonaktifDitolak(t *testing.T) {
+	dbMock, repo, mailerMock, svc := newBnkSvc(t)
+	repo.On("FindAdminWithUserBank", "33301002001001").
+		Return(bnkAdmin("33301002001001", models.PetugasBSU, models.Nonaktif), nil)
+	repo.On("FindAdminAktifByUser", bnkActorUser).Return(bnkPelaku(bnkBSU), nil)
+
+	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActorUser)
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusBadRequest, bnkKode(t, err))
+	assert.Contains(t, err.Error(), "sudah nonaktif")
+	repo.AssertNotCalled(t, "CreateHistoryAkunBank", mock.Anything, mock.Anything)
+	mailerMock.AssertNotCalled(t, "SendEmail", mock.Anything)
+	assert.NoError(t, dbMock.ExpectationsWereMet(), "transaksi gak boleh dibuka")
+}
+
+func TestDeleteStaffBank_PendingReaktivasiDibatalkan(t *testing.T) {
+	dbMock, repo, mailerMock, svc := newBnkSvc(t)
+	repo.On("FindAdminWithUserBank", "33301002001001").
+		Return(bnkAdmin("33301002001001", models.PetugasBSU, models.Pending), nil)
+	repo.On("FindAdminAktifByUser", bnkActorUser).Return(bnkPelaku(bnkBSU), nil)
+	repo.On("AdminPernahAktif", "33301002001001").Return(true, nil)
+	repo.On("FindNamaAdmin", bnkActor).Return("Admin Utama")
+	repo.On("DeleteAktivasiAdminBelumDipakai", mock.Anything, bnkUser, (*models.TujuanEnum)(nil)).Return(nil)
+	var history *models.HistoryAkunBank
+	repo.On("CreateHistoryAkunBank", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) { history = args.Get(1).(*models.HistoryAkunBank) }).Return(nil)
+	repo.On("UpdateStatusAdmin", mock.Anything, "33301002001001", models.Nonaktif).Return(nil)
+	expectTx(dbMock, 1)
+
+	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActorUser)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, hasil)
+	repo.AssertNotCalled(t, "DeleteAdmin", mock.Anything, mock.Anything)
+	mailerMock.AssertNotCalled(t, "SendEmail", mock.Anything)
+	if assert.NotNil(t, history) {
+		assert.Equal(t, "DELETE", history.Action)
+		assert.Contains(t, history.Informasi, "Reaktivasi")
+		assert.Contains(t, history.Informasi, "dibatalkan")
+		assert.Contains(t, history.Keterangan, "membatalkan reaktivasi")
+	}
+	repo.AssertExpectations(t)
+}
+
+func TestDeleteStaffBank_CekPernahAktifError(t *testing.T) {
+	dbMock, repo, _, svc := newBnkSvc(t)
+	repo.On("FindAdminWithUserBank", "33301002001001").
+		Return(bnkAdmin("33301002001001", models.PetugasBSU, models.Pending), nil)
+	repo.On("FindAdminAktifByUser", bnkActorUser).Return(bnkPelaku(bnkBSU), nil)
+	repo.On("FindNamaAdmin", bnkActor).Return("Admin Utama")
+	repo.On("AdminPernahAktif", "33301002001001").Return(false, errors.New("db error"))
+
+	hasil, err := svc.DeleteStaffBank("33301002001001", bnkActorUser)
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, bnkKode(t, err))
+	repo.AssertNotCalled(t, "DeleteAdmin", mock.Anything, mock.Anything)
+	assert.NoError(t, dbMock.ExpectationsWereMet(), "transaksi gak boleh dibuka")
 }

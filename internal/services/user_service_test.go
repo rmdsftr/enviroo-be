@@ -1040,7 +1040,7 @@ func TestTambahSuperadmin_Sukses(t *testing.T) {
 
 	assert.NoError(t, err)
 	if assert.NotNil(t, hasil) {
-		assert.Equal(t, "Budi Santoso", hasil.Nama, "nama dinormalisasi ke Title Case")
+		assert.Equal(t, "budi santoso", hasil.Nama, "nama disimpan apa adanya")
 		assert.Equal(t, models.SuperAdmin, hasil.Role)
 		assert.NotEmpty(t, hasil.AdminID)
 	}
@@ -1050,7 +1050,7 @@ func TestTambahSuperadmin_Sukses(t *testing.T) {
 		assert.Equal(t, models.SuperAdmin, adminDibuat.Role)
 	}
 	if assert.NotNil(t, userDibuat) {
-		assert.Equal(t, "Budi Santoso", userDibuat.Nama)
+		assert.Equal(t, "budi santoso", userDibuat.Nama)
 		assert.Empty(t, userDibuat.Password)
 	}
 	assert.NoError(t, dbMock.ExpectationsWereMet())

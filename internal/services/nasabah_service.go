@@ -341,7 +341,7 @@ func (s *nasabahService) buatRekeningAwal(tx *gorm.DB, nasabahID, adminID string
 		NominalSebelum: 0,
 		NominalSesudah: nominal,
 		CreatedBy:      &adminID,
-		Keterangan:     "Saldo awal nasabah",
+		Keterangan:     models.KeteranganSaldoAwal,
 	}); err != nil {
 		return errInternal("Failed to create riwayat saldo " + label + ": " + err.Error())
 	}
