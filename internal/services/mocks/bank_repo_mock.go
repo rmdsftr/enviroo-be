@@ -204,6 +204,19 @@ func (m *MockBankRepo) FindAdminByUserAndBankTx(tx *gorm.DB, userID, bankID stri
 	return args.Get(0).(*models.Admin), args.Error(1)
 }
 
+func (m *MockBankRepo) FindAdminAktifByUser(userID string) (*models.Admin, error) {
+	args := m.Called(userID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.Admin), args.Error(1)
+}
+
+func (m *MockBankRepo) AdminPernahAktif(adminID string) (bool, error) {
+	args := m.Called(adminID)
+	return args.Bool(0), args.Error(1)
+}
+
 func (m *MockBankRepo) DeleteAktivasiAdminBelumDipakai(tx *gorm.DB, userID string, tujuan *models.TujuanEnum) error {
 	args := m.Called(tx, userID, tujuan)
 	return args.Error(0)

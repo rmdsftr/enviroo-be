@@ -60,7 +60,11 @@ func (bhc *BagiHasilController) SubmitBagiHasil(c *gin.Context) {
 	notifs := result.NasabahNotifs
 	go func() {
 		for _, nd := range notifs {
-			pesanNilai := utils.FormatBagiHasilNilai(nd.Total, nd.Satuan)
+			pesanNilai, err := utils.FormatBagiHasilNilai(nd.Total, nd.Satuan)
+			if err != nil {
+				fmt.Printf("[Notif] Lewati notif bagi hasil nasabah ke user %s: %v\n", nd.UserID, err)
+				continue
+			}
 			if err := notifSvc.NotifBagiHasilNasabahDiterima(
 				context.Background(),
 				nd.UserID,

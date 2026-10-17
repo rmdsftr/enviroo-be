@@ -39,7 +39,7 @@ func (mc *MasterDataController) GetAllMasterSampah(c *gin.Context) {
 	db.Count(&total)
 
 	var results []models.Sampah
-	if err := db.Offset(offset).Limit(limit).Order("nama_sampah ASC").Find(&results).Error; err != nil {
+	if err := db.Preload("Satuan").Offset(offset).Limit(limit).Order("nama_sampah ASC").Find(&results).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data sampah"})
 		return
 	}
@@ -54,27 +54,29 @@ func (mc *MasterDataController) GetAllMasterSampah(c *gin.Context) {
 
 func (mc *MasterDataController) CreateMasterSampah(c *gin.Context) {
 	var req struct {
-		NamaSampah string            `json:"nama_sampah" binding:"required"`
-		Satuan     models.SatuanEnum `json:"satuan" binding:"required"`
+		NamaSampah string `json:"nama_sampah" binding:"required"`
+		SatuanID   int    `json:"satuan_id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	if req.Satuan != models.SatuanKG && req.Satuan != models.SatuanPCS && req.Satuan != models.SatuanLITER {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Satuan tidak valid, pilih: kg, pcs, liter"})
+	var satuan models.Satuan
+	if err := mc.DB.First(&satuan, req.SatuanID).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "satuan_id tidak valid"})
 		return
 	}
 
 	sampah := models.Sampah{
 		NamaSampah: req.NamaSampah,
-		Satuan:     req.Satuan,
+		SatuanID:   req.SatuanID,
 	}
 	if err := mc.DB.Create(&sampah).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat data sampah"})
 		return
 	}
+	sampah.Satuan = satuan
 
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Data sampah berhasil dibuat",
@@ -96,8 +98,8 @@ func (mc *MasterDataController) UpdateMasterSampah(c *gin.Context) {
 	}
 
 	var req struct {
-		NamaSampah string            `json:"nama_sampah"`
-		Satuan     models.SatuanEnum `json:"satuan"`
+		NamaSampah string `json:"nama_sampah"`
+		SatuanID   int    `json:"satuan_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -107,18 +109,19 @@ func (mc *MasterDataController) UpdateMasterSampah(c *gin.Context) {
 	if req.NamaSampah != "" {
 		sampah.NamaSampah = req.NamaSampah
 	}
-	if req.Satuan != "" {
-		if req.Satuan != models.SatuanKG && req.Satuan != models.SatuanPCS && req.Satuan != models.SatuanLITER {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Satuan tidak valid, pilih: kg, pcs, liter"})
+	if req.SatuanID != 0 {
+		if err := mc.DB.First(&models.Satuan{}, req.SatuanID).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "satuan_id tidak valid"})
 			return
 		}
-		sampah.Satuan = req.Satuan
+		sampah.SatuanID = req.SatuanID
 	}
 
 	if err := mc.DB.Save(&sampah).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengupdate data sampah"})
 		return
 	}
+	mc.DB.First(&sampah.Satuan, sampah.SatuanID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Data sampah berhasil diupdate",
@@ -203,17 +206,18 @@ func (mc *MasterDataController) GetStatistikSampah(c *gin.Context) {
 		SELECT
 			s.sarok_id,
 			s.nama_sampah,
-			s.satuan,
+			sat.satuan,
 			r.nama_reward                               AS jenis_reward,
 			r.satuan                                    AS satuan_reward,
 			COALESCE(AVG(dp.harga_nasabah_snapshot), 0) AS rata_rata_harga,
 			COUNT(DISTINCT ks.sampah_id)                AS jumlah_katalog
 		FROM sampah s
+		JOIN satuan sat               ON sat.satuan_id  = s.satuan_id
 		LEFT JOIN katalog_sampah ks   ON ks.sarok_id    = s.sarok_id
 		LEFT JOIN reward r            ON r.reward_id    = ks.reward_id
 		LEFT JOIN detail_penjualan dp ON dp.sampah_id   = ks.sampah_id
 		LEFT JOIN penjualan pj        ON pj.penjualan_id = dp.penjualan_id ` + dateFilter + `
-		GROUP BY s.sarok_id, s.nama_sampah, s.satuan, r.nama_reward, r.satuan
+		GROUP BY s.sarok_id, s.nama_sampah, sat.satuan, r.nama_reward, r.satuan
 		ORDER BY s.nama_sampah ASC, r.nama_reward ASC
 	`
 
@@ -283,15 +287,16 @@ func (mc *MasterDataController) GetFavoritSampah(c *gin.Context) {
 		SELECT
 			s.sarok_id,
 			s.nama_sampah,
-			s.satuan,
+			sat.satuan,
 			SUM(ts.qty)                   AS total_qty,
 			COUNT(DISTINCT ts.nasabah_id) AS jumlah_nasabah,
 			COUNT(ts.tabungan_id)         AS jumlah_setoran
 		FROM tabungan_sampah ts
 		JOIN katalog_sampah ks ON ks.sampah_id = ts.sampah_id
 		JOIN sampah s          ON s.sarok_id   = ks.sarok_id
+		JOIN satuan sat        ON sat.satuan_id = s.satuan_id
 		WHERE ts.entitas = ? ` + dateFilter + `
-		GROUP BY s.sarok_id, s.nama_sampah, s.satuan
+		GROUP BY s.sarok_id, s.nama_sampah, sat.satuan
 		ORDER BY total_qty DESC
 		LIMIT ?
 	`
@@ -324,11 +329,12 @@ func (mc *MasterDataController) GetSampahPerKategori(c *gin.Context) {
 			k.kategori,
 			s.sarok_id,
 			s.nama_sampah,
-			s.satuan
+			sat.satuan
 		FROM kategori_sampah k
 		LEFT JOIN katalog_sampah ks ON ks.kategori_id = k.kategori_id
 		LEFT JOIN sampah s          ON s.sarok_id     = ks.sarok_id
-		GROUP BY k.kategori_id, k.kategori, s.sarok_id, s.nama_sampah, s.satuan
+		LEFT JOIN satuan sat        ON sat.satuan_id  = s.satuan_id
+		GROUP BY k.kategori_id, k.kategori, s.sarok_id, s.nama_sampah, sat.satuan
 		ORDER BY k.kategori ASC, s.nama_sampah ASC
 	`).Scan(&rows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data: " + err.Error()})

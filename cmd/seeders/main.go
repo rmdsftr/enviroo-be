@@ -60,7 +60,7 @@ func seedSuperadmin(db *gorm.DB, mail *mailer.Mailer) error {
 
 	user := models.User{
 		UserID:     superadminUserID,
-		Nama:       utils.ToTitleCase(superadminNama),
+		Nama:       superadminNama,
 		Email:      superadminEmail,
 		NoWhatsapp: superadminWhatsapp,
 	}

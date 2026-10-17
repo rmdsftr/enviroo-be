@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"enviroo-be/internal/idgen"
 	"enviroo-be/internal/models"
@@ -20,7 +21,7 @@ type KatalogRepoIface interface {
 	FindBank(bankID string) (*models.BankSampah, error)
 	ListMasterSampah(q string) ([]models.Sampah, error)
 	FindMasterSampah(sarokID int) (*models.Sampah, error)
-	FindOrCreateMasterSampah(tx *gorm.DB, namaSampah string, satuan models.SatuanEnum) (*models.Sampah, error)
+	FindOrCreateMasterSampah(tx *gorm.DB, namaSampah string, satuanID int) (*models.Sampah, error)
 	AdaNilaiRewardAktif(bankID string, rewardID int) (bool, error)
 	FindKatalog(sampahID string) (*models.KatalogSampah, error)
 	FindKatalogWithRelasi(sampahID string) (*models.KatalogSampah, error)
@@ -36,7 +37,7 @@ type KatalogRepoIface interface {
 	FindStok(bankID, sampahID string) (float64, error)
 	CreateStok(tx *gorm.DB, stok *models.StokSampah) error
 	ListSchemaHarga(sampahID string) ([]models.SchemaHargaSampah, error)
-	ListHistoryHarga(sampahID string) ([]repositories.HistoryHargaRow, error)
+	ListHistoryHarga(sampahID string, start, end *time.Time) ([]repositories.HistoryHargaRow, error)
 	ListKategori() ([]models.KategoriSampah, error)
 	FindKategori(kategoriID string) (*models.KategoriSampah, error)
 	CountKategoriDenganNama(namaNormal, exceptID string) (int64, error)
@@ -44,13 +45,20 @@ type KatalogRepoIface interface {
 	SaveKategori(kategori *models.KategoriSampah) error
 	DeleteKategori(kategori *models.KategoriSampah) error
 	CountKatalogByKategori(kategoriID string) (int64, error)
+	ListSatuan() ([]models.Satuan, error)
+	FindSatuan(satuanID string) (*models.Satuan, error)
+	CountSatuanDenganNama(namaNormal, exceptID string) (int64, error)
+	CreateSatuan(satuan *models.Satuan) error
+	SaveSatuan(satuan *models.Satuan) error
+	DeleteSatuan(satuan *models.Satuan) error
+	CountSampahBySatuan(satuanID string) (int64, error)
 }
 
 type TambahKatalogInput struct {
 	BankID          string
 	NamaSampah      string
 	SarokID         int
-	Satuan          models.SatuanEnum
+	SatuanID        int
 	KategoriID      int
 	RewardID        int
 	SyaratPemilahan string
@@ -85,7 +93,7 @@ type KatalogItem struct {
 	SarokID         int                   `json:"sarok_id"`
 	NamaSampah      string                `json:"nama_sampah"`
 	PhotoURL        string                `json:"photo_url"`
-	Satuan          models.SatuanEnum     `json:"satuan"`
+	Satuan          string                `json:"satuan"`
 	BankID          string                `json:"bank_id"`
 	KategoriID      int                   `json:"kategori_id"`
 	RewardID        int                   `json:"reward_id"`
@@ -107,14 +115,13 @@ type DetailKatalogResult struct {
 	SarokID         int                            `json:"sarok_id"`
 	NamaSampah      string                         `json:"nama_sampah"`
 	PhotoURL        string                         `json:"photo_url"`
-	Satuan          models.SatuanEnum              `json:"satuan"`
-	SyaratPemilahan string                         `json:"syarat_pemilahan"`
-	BankID          string                         `json:"bank_id"`
-	Kategori        models.KategoriSampah          `json:"kategori"`
-	Reward          models.Reward                  `json:"reward"`
-	Stok            float64                        `json:"stok"`
-	HargaPerLevel   []HargaLevelItem               `json:"harga_per_level"`
-	HistoryHarga    []repositories.HistoryHargaRow `json:"history_harga"`
+	Satuan          string                         `json:"satuan"`
+	SyaratPemilahan string                `json:"syarat_pemilahan"`
+	BankID          string                `json:"bank_id"`
+	Kategori        models.KategoriSampah `json:"kategori"`
+	Reward          models.Reward         `json:"reward"`
+	Stok            float64               `json:"stok"`
+	HargaPerLevel   []HargaLevelItem      `json:"harga_per_level"`
 }
 
 type KatalogService interface {
@@ -125,11 +132,17 @@ type KatalogService interface {
 	HapusKatalog(in HapusKatalogInput) error
 	ListKatalogBank(bankID string, page int) ([]KatalogItem, *utils.PageMeta, error)
 	DetailKatalog(sampahID string, in AksesKatalogInput) (*DetailKatalogResult, error)
+	HistoryHargaKatalog(sampahID, startDate, endDate string, in AksesKatalogInput) ([]repositories.HistoryHargaRow, error)
 
 	ListKategori() ([]models.KategoriSampah, error)
 	TambahKategori(nama string) (*models.KategoriSampah, error)
 	UbahKategori(kategoriID, nama string) (*models.KategoriSampah, error)
 	HapusKategori(kategoriID string) error
+
+	ListSatuan() ([]models.Satuan, error)
+	TambahSatuan(nama string) (*models.Satuan, error)
+	UbahSatuan(satuanID, nama string) (*models.Satuan, error)
+	HapusSatuan(satuanID string) error
 }
 
 type katalogService struct {
@@ -157,7 +170,7 @@ func (s *katalogService) TambahKatalog(in TambahKatalogInput) (*TambahKatalogRes
 	if bank.JenisBank == models.BSU {
 		return nil, errForbidden("BSU tidak dapat menambah katalog sampah. Katalog diwarisi dari BSI induk.")
 	}
-	if err := validasiSatuan(in.Satuan); err != nil {
+	if err := s.pastikanSatuanAda(in.SatuanID); err != nil {
 		return nil, err
 	}
 
@@ -175,15 +188,15 @@ func (s *katalogService) TambahKatalog(in TambahKatalogInput) (*TambahKatalogRes
 		if err != nil {
 			return nil, errBadRequest("sarok_id tidak valid")
 		}
-		if master.Satuan != in.Satuan {
-			master, err = s.repo.FindOrCreateMasterSampah(nil, master.NamaSampah, in.Satuan)
+		if master.SatuanID != in.SatuanID {
+			master, err = s.repo.FindOrCreateMasterSampah(nil, master.NamaSampah, in.SatuanID)
 			if err != nil {
 				return nil, errInternal("Gagal memproses master sampah: " + err.Error())
 			}
 		}
 		sarokID = master.SarokID
 	} else {
-		master, err := s.repo.FindOrCreateMasterSampah(nil, in.NamaSampah, in.Satuan)
+		master, err := s.repo.FindOrCreateMasterSampah(nil, in.NamaSampah, in.SatuanID)
 		if err != nil {
 			return nil, errInternal("Gagal memproses master sampah: " + err.Error())
 		}
@@ -353,7 +366,7 @@ func (s *katalogService) ListKatalogBank(bankID string, page int) ([]KatalogItem
 			SarokID:         k.SarokID,
 			NamaSampah:      k.Sarok.NamaSampah,
 			PhotoURL:        k.PhotoURL,
-			Satuan:          k.Sarok.Satuan,
+			Satuan:          k.Sarok.Satuan.Satuan,
 			BankID:          k.BankID,
 			KategoriID:      k.KategoriID,
 			RewardID:        k.RewardID,
@@ -403,28 +416,39 @@ func (s *katalogService) DetailKatalog(sampahID string, in AksesKatalogInput) (*
 		})
 	}
 
-	histories, err := s.repo.ListHistoryHarga(sampahID)
-	if err != nil {
-		return nil, errInternal("Gagal mengambil riwayat harga")
-	}
-	if histories == nil {
-		histories = []repositories.HistoryHargaRow{}
-	}
-
 	return &DetailKatalogResult{
 		SampahID:        katalog.SampahID,
 		SarokID:         katalog.Sarok.SarokID,
 		NamaSampah:      katalog.Sarok.NamaSampah,
 		PhotoURL:        katalog.PhotoURL,
-		Satuan:          katalog.Sarok.Satuan,
+		Satuan:          katalog.Sarok.Satuan.Satuan,
 		SyaratPemilahan: katalog.SyaratPemilahan,
 		BankID:          katalog.BankID,
 		Kategori:        katalog.Kategori,
 		Reward:          katalog.Reward,
 		Stok:            stok,
 		HargaPerLevel:   hargaPerLevel,
-		HistoryHarga:    histories,
 	}, nil
+}
+
+func (s *katalogService) HistoryHargaKatalog(sampahID, startDate, endDate string, in AksesKatalogInput) ([]repositories.HistoryHargaRow, error) {
+	katalog, err := s.repo.FindKatalog(sampahID)
+	if err != nil {
+		return nil, errNotFound("Katalog sampah tidak ditemukan")
+	}
+	if err := pastikanAksesKatalog(in, katalog.BankID); err != nil {
+		return nil, err
+	}
+
+	start, end := rentangTanggal(startDate, endDate)
+	histories, err := s.repo.ListHistoryHarga(sampahID, start, end)
+	if err != nil {
+		return nil, errInternal("Gagal mengambil riwayat harga")
+	}
+	if histories == nil {
+		histories = []repositories.HistoryHargaRow{}
+	}
+	return histories, nil
 }
 
 func (s *katalogService) ListKategori() ([]models.KategoriSampah, error) {
@@ -483,12 +507,70 @@ func (s *katalogService) HapusKategori(kategoriID string) error {
 	return nil
 }
 
-func validasiSatuan(satuan models.SatuanEnum) error {
-	switch satuan {
-	case models.SatuanKG, models.SatuanPCS, models.SatuanLITER:
-		return nil
+func (s *katalogService) ListSatuan() ([]models.Satuan, error) {
+	satuan, err := s.repo.ListSatuan()
+	if err != nil {
+		return nil, errInternal("Gagal mengambil satuan: " + err.Error())
 	}
-	return errBadRequest("satuan harus salah satu dari: kg, pcs, liter")
+	return satuan, nil
+}
+
+func (s *katalogService) TambahSatuan(nama string) (*models.Satuan, error) {
+	if err := s.pastikanNamaSatuanUnik(nama, ""); err != nil {
+		return nil, err
+	}
+
+	satuan := &models.Satuan{Satuan: nama}
+	if err := s.repo.CreateSatuan(satuan); err != nil {
+		return nil, errInternal("Gagal membuat satuan: " + err.Error())
+	}
+	return satuan, nil
+}
+
+func (s *katalogService) UbahSatuan(satuanID, nama string) (*models.Satuan, error) {
+	satuan, err := s.repo.FindSatuan(satuanID)
+	if err != nil {
+		return nil, errNotFound("Satuan tidak ditemukan")
+	}
+	if err := s.pastikanNamaSatuanUnik(nama, satuanID); err != nil {
+		return nil, err
+	}
+
+	satuan.Satuan = nama
+	if err := s.repo.SaveSatuan(satuan); err != nil {
+		return nil, errInternal("Gagal mengupdate satuan: " + err.Error())
+	}
+	return satuan, nil
+}
+
+func (s *katalogService) HapusSatuan(satuanID string) error {
+	satuan, err := s.repo.FindSatuan(satuanID)
+	if err != nil {
+		return errNotFound("Satuan tidak ditemukan")
+	}
+
+	count, err := s.repo.CountSampahBySatuan(satuanID)
+	if err != nil {
+		return errInternal("Gagal memvalidasi pemakaian satuan: " + err.Error())
+	}
+	if count > 0 {
+		return errConflict("Satuan masih digunakan oleh data sampah dan tidak dapat dihapus", nil)
+	}
+
+	if err := s.repo.DeleteSatuan(satuan); err != nil {
+		return errInternal("Gagal menghapus satuan: " + err.Error())
+	}
+	return nil
+}
+
+func (s *katalogService) pastikanSatuanAda(satuanID int) error {
+	if _, err := s.repo.FindSatuan(strconv.Itoa(satuanID)); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errBadRequest("satuan_id tidak valid")
+		}
+		return errInternal("Gagal memeriksa satuan: " + err.Error())
+	}
+	return nil
 }
 
 func (s *katalogService) resolveBankKatalog(bankID string) (string, error) {
@@ -524,6 +606,17 @@ func (s *katalogService) pastikanNamaKategoriUnik(nama, exceptID string) error {
 	}
 	if count > 0 {
 		return errConflict("Kategori dengan nama tersebut sudah ada", nil)
+	}
+	return nil
+}
+
+func (s *katalogService) pastikanNamaSatuanUnik(nama, exceptID string) error {
+	count, err := s.repo.CountSatuanDenganNama(utils.NormalizeString(nama), exceptID)
+	if err != nil {
+		return errInternal("Gagal memvalidasi nama satuan: " + err.Error())
+	}
+	if count > 0 {
+		return errConflict("Satuan dengan nama tersebut sudah ada", nil)
 	}
 	return nil
 }

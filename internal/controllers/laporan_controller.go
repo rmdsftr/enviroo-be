@@ -3,8 +3,9 @@ package controllers
 import (
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
+
+	"enviroo-be/internal/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xuri/excelize/v2"
@@ -72,7 +73,7 @@ func (lc *LaporanController) DownloadLaporanPenimbangan(c *gin.Context) {
 			n.nomor_rekening,
 			sn.created_at     AS waktu_setoran,
 			s.nama_sampah,
-			s.satuan,
+			sat.satuan,
 			dsn.qty
 		FROM setoran_nasabah sn
 		JOIN nasabah n                   ON n.nasabah_id   = sn.nasabah_id
@@ -80,6 +81,7 @@ func (lc *LaporanController) DownloadLaporanPenimbangan(c *gin.Context) {
 		JOIN detail_setoran_nasabah dsn  ON dsn.setoran_id = sn.setoran_id
 		JOIN katalog_sampah ks           ON ks.sampah_id   = dsn.sampah_id
 		JOIN sampah s                    ON s.sarok_id     = ks.sarok_id
+		JOIN satuan sat                  ON sat.satuan_id  = s.satuan_id
 		WHERE sn.penimbangan_id = ?
 		ORDER BY sn.created_at ASC, s.nama_sampah ASC
 	`, penimbanganID).Scan(&details).Error; err != nil {
@@ -311,15 +313,16 @@ func (lc *LaporanController) DownloadLaporanRekapPenimbangan(c *gin.Context) {
 			s.nama_sampah,
 			kat.kategori,
 			SUM(dsn.qty) AS qty,
-			s.satuan
+			sat.satuan
 		FROM setoran_nasabah sn
 		JOIN penimbangan p              ON p.penimbangan_id = sn.penimbangan_id
 		JOIN detail_setoran_nasabah dsn ON dsn.setoran_id    = sn.setoran_id
 		JOIN katalog_sampah ks          ON ks.sampah_id      = dsn.sampah_id
 		JOIN sampah s                   ON s.sarok_id        = ks.sarok_id
+		JOIN satuan sat                 ON sat.satuan_id     = s.satuan_id
 		JOIN kategori_sampah kat        ON kat.kategori_id   = ks.kategori_id
 		WHERE p.bank_id = ? AND sn.created_at BETWEEN ? AND ?
-		GROUP BY s.sarok_id, s.nama_sampah, kat.kategori, s.satuan
+		GROUP BY s.sarok_id, s.nama_sampah, kat.kategori, sat.satuan
 		ORDER BY s.nama_sampah ASC
 	`, bankID, startDate, endDate).Scan(&sampahRows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil rekap sampah: " + err.Error()})
@@ -340,7 +343,7 @@ func (lc *LaporanController) DownloadLaporanRekapPenimbangan(c *gin.Context) {
 			u.nama            AS nama_nasabah,
 			s.nama_sampah,
 			SUM(dsn.qty)      AS qty,
-			s.satuan
+			sat.satuan
 		FROM setoran_nasabah sn
 		JOIN penimbangan p              ON p.penimbangan_id = sn.penimbangan_id
 		JOIN nasabah n                  ON n.nasabah_id      = sn.nasabah_id
@@ -348,8 +351,9 @@ func (lc *LaporanController) DownloadLaporanRekapPenimbangan(c *gin.Context) {
 		JOIN detail_setoran_nasabah dsn ON dsn.setoran_id     = sn.setoran_id
 		JOIN katalog_sampah ks          ON ks.sampah_id       = dsn.sampah_id
 		JOIN sampah s                   ON s.sarok_id         = ks.sarok_id
+		JOIN satuan sat                 ON sat.satuan_id      = s.satuan_id
 		WHERE p.bank_id = ? AND sn.created_at BETWEEN ? AND ?
-		GROUP BY n.nasabah_id, u.nama, s.sarok_id, s.nama_sampah, s.satuan
+		GROUP BY n.nasabah_id, u.nama, s.sarok_id, s.nama_sampah, sat.satuan
 		ORDER BY u.nama ASC, s.nama_sampah ASC
 	`, bankID, startDate, endDate).Scan(&nasabahRows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil rekap nasabah: " + err.Error()})
@@ -881,10 +885,11 @@ func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 	}
 	var details []detailRow
 	if err := lc.DB.Raw(`
-		SELECT s.nama_sampah, s.satuan, dp.qty
+		SELECT s.nama_sampah, sat.satuan, dp.qty
 		FROM detail_pengangkutan dp
 		JOIN katalog_sampah ks ON ks.sampah_id = dp.sampah_id
 		JOIN sampah s ON s.sarok_id = ks.sarok_id
+		JOIN satuan sat ON sat.satuan_id = s.satuan_id
 		WHERE dp.pengangkutan_id = ?
 		ORDER BY s.nama_sampah ASC
 	`, pengangkutanID).Scan(&details).Error; err != nil {
@@ -1112,13 +1117,6 @@ func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 	}
 }
 
-func formatSatuanReward(satuan string) string {
-	if strings.EqualFold(satuan, "poin") {
-		return `#,##0.00" poin"`
-	}
-	return `"Rp"#,##0.00`
-}
-
 func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 	bagiHasilID := c.Param("bagi_hasil_id")
 
@@ -1245,7 +1243,7 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 	sheet := "Laporan Bagi Hasil"
 	f.SetSheetName("Sheet1", sheet)
 
-	numFmt := formatSatuanReward(hdr.SatuanBagiHasil)
+	numFmt := utils.FormatReward(hdr.SatuanBagiHasil)
 	numFmtPolos := "#,##0.00"
 
 	styleTitle, _ := f.NewStyle(&excelize.Style{
@@ -1624,7 +1622,7 @@ func (lc *LaporanController) DownloadLaporanPenjualan(c *gin.Context) {
 	if err := lc.DB.Raw(`
 		SELECT
 			s.nama_sampah,
-			s.satuan,
+			sat.satuan,
 			dp.qty,
 			dp.harga_jual,
 			dp.subtotal_penjualan,
@@ -1632,6 +1630,7 @@ func (lc *LaporanController) DownloadLaporanPenjualan(c *gin.Context) {
 		FROM detail_penjualan dp
 		JOIN katalog_sampah ks ON ks.sampah_id = dp.sampah_id
 		JOIN sampah s ON s.sarok_id = ks.sarok_id
+		JOIN satuan sat ON sat.satuan_id = s.satuan_id
 		WHERE dp.penjualan_id = ?
 		ORDER BY s.nama_sampah ASC
 	`, penjualanID).Scan(&details).Error; err != nil {
@@ -1899,7 +1898,7 @@ func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 			s.nama_sampah,
 			kat.kategori,
 			SUM(dp.qty)                 AS qty,
-			s.satuan,
+			sat.satuan,
 			p.satuan_reward,
 			dp.harga_jual,
 			SUM(dp.subtotal_penjualan)  AS subtotal
@@ -1907,9 +1906,10 @@ func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 		JOIN penjualan p         ON p.penjualan_id  = dp.penjualan_id
 		JOIN katalog_sampah ks   ON ks.sampah_id     = dp.sampah_id
 		JOIN sampah s            ON s.sarok_id       = ks.sarok_id
+		JOIN satuan sat          ON sat.satuan_id    = s.satuan_id
 		JOIN kategori_sampah kat ON kat.kategori_id  = ks.kategori_id
 		WHERE p.bank_id = ? AND p.created_at BETWEEN ? AND ?
-		GROUP BY s.sarok_id, s.nama_sampah, kat.kategori, s.satuan, p.satuan_reward, dp.harga_jual
+		GROUP BY s.sarok_id, s.nama_sampah, kat.kategori, sat.satuan, p.satuan_reward, dp.harga_jual
 		ORDER BY p.satuan_reward ASC, s.nama_sampah ASC, dp.harga_jual ASC
 	`, bankID, startDate, endDate).Scan(&sampahRows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil rekap sampah: " + err.Error()})
@@ -1936,13 +1936,14 @@ func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 			p.satuan_reward,
 			s.nama_sampah,
 			dp.qty,
-			s.satuan,
+			sat.satuan,
 			dp.harga_jual,
 			dp.subtotal_penjualan
 		FROM detail_penjualan dp
 		JOIN penjualan p       ON p.penjualan_id = dp.penjualan_id
 		JOIN katalog_sampah ks ON ks.sampah_id    = dp.sampah_id
 		JOIN sampah s          ON s.sarok_id      = ks.sarok_id
+		JOIN satuan sat        ON sat.satuan_id   = s.satuan_id
 		LEFT JOIN mitra_pengepul m ON m.mitra_id  = p.mitra_id
 		WHERE p.bank_id = ? AND p.created_at BETWEEN ? AND ?
 		ORDER BY p.created_at ASC, s.nama_sampah ASC
@@ -3320,7 +3321,7 @@ func (lc *LaporanController) DownloadLaporanKatalogSampah(c *gin.Context) {
 		SELECT
 			s.nama_sampah,
 			k.kategori,
-			s.satuan,
+			sat.satuan,
 			r.nama_reward                                                                        AS jenis_reward,
 			COALESCE(MAX(sh.harga) FILTER (WHERE sh.level_user = 'nasabah'),   0)               AS harga_nasabah,
 			COALESCE(MAX(sh.harga) FILTER (WHERE sh.level_user = 'eksternal'), 0)               AS harga_eksternal,
@@ -3329,11 +3330,12 @@ func (lc *LaporanController) DownloadLaporanKatalogSampah(c *gin.Context) {
 			ks.created_at
 		FROM katalog_sampah ks
 		JOIN sampah s           ON s.sarok_id    = ks.sarok_id
+		JOIN satuan sat         ON sat.satuan_id = s.satuan_id
 		JOIN kategori_sampah k  ON k.kategori_id = ks.kategori_id
 		JOIN reward r           ON r.reward_id   = ks.reward_id
 		LEFT JOIN schema_harga_sampah sh ON sh.sampah_id = ks.sampah_id
 		WHERE ks.bank_id = ? %s
-		GROUP BY s.nama_sampah, k.kategori, s.satuan, r.nama_reward, ks.syarat_pemilahan, ks.created_at
+		GROUP BY s.nama_sampah, k.kategori, sat.satuan, r.nama_reward, ks.syarat_pemilahan, ks.created_at
 		ORDER BY k.kategori ASC, s.nama_sampah ASC
 	`, stokFilter), queryArgs...).Scan(&rows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data katalog sampah: " + err.Error()})

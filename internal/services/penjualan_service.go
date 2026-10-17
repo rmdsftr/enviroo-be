@@ -50,7 +50,7 @@ type ItemSampahDijual struct {
 type DetailKalkulasiItem struct {
 	SampahID             string  `json:"sampah_id"`
 	NamaSampah           string  `json:"nama_sampah"`
-	Satuan               models.SatuanEnum  `json:"satuan"`
+	Satuan               string  `json:"satuan"`
 	Qty                  float64 `json:"qty"`
 	HargaJual            float64 `json:"harga_jual"`
 	Subtotal             float64 `json:"subtotal"`
@@ -86,13 +86,13 @@ type RiwayatPenjualanItem struct {
 }
 
 type SampahDetailItem struct {
-	SampahID             string            `json:"sampah_id"`
-	NamaSampah           string            `json:"nama_sampah"`
-	Satuan               models.SatuanEnum `json:"satuan"`
-	Qty                  float64           `json:"qty"`
-	HargaJual            float64           `json:"harga_jual"`
-	SubtotalPenjualan    float64           `json:"subtotal_penjualan"`
-	HargaNasabahSnapshot float64           `json:"harga_nasabah_snapshot"`
+	SampahID             string  `json:"sampah_id"`
+	NamaSampah           string  `json:"nama_sampah"`
+	Satuan               string  `json:"satuan"`
+	Qty                  float64 `json:"qty"`
+	HargaJual            float64 `json:"harga_jual"`
+	SubtotalPenjualan    float64 `json:"subtotal_penjualan"`
+	HargaNasabahSnapshot float64 `json:"harga_nasabah_snapshot"`
 }
 
 type DetailPenjualanResp struct {
@@ -163,7 +163,7 @@ func (s *PenjualanService) hitungKalkulasi(
 		detailItems = append(detailItems, DetailKalkulasiItem{
 			SampahID:             item.SampahID,
 			NamaSampah:           sampah.Sarok.NamaSampah,
-			Satuan:               sampah.Sarok.Satuan,
+			Satuan:               sampah.Sarok.Satuan.Satuan,
 			Qty:                  item.Qty,
 			HargaJual:            item.HargaJual,
 			Subtotal:             subtotal,
@@ -401,7 +401,7 @@ func (s *PenjualanService) GetDetail(penjualanID string) (*DetailPenjualanResp, 
 		items = append(items, SampahDetailItem{
 			SampahID:             d.SampahID,
 			NamaSampah:           namaSampah,
-			Satuan:               d.Sampah.Sarok.Satuan,
+			Satuan:               d.Sampah.Sarok.Satuan.Satuan,
 			Qty:                  d.Qty,
 			HargaJual:            d.HargaJual,
 			SubtotalPenjualan:    d.SubtotalPenjualan,

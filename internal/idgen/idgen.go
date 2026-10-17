@@ -879,6 +879,14 @@ func GenerateSettingSisaBagiHasilID(bankID string) (string, error) {
 	return "SET" + bankID, nil
 }
 
+func GenerateSettingPenarikanID(bankID string) (string, error) {
+	if bankID == "" {
+		return "", fmt.Errorf("bank ID tidak boleh kosong untuk setting penarikan")
+	}
+
+	return "SP" + bankID, nil
+}
+
 func GenerateKontenID(tx *gorm.DB, adminID string) (string, error) {
 	if adminID == "" {
 		return "", fmt.Errorf("admin ID tidak boleh kosong untuk konten")

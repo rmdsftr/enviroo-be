@@ -2,6 +2,8 @@ package models
 
 import "time"
 
+const KeteranganSaldoAwal = "Saldo awal nasabah"
+
 type RiwayatArusSaldo struct {
 	RiwayatSaldoID string    `gorm:"column:riwayat_saldo_id;type:varchar(25);primaryKey" json:"riwayat_saldo_id"`
 	RekeningID     *string   `gorm:"column:rekening_id;type:varchar(16);not null;index" json:"rekening_id"`

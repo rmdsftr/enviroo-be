@@ -734,7 +734,7 @@ func (s *DistribusiSisaService) DetailBagiHasilBank(penerimaSisaID string) (*Det
 		satuan := ""
 		if ph.TabunganSampah.KatalogSampah != nil {
 			namaSampah = ph.TabunganSampah.KatalogSampah.Sarok.NamaSampah
-			satuan = string(ph.TabunganSampah.KatalogSampah.Sarok.Satuan)
+			satuan = ph.TabunganSampah.KatalogSampah.Sarok.Satuan.Satuan
 		}
 		phList = append(phList, PerhitunganResp{
 			TabunganID: ph.TabunganID,

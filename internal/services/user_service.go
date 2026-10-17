@@ -8,7 +8,6 @@ import (
 	"enviroo-be/internal/idgen"
 	"enviroo-be/internal/models"
 	"enviroo-be/internal/repositories"
-	"enviroo-be/internal/utils"
 
 	"gorm.io/gorm"
 )
@@ -435,7 +434,7 @@ func (s *userService) TambahSuperadmin(in TambahSuperadminInput) (*SuperadminBar
 
 	user := &models.User{
 		UserID:     in.UserID,
-		Nama:       utils.ToTitleCase(in.Nama),
+		Nama:       in.Nama,
 		Email:      in.Email,
 		NoWhatsapp: in.NoWhatsapp,
 	}

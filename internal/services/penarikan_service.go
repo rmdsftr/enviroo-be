@@ -7,6 +7,7 @@ import (
 	"enviroo-be/internal/models"
 	"enviroo-be/internal/repositories"
 	"enviroo-be/internal/utils"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -43,6 +44,12 @@ type PenarikanRepoIface interface {
 	SaveDetailBarang(tx *gorm.DB, d *models.DetailPenarikanBarang) error
 	UpdateStok(tx *gorm.DB, produkID, bankID string, delta float64) error
 	UpdateStatus(tx *gorm.DB, p *models.Penarikan, updates map[string]interface{}) error
+
+	FindSettingPenarikan(bankID string) (*models.SettingPenarikan, error)
+	CreateSettingPenarikan(s *models.SettingPenarikan) error
+	SaveSettingPenarikan(s *models.SettingPenarikan) error
+	FindTanggalSetoranPertama(nasabahID string) (*time.Time, error)
+	PunyaSaldoAwal(nasabahID string) (bool, error)
 }
 
 type BarangItemReq struct {
@@ -64,6 +71,16 @@ type KonfirmasiPenarikanReq struct {
 	Catatan *string `json:"catatan"`
 
 	DeadlineJemput string `json:"deadline_jemput"`
+}
+
+type SimpanSettingWaktuReq struct {
+	MinWaktu    int                    `json:"min_waktu"`
+	SatuanWaktu models.SatuanWaktuEnum `json:"satuan_waktu"`
+}
+
+type SimpanSettingSaldoReq struct {
+	MinRupiah *float64 `json:"min_rupiah"`
+	MinPoin   *float64 `json:"min_poin"`
 }
 
 type SelesaiPenarikanReq struct {
@@ -162,6 +179,9 @@ type PenarikanService interface {
 	GetList(nasabahID string, f repositories.PenarikanFilter) (*ListPenarikanResult, error)
 	GetListByBank(bankID string, f repositories.PenarikanFilter) ([]PenarikanSummary, error)
 	GetDetail(penarikanID, userID string, role models.RoleAdmin) (*PenarikanDetail, error)
+	GetSettingPenarikan(bankID string) (*models.SettingPenarikan, error)
+	SimpanSettingWaktuPenarikan(bankID, adminUserID string, req SimpanSettingWaktuReq) (*models.SettingPenarikan, error)
+	SimpanSettingSaldoPenarikan(bankID, adminUserID string, req SimpanSettingSaldoReq) (*models.SettingPenarikan, error)
 }
 
 type penarikanService struct {
@@ -181,10 +201,76 @@ func resolveKatalogBankID(nasabah *models.Nasabah) string {
 	return nasabah.BankID
 }
 
+func (s *penarikanService) pastikanBolehMenarik(nasabah *models.Nasabah) (*models.SettingPenarikan, error) {
+	setting, err := s.repo.FindSettingPenarikan(nasabah.BankID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errBadRequest("Bank sampah belum mengatur ketentuan penarikan, penarikan belum dapat diajukan")
+		}
+		return nil, errInternal("Gagal memeriksa ketentuan penarikan: " + err.Error())
+	}
+	if setting.MinWaktu == nil || setting.SatuanWaktu == nil {
+		return nil, errBadRequest("Bank sampah belum mengatur syarat waktu penarikan, penarikan belum dapat diajukan")
+	}
+	minWaktu, satuanWaktu := *setting.MinWaktu, *setting.SatuanWaktu
+
+	punyaSaldoAwal, err := s.repo.PunyaSaldoAwal(nasabah.NasabahID)
+	if err != nil {
+		return nil, errInternal("Gagal memeriksa saldo awal nasabah: " + err.Error())
+	}
+
+	mulai := nasabah.JoinedAt
+	if !punyaSaldoAwal {
+		pertama, err := s.repo.FindTanggalSetoranPertama(nasabah.NasabahID)
+		if err != nil {
+			return nil, errInternal("Gagal memeriksa riwayat setoran: " + err.Error())
+		}
+		if pertama == nil {
+			return nil, errBadRequest("Belum ada setoran tabungan, penarikan belum dapat diajukan")
+		}
+		mulai = *pertama
+	}
+
+	bolehMulai := mulai.AddDate(0, minWaktu, 0)
+	if satuanWaktu == models.SatuanWaktuMinggu {
+		bolehMulai = mulai.AddDate(0, 0, 7*minWaktu)
+	}
+	if time.Now().Before(bolehMulai) {
+		return nil, errBadRequest(fmt.Sprintf("Penarikan baru dapat diajukan mulai %s (minimal menabung %d %s)",
+			utils.FormatTanggalSajaIndo(bolehMulai), minWaktu, satuanWaktu))
+	}
+	return setting, nil
+}
+
+// Syarat saldo minimal sesuai satuan reward; nil berarti bank tidak melayani penarikan jenis ini.
+func minimalPenarikan(setting *models.SettingPenarikan, satuan models.SatuanRewardEnum) (float64, error) {
+	minimal, jenis := setting.MinRupiah, "uang"
+	if satuan == models.SatuanRewardEnumPoin {
+		minimal, jenis = setting.MinPoin, "poin"
+	}
+	if minimal == nil {
+		return 0, errBadRequest("Bank sampah belum mengatur syarat saldo penarikan " + jenis + ", penarikan belum dapat diajukan")
+	}
+	return *minimal, nil
+}
+
+func pastikanSaldoMinimal(saldo, minimal float64, satuan models.SatuanRewardEnum) error {
+	if saldo < minimal {
+		return errBadRequest(fmt.Sprintf("Saldo minimal untuk penarikan %s, saldo Anda %s",
+			FormatPenarikanNilai(minimal, satuan), FormatPenarikanNilai(saldo, satuan)))
+	}
+	return nil
+}
+
 func (s *penarikanService) Preview(nasabahID string, req AjukanPenarikanReq) (*PreviewResult, error) {
 	nasabah, err := s.repo.FindNasabahAktif(nasabahID)
 	if err != nil {
 		return nil, errNotFound("Nasabah tidak ditemukan atau tidak aktif")
+	}
+
+	setting, err := s.pastikanBolehMenarik(nasabah)
+	if err != nil {
+		return nil, err
 	}
 
 	reward, err := s.repo.FindReward(req.RewardID)
@@ -196,9 +282,18 @@ func (s *penarikanService) Preview(nasabahID string, req AjukanPenarikanReq) (*P
 		return nil, err
 	}
 
+	satuan := models.SatuanRewardEnum(reward.Satuan)
+	minimal, err := minimalPenarikan(setting, satuan)
+	if err != nil {
+		return nil, err
+	}
+
 	saldo, err := s.repo.FindSaldoRekening(nasabahID, req.RewardID)
 	if err != nil {
 		return nil, errNotFound("Rekening saldo untuk reward ini tidak ditemukan")
+	}
+	if err := pastikanSaldoMinimal(saldo.NominalSaldo, minimal, satuan); err != nil {
+		return nil, err
 	}
 
 	finalNominal := req.NominalPenarikan
@@ -253,12 +348,23 @@ func (s *penarikanService) Ajukan(nasabahID string, req AjukanPenarikanReq) (*Aj
 		return nil, errNotFound("Nasabah tidak ditemukan atau tidak aktif")
 	}
 
+	setting, err := s.pastikanBolehMenarik(nasabah)
+	if err != nil {
+		return nil, err
+	}
+
 	reward, err := s.repo.FindReward(req.RewardID)
 	if err != nil {
 		return nil, errNotFound("Jenis reward tidak ditemukan")
 	}
 
 	if err := validatePenarikanReq(reward, req); err != nil {
+		return nil, err
+	}
+
+	satuan := models.SatuanRewardEnum(reward.Satuan)
+	minimal, err := minimalPenarikan(setting, satuan)
+	if err != nil {
 		return nil, err
 	}
 
@@ -282,6 +388,9 @@ func (s *penarikanService) Ajukan(nasabahID string, req AjukanPenarikanReq) (*Aj
 		saldo, err := s.repo.LockSaldo(tx, nasabahID, req.RewardID)
 		if err != nil {
 			return errNotFound("Rekening saldo untuk reward ini tidak ditemukan")
+		}
+		if err := pastikanSaldoMinimal(saldo.NominalSaldo, minimal, satuan); err != nil {
+			return err
 		}
 
 		nominalTx := req.NominalPenarikan
@@ -993,6 +1102,85 @@ func mapPenarikanSummary(p models.Penarikan) PenarikanSummary {
 		s.NamaReward = string(p.Reward.NamaReward)
 	}
 	return s
+}
+
+func (s *penarikanService) GetSettingPenarikan(bankID string) (*models.SettingPenarikan, error) {
+	setting, err := s.repo.FindSettingPenarikan(bankID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errNotFound("Bank sampah belum mengatur ketentuan penarikan")
+		}
+		return nil, errInternal("Gagal mengambil ketentuan penarikan: " + err.Error())
+	}
+	return setting, nil
+}
+
+func (s *penarikanService) SimpanSettingWaktuPenarikan(bankID, adminUserID string, req SimpanSettingWaktuReq) (*models.SettingPenarikan, error) {
+	if req.MinWaktu <= 0 {
+		return nil, errBadRequest("min_waktu harus lebih dari 0")
+	}
+	if req.SatuanWaktu != models.SatuanWaktuMinggu && req.SatuanWaktu != models.SatuanWaktuBulan {
+		return nil, errBadRequest("satuan_waktu harus 'minggu' atau 'bulan'")
+	}
+
+	return s.simpanSetting(bankID, adminUserID, func(setting *models.SettingPenarikan) {
+		setting.MinWaktu = &req.MinWaktu
+		setting.SatuanWaktu = &req.SatuanWaktu
+	})
+}
+
+// Request menggantikan seluruh syarat saldo: field yang tidak dikirim jadi null (jenis penarikan itu tidak dilayani).
+func (s *penarikanService) SimpanSettingSaldoPenarikan(bankID, adminUserID string, req SimpanSettingSaldoReq) (*models.SettingPenarikan, error) {
+	if req.MinRupiah == nil && req.MinPoin == nil {
+		return nil, errBadRequest("Isi minimal salah satu: min_rupiah atau min_poin")
+	}
+	if req.MinRupiah != nil && *req.MinRupiah < 0 {
+		return nil, errBadRequest("min_rupiah tidak boleh negatif")
+	}
+	if req.MinPoin != nil && *req.MinPoin < 0 {
+		return nil, errBadRequest("min_poin tidak boleh negatif")
+	}
+
+	return s.simpanSetting(bankID, adminUserID, func(setting *models.SettingPenarikan) {
+		setting.MinRupiah = req.MinRupiah
+		setting.MinPoin = req.MinPoin
+	})
+}
+
+func (s *penarikanService) simpanSetting(bankID, adminUserID string, ubah func(*models.SettingPenarikan)) (*models.SettingPenarikan, error) {
+	admin, err := s.repo.FindAdminAktif(nil, adminUserID)
+	if err != nil || admin.BankID == nil || *admin.BankID != bankID {
+		return nil, errForbidden("Hanya admin bank sampah ini yang dapat mengatur ketentuan penarikan")
+	}
+
+	setting, err := s.repo.FindSettingPenarikan(bankID)
+	switch {
+	case err == nil:
+		ubah(setting)
+		setting.UpdatedBy = admin.AdminID
+		if err := s.repo.SaveSettingPenarikan(setting); err != nil {
+			return nil, errInternal("Gagal menyimpan ketentuan penarikan: " + err.Error())
+		}
+		return setting, nil
+	case !errors.Is(err, gorm.ErrRecordNotFound):
+		return nil, errInternal("Gagal memeriksa ketentuan penarikan: " + err.Error())
+	}
+
+	settingID, err := idgen.GenerateSettingPenarikanID(bankID)
+	if err != nil {
+		return nil, errInternal("Gagal generate setting ID: " + err.Error())
+	}
+	baru := &models.SettingPenarikan{
+		SettingID: settingID,
+		BankID:    bankID,
+		CreatedBy: admin.AdminID,
+		UpdatedBy: admin.AdminID,
+	}
+	ubah(baru)
+	if err := s.repo.CreateSettingPenarikan(baru); err != nil {
+		return nil, errInternal("Gagal menyimpan ketentuan penarikan: " + err.Error())
+	}
+	return baru, nil
 }
 
 func FormatPenarikanNilai(nominal float64, satuan models.SatuanRewardEnum) string {

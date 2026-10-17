@@ -2,10 +2,12 @@ package services_test
 
 import (
 	"enviroo-be/internal/models"
+	"enviroo-be/internal/repositories"
 	"enviroo-be/internal/services"
 	"enviroo-be/internal/services/mocks"
 	"errors"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -721,4 +723,593 @@ func TestSubmitBagiHasil_FIFODuaTabungan(t *testing.T) {
 	assert.Len(t, result.NasabahNotifs, 2)
 	repo.AssertNumberOfCalls(t, "SaveTabungan", 2)
 	repo.AssertExpectations(t)
+}
+
+func bhKode(t *testing.T, err error) int {
+	t.Helper()
+	se, ok := err.(*services.ServiceError)
+	if !ok {
+		t.Fatalf("expected *services.ServiceError, got %T (%v)", err, err)
+	}
+	return se.Code
+}
+
+func newBHSvc(t *testing.T) (*mocks.MockBagiHasilRepo, *services.BagiHasilService) {
+	t.Helper()
+	gdb, _ := newTestDB(t)
+	repo := new(mocks.MockBagiHasilRepo)
+	return repo, services.NewBagiHasilServiceWithRepo(gdb, repo)
+}
+
+var bhTanggal = time.Date(2026, 3, 10, 9, 0, 0, 0, time.UTC)
+
+func bhBagiHasil() *models.BagiHasil {
+	return &models.BagiHasil{
+		BagiHasilID:            "BH-PJL-001",
+		BankID:                 ptrStr("BSM-001"),
+		PenjualanID:            ptrStr("PJL-001"),
+		GrossBank:              100000,
+		TotalDistribusiNasabah: 34000,
+		SisaBagiHasil:          66000,
+		SatuanBagiHasil:        models.SatuanRewardEnumRp,
+		CreatedAt:              bhTanggal,
+		CreatedBy:              ptrStr("ADM-001"),
+		Bank:                   &models.BankSampah{BankID: "BSM-001", NamaBank: "BSM Satu", JenisBank: models.BSM},
+		Penjualan:              basePenjualan(models.BagiHasilBerhasil),
+	}
+}
+
+func bhPenerima(penerimaID, nasabahID, bankID, namaBank, nama string, total float64) models.PenerimaBagiHasil {
+	return models.PenerimaBagiHasil{
+		PenerimaID:     penerimaID,
+		BagiHasilID:    ptrStr("BH-PJL-001"),
+		NasabahID:      ptrStr(nasabahID),
+		TotalDiterima:  total,
+		SatuanDiterima: models.SatuanRewardEnumRp,
+		CreatedAt:      bhTanggal,
+		Nasabah: &models.Nasabah{
+			NasabahID: nasabahID,
+			BankID:    bankID,
+			Bank:      models.BankSampah{BankID: bankID, NamaBank: namaBank},
+			User:      models.User{Nama: nama},
+		},
+	}
+}
+
+func bhItem(p models.PenerimaBagiHasil) services.NasabahPenerimaItem {
+	return services.NasabahPenerimaItem{
+		PenerimaID:     p.PenerimaID,
+		NasabahID:      p.Nasabah.NasabahID,
+		NamaNasabah:    p.Nasabah.User.Nama,
+		TotalDiterima:  p.TotalDiterima,
+		SatuanDiterima: p.SatuanDiterima,
+	}
+}
+
+func TestPreviewBagiHasil_BSM_Sukses(t *testing.T) {
+	gdb, _ := newTestDB(t)
+	penjualan := basePenjualan(models.BagiHasilPending)
+	penjualan.TotalPenjualan = 100000
+	sk := skenarioBaruBSM(penjualan, []models.DetailPenjualan{
+		{SampahID: "SMP-001", Qty: 8, HargaNasabahSnapshot: 3000},
+		{SampahID: "SMP-002", Qty: 5, HargaNasabahSnapshot: 2000},
+	})
+	svc := services.NewBagiHasilServiceWithRepo(gdb, sk.repo)
+
+	sk.sediakanTabungan("SMP-001",
+		baseTabunganNasabah("TBG-01", "NSB-001", "SMP-001", 5),
+		baseTabunganNasabah("TBG-02", "NSB-002", "SMP-001", 6),
+	)
+	sk.sediakanTabungan("SMP-002",
+		baseTabunganNasabah("TBG-03", "NSB-003", "SMP-002", 5),
+	)
+	sk.repo.On("GetNasabahInfoBatch", mock.Anything).Return([]repositories.NasabahRow{
+		{NasabahID: "NSB-001", NamaNasabah: "Budi", BankID: "BSM-001", NamaBank: "BSM Satu"},
+		{NasabahID: "NSB-002", NamaNasabah: "Sari", BankID: "BSM-001", NamaBank: "BSM Satu"},
+		{NasabahID: "NSB-003", NamaNasabah: "Joko", BankID: "BSM-001", NamaBank: "BSM Satu"},
+	}, nil).Once()
+
+	hasil, err := svc.Preview("PJL-001", "BSM-001")
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, hasil) {
+		assert.Equal(t, "PJL-001", hasil.PenjualanID)
+		assert.Equal(t, string(models.RewardEnumUang), hasil.Reward)
+		assert.Equal(t, services.PreviewBagiHasilSummary{
+			GrossBank: 100000, TotalDistribusiNasabah: 34000, SisaBagiHasil: 66000,
+		}, hasil.Summary)
+		if assert.Len(t, hasil.Penerima, 1) {
+			assert.Equal(t, "BSM-001", hasil.Penerima[0].BankID)
+			assert.Equal(t, "BSM Satu", hasil.Penerima[0].NamaBank)
+			assert.ElementsMatch(t, []services.NasabahPenerimaPreview{
+				{NasabahID: "NSB-001", NamaNasabah: "Budi", TotalDiterima: 15000},
+				{NasabahID: "NSB-002", NamaNasabah: "Sari", TotalDiterima: 9000},
+				{NasabahID: "NSB-003", NamaNasabah: "Joko", TotalDiterima: 10000},
+			}, hasil.Penerima[0].NasabahPenerima)
+		}
+	}
+	sk.repo.AssertNotCalled(t, "SaveTabungan", mock.Anything, mock.Anything)
+	sk.repo.AssertNotCalled(t, "UpsertSchemaHargaNasabah", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	sk.repo.AssertNotCalled(t, "CreateBagiHasil", mock.Anything, mock.Anything)
+	sk.repo.AssertExpectations(t)
+}
+
+func TestPreviewBagiHasil_TanpaPenerima(t *testing.T) {
+	gdb, _ := newTestDB(t)
+	sk := skenarioBaruBSM(basePenjualan(models.BagiHasilPending), []models.DetailPenjualan{
+		{SampahID: "SMP-001", Qty: 0, HargaNasabahSnapshot: 3000},
+	})
+	svc := services.NewBagiHasilServiceWithRepo(gdb, sk.repo)
+
+	hasil, err := svc.Preview("PJL-001", "BSM-001")
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, hasil) {
+		assert.Equal(t, services.PreviewBagiHasilSummary{
+			GrossBank: 500000, TotalDistribusiNasabah: 0, SisaBagiHasil: 500000,
+		}, hasil.Summary)
+		assert.NotNil(t, hasil.Penerima, "harus [] supaya JSON-nya bukan null")
+		assert.Len(t, hasil.Penerima, 0)
+	}
+	sk.repo.AssertNotCalled(t, "GetTabunganNasabah", mock.Anything, mock.Anything, mock.Anything)
+	sk.repo.AssertNotCalled(t, "GetNasabahInfoBatch", mock.Anything)
+}
+
+func TestPreviewBagiHasil_HargaNolDitolak(t *testing.T) {
+	gdb, _ := newTestDB(t)
+	sk := skenarioBaruBSM(basePenjualan(models.BagiHasilPending), []models.DetailPenjualan{
+		{SampahID: "SMP-009", Qty: 2, HargaNasabahSnapshot: 0},
+	})
+	svc := services.NewBagiHasilServiceWithRepo(gdb, sk.repo)
+
+	hasil, err := svc.Preview("PJL-001", "BSM-001")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusBadRequest, bhKode(t, err))
+	assert.Contains(t, err.Error(), "SMP-009")
+	sk.repo.AssertNotCalled(t, "GetTabunganNasabah", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestPreviewBagiHasil_TabunganError(t *testing.T) {
+	gdb, _ := newTestDB(t)
+	sk := skenarioBaruBSM(basePenjualan(models.BagiHasilPending), []models.DetailPenjualan{
+		{SampahID: "SMP-001", Qty: 2, HargaNasabahSnapshot: 3000},
+	})
+	svc := services.NewBagiHasilServiceWithRepo(gdb, sk.repo)
+	sk.repo.On("GetTabunganNasabah", mock.Anything, "SMP-001", []string{"BSM-001"}).
+		Return([]models.TabunganSampah(nil), errors.New("db error"))
+
+	hasil, err := svc.Preview("PJL-001", "BSM-001")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, bhKode(t, err))
+}
+
+func TestPreviewBagiHasil_StokTidakCukup(t *testing.T) {
+	gdb, _ := newTestDB(t)
+	sk := skenarioBaruBSM(basePenjualan(models.BagiHasilPending), []models.DetailPenjualan{
+		{SampahID: "SMP-001", Qty: 10, HargaNasabahSnapshot: 1000},
+	})
+	svc := services.NewBagiHasilServiceWithRepo(gdb, sk.repo)
+	sk.sediakanTabungan("SMP-001", baseTabunganNasabah("TBG-01", "NSB-001", "SMP-001", 4))
+
+	hasil, err := svc.Preview("PJL-001", "BSM-001")
+
+	assert.Nil(t, hasil)
+	var se *services.ServiceError
+	if assert.ErrorAs(t, err, &se) {
+		assert.Equal(t, 422, se.Code)
+		assert.Equal(t, map[string]interface{}{"sampah_id": "SMP-001", "kurang_qty": 6.0}, se.Data)
+	}
+	sk.repo.AssertNotCalled(t, "GetNasabahInfoBatch", mock.Anything)
+}
+
+func TestPreviewBagiHasil_BankTidakDitemukan(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	repo.On("GetPenjualanWithReward", "PJL-001", "BSM-001").Return(basePenjualan(models.BagiHasilPending), nil)
+	repo.On("GetBankByID", "BSM-001").Return(nil, errors.New("not found"))
+
+	hasil, err := svc.Preview("PJL-001", "BSM-001")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusNotFound, bhKode(t, err))
+}
+
+func TestPreviewBagiHasil_BSUDitolak(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	repo.On("GetPenjualanWithReward", "PJL-001", "BSU-001").Return(basePenjualan(models.BagiHasilPending), nil)
+	repo.On("GetBankByID", "BSU-001").Return(&models.BankSampah{BankID: "BSU-001", JenisBank: models.BSU}, nil)
+
+	hasil, err := svc.Preview("PJL-001", "BSU-001")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusForbidden, bhKode(t, err))
+	repo.AssertNotCalled(t, "GetDetailPenjualan", mock.Anything, mock.Anything)
+}
+
+func TestPreviewBagiHasil_DetailPenjualanError(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	repo.On("GetPenjualanWithReward", "PJL-001", "BSM-001").Return(basePenjualan(models.BagiHasilPending), nil)
+	repo.On("GetBankByID", "BSM-001").Return(&models.BankSampah{BankID: "BSM-001", JenisBank: models.BSM}, nil)
+	repo.On("GetDetailPenjualan", mock.Anything, "PJL-001").Return([]models.DetailPenjualan(nil), errors.New("db error"))
+
+	hasil, err := svc.Preview("PJL-001", "BSM-001")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, bhKode(t, err))
+}
+
+func TestSubmitBagiHasil_CreateBagiHasilDuplikat(t *testing.T) {
+	gdb, dbMock := newTestDB(t)
+	sk := skenarioBaruBSM(basePenjualan(models.BagiHasilPending), []models.DetailPenjualan{
+		{SampahID: "SMP-001", Qty: 5, HargaNasabahSnapshot: 1000},
+	})
+	svc := services.NewBagiHasilServiceWithRepo(gdb, sk.repo)
+	sk.sediakanTabungan("SMP-001", baseTabunganNasabah("TBG-01", "NSB-001", "SMP-001", 5))
+	sk.expectTabunganTersimpan("TBG-01", 0)
+	sk.expectHargaNasabah("SMP-001", 1000)
+	sk.repo.On("CreateBagiHasil", mock.Anything, mock.Anything).Return(gorm.ErrDuplicatedKey).Once()
+	expectTxRollback(dbMock)
+
+	result, err := svc.Submit("PJL-001", "BSM-001", "ADM-001")
+
+	assert.Nil(t, result)
+	assert.Equal(t, http.StatusBadRequest, bhKode(t, err))
+	assert.Contains(t, err.Error(), "sudah dilakukan")
+	sk.repo.AssertNotCalled(t, "CreatePenerimaBagiHasil", mock.Anything, mock.Anything)
+	assert.NoError(t, dbMock.ExpectationsWereMet())
+}
+
+func TestSubmitBagiHasil_CreateBagiHasilError(t *testing.T) {
+	gdb, dbMock := newTestDB(t)
+	sk := skenarioBaruBSM(basePenjualan(models.BagiHasilPending), []models.DetailPenjualan{
+		{SampahID: "SMP-001", Qty: 5, HargaNasabahSnapshot: 1000},
+	})
+	svc := services.NewBagiHasilServiceWithRepo(gdb, sk.repo)
+	sk.sediakanTabungan("SMP-001", baseTabunganNasabah("TBG-01", "NSB-001", "SMP-001", 5))
+	sk.expectTabunganTersimpan("TBG-01", 0)
+	sk.expectHargaNasabah("SMP-001", 1000)
+	sk.repo.On("CreateBagiHasil", mock.Anything, mock.Anything).Return(errors.New("db error")).Once()
+	expectTxRollback(dbMock)
+
+	result, err := svc.Submit("PJL-001", "BSM-001", "ADM-001")
+
+	assert.Nil(t, result)
+	assert.Equal(t, http.StatusInternalServerError, bhKode(t, err))
+	assert.Contains(t, err.Error(), "Gagal menyimpan bagi hasil")
+	sk.repo.AssertNotCalled(t, "CreatePenerimaBagiHasil", mock.Anything, mock.Anything)
+	assert.NoError(t, dbMock.ExpectationsWereMet())
+}
+
+func TestGetDetailBagiHasil_TidakDitemukan(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	repo.On("GetBagiHasilByPenjualan", "PJL-XXX").Return(nil, errors.New("not found"))
+
+	hasil, err := svc.GetDetail("PJL-XXX")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusNotFound, bhKode(t, err))
+}
+
+func TestGetDetailBagiHasil_PenerimaError(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	repo.On("GetBagiHasilByPenjualan", "PJL-001").Return(bhBagiHasil(), nil)
+	repo.On("GetNamaPetugas", "ADM-001").Return("Petugas A")
+	repo.On("GetPenerimaBagiHasil", "BH-PJL-001").Return([]models.PenerimaBagiHasil(nil), errors.New("db error"))
+
+	hasil, err := svc.GetDetail("PJL-001")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, bhKode(t, err))
+}
+
+func TestGetDetailBagiHasil_BSM_Sukses(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	budi := bhPenerima("P-001", "NSB-001", "BSM-001", "BSM Satu", "Budi", 15000)
+	sari := bhPenerima("P-002", "NSB-002", "BSM-001", "BSM Satu", "Sari", 19000)
+	tanpaNasabah := models.PenerimaBagiHasil{PenerimaID: "P-003", TotalDiterima: 500}
+	repo.On("GetBagiHasilByPenjualan", "PJL-001").Return(bhBagiHasil(), nil)
+	repo.On("GetNamaPetugas", "ADM-001").Return("Petugas A").Once()
+	repo.On("GetPenerimaBagiHasil", "BH-PJL-001").Return([]models.PenerimaBagiHasil{budi, tanpaNasabah, sari}, nil)
+	repo.On("FindDistribusiSisaID", "BH-PJL-001").Return(ptrStr("DS-001"))
+
+	hasil, err := svc.GetDetail("PJL-001")
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, hasil) {
+		assert.Equal(t, "BH-PJL-001", hasil.BagiHasilID)
+		assert.Equal(t, bhTanggal, hasil.Tanggal)
+		assert.Equal(t, "PJL-001", hasil.PenjualanID)
+		assert.Equal(t, "Petugas A", hasil.NamaPetugas)
+		assert.Equal(t, string(models.RewardEnumUang), hasil.Reward)
+		assert.Equal(t, 100000.0, hasil.GrossBank)
+		assert.Equal(t, 34000.0, hasil.TotalDistribusiNasabah)
+		assert.Equal(t, 66000.0, hasil.SisaBagiHasil)
+		assert.Equal(t, models.SatuanRewardEnumRp, hasil.Satuan)
+		if assert.NotNil(t, hasil.DistribusiID) {
+			assert.Equal(t, "DS-001", *hasil.DistribusiID)
+		}
+		assert.Equal(t, []services.NasabahPenerimaItem{bhItem(budi), bhItem(sari)}, hasil.NasabahLangsung,
+			"penerima tanpa nasabah dilewati")
+		assert.Nil(t, hasil.Penerima)
+	}
+	repo.AssertExpectations(t)
+}
+
+func TestGetDetailBagiHasil_TanpaCreatedBy(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	bh := bhBagiHasil()
+	bh.CreatedBy = nil
+	repo.On("GetBagiHasilByPenjualan", "PJL-001").Return(bh, nil)
+	repo.On("GetPenerimaBagiHasil", "BH-PJL-001").Return([]models.PenerimaBagiHasil{}, nil)
+	repo.On("FindDistribusiSisaID", "BH-PJL-001").Return(nil)
+
+	hasil, err := svc.GetDetail("PJL-001")
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, hasil) {
+		assert.Equal(t, "", hasil.NamaPetugas)
+		assert.Nil(t, hasil.DistribusiID)
+		assert.NotNil(t, hasil.NasabahLangsung)
+		assert.Len(t, hasil.NasabahLangsung, 0)
+	}
+	repo.AssertNotCalled(t, "GetNamaPetugas", mock.Anything)
+}
+
+func TestGetListBagiHasilNasabah_NasabahTidakDitemukan(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	repo.On("GetNasabahWithUser", "NSB-XXX").Return(nil, errors.New("not found"))
+
+	hasil, err := svc.GetListNasabah("NSB-XXX", "", "")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusNotFound, bhKode(t, err))
+	repo.AssertNotCalled(t, "GetPenerimaByNasabah", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestGetListBagiHasilNasabah_RepoError(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	repo.On("GetNasabahWithUser", "NSB-001").Return(&models.Nasabah{NasabahID: "NSB-001"}, nil)
+	repo.On("GetPenerimaByNasabah", "NSB-001", "", "").Return([]models.PenerimaBagiHasil(nil), errors.New("db error"))
+
+	hasil, err := svc.GetListNasabah("NSB-001", "", "")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, bhKode(t, err))
+}
+
+func TestGetListBagiHasilNasabah_Sukses(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	valid := bhPenerima("P-001", "NSB-001", "BSM-001", "BSM Satu", "Budi", 15000)
+	valid.BagiHasil = bhBagiHasil()
+	tanpaBagiHasil := bhPenerima("P-002", "NSB-001", "BSM-001", "BSM Satu", "Budi", 7000)
+	tanpaPenjualan := bhPenerima("P-003", "NSB-001", "BSM-001", "BSM Satu", "Budi", 3000)
+	tanpaPenjualan.BagiHasil = &models.BagiHasil{BagiHasilID: "BH-PJL-002"}
+
+	repo.On("GetNasabahWithUser", "NSB-001").
+		Return(&models.Nasabah{NasabahID: "NSB-001", User: models.User{Nama: "Budi"}}, nil)
+	repo.On("GetPenerimaByNasabah", "NSB-001", "2026-03-01", "2026-03-31").
+		Return([]models.PenerimaBagiHasil{valid, tanpaBagiHasil, tanpaPenjualan}, nil).Once()
+
+	hasil, err := svc.GetListNasabah("NSB-001", "2026-03-01", "2026-03-31")
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, hasil) {
+		assert.Equal(t, "NSB-001", hasil.NasabahID)
+		assert.Equal(t, "Budi", hasil.NamaNasabah)
+		assert.Equal(t, []services.ListBagiHasilNasabahItem{{
+			PenerimaID:     "P-001",
+			BagiHasilID:    "BH-PJL-001",
+			Reward:         string(models.RewardEnumUang),
+			Tanggal:        "2026-03-10T09:00:00Z",
+			TotalDiterima:  15000,
+			SatuanDiterima: models.SatuanRewardEnumRp,
+		}}, hasil.RiwayatBagiHasil, "penerima tanpa bagi hasil/penjualan dilewati")
+	}
+	repo.AssertExpectations(t)
+}
+
+func TestGetDetailBagiHasilNasabah_TidakDitemukan(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	repo.On("GetPenerimaBagiHasilNasabah", "P-XXX").Return(nil, errors.New("not found"))
+
+	hasil, err := svc.GetDetailNasabah("P-XXX")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusNotFound, bhKode(t, err))
+}
+
+func TestGetDetailBagiHasilNasabah_DataTidakLengkap(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	penerima := bhPenerima("P-001", "NSB-001", "BSM-001", "BSM Satu", "Budi", 15000)
+	repo.On("GetPenerimaBagiHasilNasabah", "P-001").Return(&penerima, nil)
+
+	hasil, err := svc.GetDetailNasabah("P-001")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, bhKode(t, err))
+	repo.AssertNotCalled(t, "GetDetailBagiHasilItems", mock.Anything)
+}
+
+func TestGetDetailBagiHasilNasabah_DetailError(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	penerima := bhPenerima("P-001", "NSB-001", "BSM-001", "BSM Satu", "Budi", 15000)
+	penerima.BagiHasil = bhBagiHasil()
+	repo.On("GetPenerimaBagiHasilNasabah", "P-001").Return(&penerima, nil)
+	repo.On("GetDetailBagiHasilItems", "P-001").Return([]models.DetailBagiHasil(nil), errors.New("db error"))
+
+	hasil, err := svc.GetDetailNasabah("P-001")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, bhKode(t, err))
+}
+
+func TestGetDetailBagiHasilNasabah_Sukses(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	penerima := bhPenerima("P-001", "NSB-001", "BSM-001", "BSM Satu", "Budi", 21000)
+	penerima.BagiHasil = bhBagiHasil()
+	repo.On("GetPenerimaBagiHasilNasabah", "P-001").Return(&penerima, nil)
+	repo.On("GetDetailBagiHasilItems", "P-001").Return([]models.DetailBagiHasil{
+		{PenerimaID: "P-001", SampahID: "SMP-001", Qty: 5, HargaItem: 3000, SubtotalHarga: 15000,
+			KatalogSampah: &models.KatalogSampah{Sarok: models.Sampah{NamaSampah: "Botol Plastik"}}},
+		{PenerimaID: "P-001", SampahID: "SMP-002", Qty: 3, HargaItem: 2000, SubtotalHarga: 6000},
+	}, nil)
+
+	hasil, err := svc.GetDetailNasabah("P-001")
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, hasil) {
+		assert.Equal(t, "P-001", hasil.PenerimaID)
+		assert.Equal(t, "BH-PJL-001", hasil.BagiHasilID)
+		assert.Equal(t, "NSB-001", hasil.NasabahID)
+		assert.Equal(t, "Budi", hasil.NamaNasabah)
+		assert.Equal(t, string(models.RewardEnumUang), hasil.Reward)
+		assert.Equal(t, "2026-03-10T09:00:00Z", hasil.Tanggal)
+		assert.Equal(t, 21000.0, hasil.TotalDiterima)
+		assert.Equal(t, models.SatuanRewardEnumRp, hasil.SatuanDiterima)
+		assert.Equal(t, []services.DetailBagiHasilItemResp{
+			{SampahID: "SMP-001", NamaSampah: "Botol Plastik", Qty: 5, HargaItem: 3000, SubtotalHarga: 15000},
+			{SampahID: "SMP-002", NamaSampah: "", Qty: 3, HargaItem: 2000, SubtotalHarga: 6000},
+		}, hasil.DetailItem)
+	}
+}
+
+func TestGetListBagiHasilBankPusat_BankTidakDitemukan(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	repo.On("GetBankByID", "BSM-XXX").Return(nil, errors.New("not found"))
+
+	hasil, err := svc.GetListBankPusat("BSM-XXX", time.Time{}, time.Time{})
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusNotFound, bhKode(t, err))
+}
+
+func TestGetListBagiHasilBankPusat_BSUDitolak(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	repo.On("GetBankByID", "BSU-001").Return(&models.BankSampah{BankID: "BSU-001", JenisBank: models.BSU}, nil)
+
+	hasil, err := svc.GetListBankPusat("BSU-001", time.Time{}, time.Time{})
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusBadRequest, bhKode(t, err))
+	repo.AssertNotCalled(t, "GetBagiHasilByBankWithFilter", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestGetListBagiHasilBankPusat_RepoError(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	repo.On("GetBankByID", "BSM-001").Return(&models.BankSampah{BankID: "BSM-001", JenisBank: models.BSM}, nil)
+	repo.On("GetBagiHasilByBankWithFilter", "BSM-001", mock.Anything, mock.Anything).
+		Return([]models.BagiHasil(nil), errors.New("db error"))
+
+	hasil, err := svc.GetListBankPusat("BSM-001", time.Time{}, time.Time{})
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, bhKode(t, err))
+}
+
+func TestGetListBagiHasilBankPusat_Sukses(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	start := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 3, 31, 23, 59, 59, 0, time.UTC)
+	repo.On("GetBankByID", "BSM-001").
+		Return(&models.BankSampah{BankID: "BSM-001", NamaBank: "BSM Satu", JenisBank: models.BSM}, nil)
+	repo.On("GetBagiHasilByBankWithFilter", "BSM-001", start, end).
+		Return([]models.BagiHasil{*bhBagiHasil(), {BagiHasilID: "BH-PJL-002"}}, nil).Once()
+
+	hasil, err := svc.GetListBankPusat("BSM-001", start, end)
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, hasil) {
+		assert.Equal(t, "BSM-001", hasil.BankID)
+		assert.Equal(t, "BSM Satu", hasil.NamaBank)
+		assert.Equal(t, models.BSM, hasil.JenisBank)
+		assert.Equal(t, []services.ListBagiHasilBankPusatItem{{
+			BagiHasilID:      "BH-PJL-001",
+			RewardID:         1,
+			NamaReward:       string(models.RewardEnumUang),
+			TanggalBagiHasil: "2026-03-10T09:00:00Z",
+		}}, hasil.RiwayatBagiHasil, "bagi hasil tanpa penjualan dilewati")
+	}
+	repo.AssertExpectations(t)
+}
+
+func TestGetDetailBagiHasilBankPusat_TidakDitemukan(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	repo.On("GetBagiHasilWithAll", "BH-XXX").Return(nil, errors.New("not found"))
+
+	hasil, err := svc.GetDetailBankPusat("BH-XXX")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusNotFound, bhKode(t, err))
+}
+
+func TestGetDetailBagiHasilBankPusat_DataTidakLengkap(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	bh := bhBagiHasil()
+	bh.Bank = nil
+	repo.On("GetBagiHasilWithAll", "BH-PJL-001").Return(bh, nil)
+
+	hasil, err := svc.GetDetailBankPusat("BH-PJL-001")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, bhKode(t, err))
+}
+
+func TestGetDetailBagiHasilBankPusat_BSUDitolak(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	bh := bhBagiHasil()
+	bh.Bank.JenisBank = models.BSU
+	repo.On("GetBagiHasilWithAll", "BH-PJL-001").Return(bh, nil)
+
+	hasil, err := svc.GetDetailBankPusat("BH-PJL-001")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusBadRequest, bhKode(t, err))
+	repo.AssertNotCalled(t, "FindDistribusiSisaID", mock.Anything)
+}
+
+func TestGetDetailBagiHasilBankPusat_PenerimaError(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	repo.On("GetBagiHasilWithAll", "BH-PJL-001").Return(bhBagiHasil(), nil)
+	repo.On("FindDistribusiSisaID", "BH-PJL-001").Return(nil)
+	repo.On("GetPenerimaNasabahFull", "BH-PJL-001").Return([]models.PenerimaBagiHasil(nil), errors.New("db error"))
+
+	hasil, err := svc.GetDetailBankPusat("BH-PJL-001")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, bhKode(t, err))
+}
+
+func TestGetDetailBagiHasilBankPusat_BSM_Sukses(t *testing.T) {
+	repo, svc := newBHSvc(t)
+	budi := bhPenerima("P-001", "NSB-001", "BSM-001", "BSM Satu", "Budi", 15000)
+	sari := bhPenerima("P-002", "NSB-002", "BSM-002", "", "Sari", 9000)
+	joko := bhPenerima("P-003", "NSB-003", "BSM-001", "BSM Satu", "Joko", 10000)
+	repo.On("GetBagiHasilWithAll", "BH-PJL-001").Return(bhBagiHasil(), nil)
+	repo.On("FindDistribusiSisaID", "BH-PJL-001").Return(ptrStr("DS-001"))
+	repo.On("GetPenerimaNasabahFull", "BH-PJL-001").Return([]models.PenerimaBagiHasil{budi, sari, joko}, nil)
+
+	hasil, err := svc.GetDetailBankPusat("BH-PJL-001")
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, hasil) {
+		assert.Equal(t, "BH-PJL-001", hasil.BagiHasilID)
+		assert.Equal(t, "PJL-001", hasil.PenjualanID)
+		assert.Equal(t, 1, hasil.RewardID)
+		assert.Equal(t, string(models.RewardEnumUang), hasil.NamaReward)
+		assert.Equal(t, "2026-03-10T09:00:00Z", hasil.Tanggal)
+		assert.Equal(t, 100000.0, hasil.GrossBSM, "gross BSM diambil dari gross_bank")
+		assert.Equal(t, 0.0, hasil.GrossBSI)
+		assert.Equal(t, 34000.0, hasil.TotalDistribusiNasabah)
+		assert.Equal(t, 66000.0, hasil.SisaBagiHasil)
+		if assert.NotNil(t, hasil.DistribusiID) {
+			assert.Equal(t, "DS-001", *hasil.DistribusiID)
+		}
+		assert.Equal(t, []services.BankPenerimaGroup{
+			{BankID: "BSM-001", NamaBank: "BSM Satu", NasabahPenerima: []services.NasabahPenerimaItem{bhItem(budi), bhItem(joko)}},
+			{BankID: "BSM-002", NamaBank: "Bank Sampah", NasabahPenerima: []services.NasabahPenerimaItem{bhItem(sari)}},
+		}, hasil.Penerima, "dikelompokkan per bank sesuai urutan muncul, nama bank kosong pakai fallback")
+		assert.Equal(t, []services.NasabahPenerimaItem{bhItem(budi), bhItem(sari), bhItem(joko)}, hasil.NasabahBSM)
+		assert.Nil(t, hasil.NasabahBSI)
+	}
 }

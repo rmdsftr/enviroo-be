@@ -45,6 +45,8 @@ type BankRepoIface interface {
 	FindAdminWithUserBank(adminID string) (*models.Admin, error)
 	FindNamaAdmin(adminID string) string
 	FindAdminByUserAndBankTx(tx *gorm.DB, userID, bankID string) (*models.Admin, error)
+	FindAdminAktifByUser(userID string) (*models.Admin, error)
+	AdminPernahAktif(adminID string) (bool, error)
 	DeleteAktivasiAdminBelumDipakai(tx *gorm.DB, userID string, tujuan *models.TujuanEnum) error
 	DeleteAdmin(tx *gorm.DB, adminID string) error
 	UpdateStatusAdmin(tx *gorm.DB, adminID string, status models.StatusAkun) error
@@ -163,7 +165,7 @@ type BankService interface {
 
 	ListAdminBank(bankID string) ([]repositories.AdminBankRow, error)
 	AddAdminBank(in AddAdminBankInput) (*models.Admin, error)
-	DeleteStaffBank(adminID, deletedBy string) (*DeleteStaffResult, error)
+	DeleteStaffBank(adminID, actorUserID string) (*DeleteStaffResult, error)
 }
 
 type bankService struct {
@@ -858,7 +860,7 @@ func (s *bankService) AddAdminBank(in AddAdminBankInput) (*models.Admin, error) 
 	return newAdmin, nil
 }
 
-func (s *bankService) DeleteStaffBank(adminID, deletedBy string) (*DeleteStaffResult, error) {
+func (s *bankService) DeleteStaffBank(adminID, actorUserID string) (*DeleteStaffResult, error) {
 	admin, err := s.repo.FindAdminWithUserBank(adminID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -869,6 +871,21 @@ func (s *bankService) DeleteStaffBank(adminID, deletedBy string) (*DeleteStaffRe
 	if admin.BankID == nil {
 		return nil, errBadRequest("Staff tidak terhubung dengan bank sampah")
 	}
+
+	actor, err := s.repo.FindAdminAktifByUser(actorUserID)
+	if err != nil {
+		return nil, errForbidden("Akun Anda tidak memiliki akses untuk menghapus staff")
+	}
+	if actor.AdminID == admin.AdminID {
+		return nil, errForbidden("Tidak dapat menghapus akun sendiri")
+	}
+	if actor.BankID == nil || *actor.BankID != *admin.BankID {
+		return nil, errForbidden("Anda hanya dapat menghapus staff di bank sampah Anda sendiri")
+	}
+	if admin.StatusAdmin == models.Nonaktif {
+		return nil, errBadRequest("Staff sudah nonaktif")
+	}
+	deletedBy := actor.AdminID
 
 	staffName := admin.User.Nama
 	if staffName == "" {
@@ -910,6 +927,24 @@ func (s *bankService) DeleteStaffBank(adminID, deletedBy string) (*DeleteStaffRe
 	isPending := admin.StatusAdmin == models.Pending
 	staffRole := roleLabel(admin.Role)
 
+	// Pending bisa berarti akun baru atau akun lama yang sedang direaktivasi.
+	// Akun yang pernah aktif tidak boleh dihapus permanen: reaktivasinya dibatalkan saja.
+	hapusPermanen := false
+	if isPending {
+		pernahAktif, err := s.repo.AdminPernahAktif(adminID)
+		if err != nil {
+			return nil, errInternal("Failed to check activation history: " + err.Error())
+		}
+		hapusPermanen = !pernahAktif
+	}
+
+	informasi := fmt.Sprintf("Staff %s (%s) dihapus dari %s", staffName, staffRole, bankName)
+	keterangan := fmt.Sprintf("%s menghapus %s (%s) dari %s", actorName, staffName, staffRole, bankName)
+	if isPending && !hapusPermanen {
+		informasi = fmt.Sprintf("Reaktivasi staff %s (%s) di %s dibatalkan", staffName, staffRole, bankName)
+		keterangan = fmt.Sprintf("%s membatalkan reaktivasi %s (%s) di %s", actorName, staffName, staffRole, bankName)
+	}
+
 	txErr := s.db.Transaction(func(tx *gorm.DB) error {
 		if isPending {
 			if err := s.repo.DeleteAktivasiAdminBelumDipakai(tx, admin.UserID, nil); err != nil {
@@ -917,14 +952,11 @@ func (s *bankService) DeleteStaffBank(adminID, deletedBy string) (*DeleteStaffRe
 			}
 		}
 
-		if err := s.writeHistory(tx, *admin.BankID, "DELETE", snapshot, nil,
-			fmt.Sprintf("Staff %s (%s) dihapus dari %s", staffName, staffRole, bankName),
-			fmt.Sprintf("%s menghapus %s (%s) dari %s", actorName, staffName, staffRole, bankName),
-			deletedBy); err != nil {
+		if err := s.writeHistory(tx, *admin.BankID, "DELETE", snapshot, nil, informasi, keterangan, deletedBy); err != nil {
 			return errInternal("Failed to create audit history: " + err.Error())
 		}
 
-		if isPending {
+		if hapusPermanen {
 			if err := s.repo.DeleteAdmin(tx, adminID); err != nil {
 				return errInternal("Failed to delete staff: " + err.Error())
 			}

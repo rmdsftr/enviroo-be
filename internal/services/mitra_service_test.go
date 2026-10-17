@@ -505,3 +505,183 @@ func TestDeleteMitra_HardDeleteError(t *testing.T) {
 
 	assert.Equal(t, http.StatusInternalServerError, mtrKode(t, err))
 }
+
+// resolveOrCreateMitra hanya dipanggil dari SubmitPenjualan, jadi diuji lewat situ dengan daftar item kosong
+// supaya alurnya langsung sampai ke penentuan mitra.
+func siapSubmitMitra(dbMock sqlmock.Sqlmock, repo *mocks.MockPenjualanRepo) {
+	repo.On("GetBankByID", "BSM-001").Return(penjualanBankBSM(), nil)
+	repo.On("GetRewardByID", mock.Anything, 1).Return(rewardUang(), nil)
+	repo.On("GetPersenNasabah", mock.Anything, "BSM-001", 1).Return(float64(30), nil)
+	dbMock.ExpectBegin()
+	dbMock.ExpectQuery("SELECT").WillReturnRows(sqlmock.NewRows([]string{"penjualan_id"}))
+}
+
+func expectPenjualanDenganMitra(repo *mocks.MockPenjualanRepo, mitraID string) {
+	repo.On("CreatePenjualan", mock.Anything, mock.MatchedBy(func(p *models.Penjualan) bool {
+		return p.MitraID == mitraID
+	})).Return(nil).Once()
+	repo.On("CreateDetailPenjualan", mock.Anything, mock.Anything).Return(nil).Once()
+}
+
+func TestResolveMitraPenjualan_PakaiMitraID(t *testing.T) {
+	dbMock, repo, mitraRepo, svc := newPenjualanSvc(t)
+	siapSubmitMitra(dbMock, repo)
+	mitraRepo.On("GetByID", mock.Anything, "BSM-001", mtrID).Return(mtrMitra(mtrID, "PT Sumber Rejeki", true), nil)
+	expectPenjualanDenganMitra(repo, mtrID)
+	dbMock.ExpectCommit()
+
+	hasil, err := svc.SubmitPenjualan("BSM-001", "ADM-001", 1, mtrID, "", "", nil)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, hasil)
+	mitraRepo.AssertNotCalled(t, "FindByNormalizedName", mock.Anything, mock.Anything, mock.Anything)
+	mitraRepo.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
+	repo.AssertExpectations(t)
+	assert.NoError(t, dbMock.ExpectationsWereMet())
+}
+
+func TestResolveMitraPenjualan_MitraIDTidakDitemukan(t *testing.T) {
+	dbMock, repo, mitraRepo, svc := newPenjualanSvc(t)
+	siapSubmitMitra(dbMock, repo)
+	mitraRepo.On("GetByID", mock.Anything, "BSM-001", mtrID).Return(nil, errors.New("not found"))
+	dbMock.ExpectRollback()
+
+	hasil, err := svc.SubmitPenjualan("BSM-001", "ADM-001", 1, mtrID, "", "", nil)
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusBadRequest, mtrKode(t, err))
+	assert.Contains(t, err.Error(), "Mitra tidak ditemukan")
+	repo.AssertNotCalled(t, "CreatePenjualan", mock.Anything, mock.Anything)
+	assert.NoError(t, dbMock.ExpectationsWereMet())
+}
+
+func TestResolveMitraPenjualan_TanpaMitraIDDanNama(t *testing.T) {
+	dbMock, repo, mitraRepo, svc := newPenjualanSvc(t)
+	siapSubmitMitra(dbMock, repo)
+	dbMock.ExpectRollback()
+
+	hasil, err := svc.SubmitPenjualan("BSM-001", "ADM-001", 1, "", "   ", "", nil)
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusBadRequest, mtrKode(t, err))
+	assert.Contains(t, err.Error(), "mitra_id atau nama_mitra wajib diisi")
+	mitraRepo.AssertNotCalled(t, "FindByNormalizedName", mock.Anything, mock.Anything, mock.Anything)
+	repo.AssertNotCalled(t, "CreatePenjualan", mock.Anything, mock.Anything)
+	assert.NoError(t, dbMock.ExpectationsWereMet())
+}
+
+func TestResolveMitraPenjualan_NamaSerupaPakaiYangAda(t *testing.T) {
+	dbMock, repo, mitraRepo, svc := newPenjualanSvc(t)
+	siapSubmitMitra(dbMock, repo)
+	mitraRepo.On("FindByNormalizedName", mock.Anything, "BSM-001", "ptsumberrejeki").
+		Return(mtrMitra(mtrID, "PT Sumber Rejeki", true), nil).Once()
+	expectPenjualanDenganMitra(repo, mtrID)
+	dbMock.ExpectCommit()
+
+	hasil, err := svc.SubmitPenjualan("BSM-001", "ADM-001", 1, "", "PT. Sumber Rejeki", "", nil)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, hasil)
+	mitraRepo.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
+	mitraRepo.AssertExpectations(t)
+	repo.AssertExpectations(t)
+	assert.NoError(t, dbMock.ExpectationsWereMet())
+}
+
+func TestResolveMitraPenjualan_NamaBaruDibuat(t *testing.T) {
+	dbMock, repo, mitraRepo, svc := newPenjualanSvc(t)
+	siapSubmitMitra(dbMock, repo)
+	mitraRepo.On("FindByNormalizedName", mock.Anything, "BSM-001", "cvberkah").Return(nil, gorm.ErrRecordNotFound).Once()
+
+	var dibuat *models.MitraPengepul
+	mitraRepo.On("Create", mock.Anything, mock.MatchedBy(func(m *models.MitraPengepul) bool {
+		return m.MitraID != "" && m.NamaMitra == "CV Berkah" && m.BankID == "BSM-001" && m.IsActive
+	})).Run(func(args mock.Arguments) {
+		dibuat = args.Get(1).(*models.MitraPengepul)
+	}).Return(nil).Once()
+	repo.On("CreatePenjualan", mock.Anything, mock.MatchedBy(func(p *models.Penjualan) bool {
+		return dibuat != nil && p.MitraID == dibuat.MitraID
+	})).Return(nil).Once()
+	repo.On("CreateDetailPenjualan", mock.Anything, mock.Anything).Return(nil).Once()
+	dbMock.ExpectQuery("SELECT").WillReturnRows(sqlmock.NewRows([]string{"mitra_id"}))
+	dbMock.ExpectCommit()
+
+	hasil, err := svc.SubmitPenjualan("BSM-001", "ADM-001", 1, "", "  CV Berkah  ", "", nil)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, hasil)
+	mitraRepo.AssertExpectations(t)
+	repo.AssertExpectations(t)
+	assert.NoError(t, dbMock.ExpectationsWereMet())
+}
+
+func TestResolveMitraPenjualan_GenerateIDGagal(t *testing.T) {
+	dbMock, repo, mitraRepo, svc := newPenjualanSvc(t)
+	siapSubmitMitra(dbMock, repo)
+	mitraRepo.On("FindByNormalizedName", mock.Anything, "BSM-001", "cvberkah").Return(nil, gorm.ErrRecordNotFound)
+	dbMock.ExpectQuery("SELECT").WillReturnError(errors.New("lock timeout"))
+	dbMock.ExpectRollback()
+
+	hasil, err := svc.SubmitPenjualan("BSM-001", "ADM-001", 1, "", "CV Berkah", "", nil)
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, mtrKode(t, err))
+	assert.Contains(t, err.Error(), "generate mitra ID")
+	mitraRepo.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
+	assert.NoError(t, dbMock.ExpectationsWereMet())
+}
+
+func TestResolveMitraPenjualan_DuplikatPakaiYangAda(t *testing.T) {
+	dbMock, repo, mitraRepo, svc := newPenjualanSvc(t)
+	siapSubmitMitra(dbMock, repo)
+	mitraRepo.On("FindByNormalizedName", mock.Anything, "BSM-001", "cvberkah").Return(nil, gorm.ErrRecordNotFound).Once()
+	mitraRepo.On("Create", mock.Anything, mock.Anything).Return(gorm.ErrDuplicatedKey).Once()
+	mitraRepo.On("FindByNormalizedName", mock.Anything, "BSM-001", "cvberkah").
+		Return(mtrMitra(mtrID, "CV Berkah", true), nil).Once()
+	expectPenjualanDenganMitra(repo, mtrID)
+	dbMock.ExpectQuery("SELECT").WillReturnRows(sqlmock.NewRows([]string{"mitra_id"}))
+	dbMock.ExpectCommit()
+
+	hasil, err := svc.SubmitPenjualan("BSM-001", "ADM-001", 1, "", "CV Berkah", "", nil)
+
+	assert.NoError(t, err, "mitra yang keburu dibuat request lain dipakai, penjualan tetap jalan")
+	assert.NotNil(t, hasil)
+	mitraRepo.AssertExpectations(t)
+	repo.AssertExpectations(t)
+	assert.NoError(t, dbMock.ExpectationsWereMet())
+}
+
+func TestResolveMitraPenjualan_DuplikatTapiTidakKetemu(t *testing.T) {
+	dbMock, repo, mitraRepo, svc := newPenjualanSvc(t)
+	siapSubmitMitra(dbMock, repo)
+	mitraRepo.On("FindByNormalizedName", mock.Anything, "BSM-001", "cvberkah").Return(nil, gorm.ErrRecordNotFound).Twice()
+	mitraRepo.On("Create", mock.Anything, mock.Anything).Return(gorm.ErrDuplicatedKey).Once()
+	dbMock.ExpectQuery("SELECT").WillReturnRows(sqlmock.NewRows([]string{"mitra_id"}))
+	dbMock.ExpectRollback()
+
+	hasil, err := svc.SubmitPenjualan("BSM-001", "ADM-001", 1, "", "CV Berkah", "", nil)
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, mtrKode(t, err))
+	assert.Contains(t, err.Error(), "membuat data mitra baru")
+	repo.AssertNotCalled(t, "CreatePenjualan", mock.Anything, mock.Anything)
+	mitraRepo.AssertExpectations(t)
+	assert.NoError(t, dbMock.ExpectationsWereMet())
+}
+
+func TestResolveMitraPenjualan_CreateError(t *testing.T) {
+	dbMock, repo, mitraRepo, svc := newPenjualanSvc(t)
+	siapSubmitMitra(dbMock, repo)
+	mitraRepo.On("FindByNormalizedName", mock.Anything, "BSM-001", "cvberkah").Return(nil, gorm.ErrRecordNotFound).Once()
+	mitraRepo.On("Create", mock.Anything, mock.Anything).Return(errors.New("db error")).Once()
+	dbMock.ExpectQuery("SELECT").WillReturnRows(sqlmock.NewRows([]string{"mitra_id"}))
+	dbMock.ExpectRollback()
+
+	hasil, err := svc.SubmitPenjualan("BSM-001", "ADM-001", 1, "", "CV Berkah", "", nil)
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, mtrKode(t, err))
+	repo.AssertNotCalled(t, "CreatePenjualan", mock.Anything, mock.Anything)
+	mitraRepo.AssertExpectations(t)
+	assert.NoError(t, dbMock.ExpectationsWereMet())
+}

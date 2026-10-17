@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"enviroo-be/internal/middleware"
 	"enviroo-be/internal/services"
 
 	"github.com/gin-gonic/gin"
@@ -58,15 +59,13 @@ func (ac *AdminController) AddAdminBankSampah(c *gin.Context) {
 }
 
 func (ac *AdminController) DeleteStaffBankSampah(c *gin.Context) {
-	var req struct {
-		DeletedBy string `json:"deleted_by" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	claims, ok := middleware.GetClaims(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Tidak terautentikasi"})
 		return
 	}
 
-	result, err := ac.Svc.DeleteStaffBank(c.Param("admin_id"), req.DeletedBy)
+	result, err := ac.Svc.DeleteStaffBank(c.Param("admin_id"), claims.UserID)
 	if err := handleServiceError(c, err); err != nil {
 		return
 	}

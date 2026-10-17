@@ -67,7 +67,7 @@ func (r *SetoranRepo) FindPenimbanganAktif(penimbanganID string) (*models.Penimb
 
 func (r *SetoranRepo) FindKatalogSampah(sampahID string) (*models.KatalogSampah, error) {
 	var s models.KatalogSampah
-	err := r.db.Preload("Reward").Preload("Sarok").Where("sampah_id = ?", sampahID).First(&s).Error
+	err := r.db.Preload("Reward").Preload("Sarok.Satuan").Where("sampah_id = ?", sampahID).First(&s).Error
 	return &s, err
 }
 
@@ -120,9 +120,10 @@ func (r *SetoranRepo) GetDetailHeader(setoranID string) (*SetoranDetailHeader, e
 func (r *SetoranRepo) GetDetailItems(setoranID string) ([]SetoranDetailItem, error) {
 	var items []SetoranDetailItem
 	err := r.db.Table("detail_setoran_nasabah").
-		Select("sampah.nama_sampah, sampah.satuan, detail_setoran_nasabah.qty").
+		Select("sampah.nama_sampah, satuan.satuan, detail_setoran_nasabah.qty").
 		Joins("LEFT JOIN katalog_sampah ON katalog_sampah.sampah_id = detail_setoran_nasabah.sampah_id").
 		Joins("LEFT JOIN sampah ON sampah.sarok_id = katalog_sampah.sarok_id").
+		Joins("LEFT JOIN satuan ON satuan.satuan_id = sampah.satuan_id").
 		Where("detail_setoran_nasabah.setoran_id = ?", setoranID).
 		Find(&items).Error
 	return items, err

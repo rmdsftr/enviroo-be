@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	"enviroo-be/internal/models"
 	"enviroo-be/internal/repositories"
@@ -44,7 +45,7 @@ func ktlKatalog(sampahID, bankID string) *models.KatalogSampah {
 		RewardID:        1,
 		PhotoURL:        "https://cdn/botol.png",
 		SyaratPemilahan: "Bersih dan kering",
-		Sarok:           models.Sampah{SarokID: 12, NamaSampah: "Botol Plastik", Satuan: models.SatuanKG},
+		Sarok:           models.Sampah{SarokID: 12, NamaSampah: "Botol Plastik", SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}},
 		Kategori:        models.KategoriSampah{KategoriID: 3, Kategori: "Plastik"},
 		Reward:          models.Reward{RewardID: 1, NamaReward: models.RewardEnumUang},
 	}
@@ -58,7 +59,7 @@ func ktlTambahInput() services.TambahKatalogInput {
 	return services.TambahKatalogInput{
 		BankID:          "BSI-001",
 		NamaSampah:      "Botol Plastik",
-		Satuan:          models.SatuanKG,
+		SatuanID:        1,
 		KategoriID:      3,
 		RewardID:        1,
 		SyaratPemilahan: "Bersih dan kering",
@@ -88,8 +89,8 @@ func TestListMasterSampah_RepoError(t *testing.T) {
 func TestListMasterSampah_Sukses(t *testing.T) {
 	_, repo, svc := newKtlSvc(t)
 	master := []models.Sampah{
-		{SarokID: 12, NamaSampah: "Botol Plastik", Satuan: models.SatuanKG},
-		{SarokID: 13, NamaSampah: "Kardus", Satuan: models.SatuanKG},
+		{SarokID: 12, NamaSampah: "Botol Plastik", SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}},
+		{SarokID: 13, NamaSampah: "Kardus", SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}},
 	}
 	repo.On("ListMasterSampah", "").Return(master, nil)
 
@@ -126,6 +127,7 @@ func TestTambahKatalog_BSUDitolak(t *testing.T) {
 func TestTambahKatalog_SarokIDTidakValid(t *testing.T) {
 	_, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
 	repo.On("AdaNilaiRewardAktif", mock.Anything, mock.Anything).Return(true, nil)
 	repo.On("FindMasterSampah", 99).Return(nil, errors.New("not found"))
 
@@ -141,10 +143,11 @@ func TestTambahKatalog_SarokIDTidakValid(t *testing.T) {
 func TestTambahKatalog_SarokIDSatuanBedaPakaiMasterSatuanItu(t *testing.T) {
 	dbMock, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "2").Return(&models.Satuan{SatuanID: 2, Satuan: "pcs"}, nil)
 	repo.On("AdaNilaiRewardAktif", mock.Anything, mock.Anything).Return(true, nil)
-	repo.On("FindMasterSampah", 13).Return(&models.Sampah{SarokID: 13, NamaSampah: "Kardus", Satuan: models.SatuanKG}, nil)
-	repo.On("FindOrCreateMasterSampah", mock.Anything, "Kardus", models.SatuanPCS).
-		Return(&models.Sampah{SarokID: 20, NamaSampah: "Kardus", Satuan: models.SatuanPCS}, nil)
+	repo.On("FindMasterSampah", 13).Return(&models.Sampah{SarokID: 13, NamaSampah: "Kardus", SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}}, nil)
+	repo.On("FindOrCreateMasterSampah", mock.Anything, "Kardus", 2).
+		Return(&models.Sampah{SarokID: 20, NamaSampah: "Kardus", SatuanID: 2, Satuan: models.Satuan{SatuanID: 2, Satuan: "pcs"}}, nil)
 	repo.On("FindKatalogSejenis", 20, "BSI-001").Return(nil, gorm.ErrRecordNotFound)
 	repo.On("CreateKatalog", mock.Anything, mock.Anything).Return(nil)
 	repo.On("CreateStok", mock.Anything, mock.Anything).Return(nil)
@@ -153,7 +156,7 @@ func TestTambahKatalog_SarokIDSatuanBedaPakaiMasterSatuanItu(t *testing.T) {
 	in := ktlTambahInput()
 	in.NamaSampah = "Kardus"
 	in.SarokID = 13
-	in.Satuan = models.SatuanPCS
+	in.SatuanID = 2
 	hasil, err := svc.TambahKatalog(in)
 
 	assert.NoError(t, err)
@@ -165,13 +168,14 @@ func TestTambahKatalog_SarokIDSatuanBedaPakaiMasterSatuanItu(t *testing.T) {
 func TestTambahKatalog_SarokIDSatuanBedaMasterError(t *testing.T) {
 	_, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "2").Return(&models.Satuan{SatuanID: 2, Satuan: "pcs"}, nil)
 	repo.On("AdaNilaiRewardAktif", mock.Anything, mock.Anything).Return(true, nil)
-	repo.On("FindMasterSampah", 13).Return(&models.Sampah{SarokID: 13, NamaSampah: "Kardus", Satuan: models.SatuanKG}, nil)
-	repo.On("FindOrCreateMasterSampah", mock.Anything, "Kardus", models.SatuanPCS).Return(nil, errors.New("db error"))
+	repo.On("FindMasterSampah", 13).Return(&models.Sampah{SarokID: 13, NamaSampah: "Kardus", SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}}, nil)
+	repo.On("FindOrCreateMasterSampah", mock.Anything, "Kardus", 2).Return(nil, errors.New("db error"))
 
 	in := ktlTambahInput()
 	in.SarokID = 13
-	in.Satuan = models.SatuanPCS
+	in.SatuanID = 2
 	hasil, err := svc.TambahKatalog(in)
 
 	assert.Nil(t, hasil)
@@ -183,9 +187,10 @@ func TestTambahKatalog_SarokIDSatuanBedaMasterError(t *testing.T) {
 func TestTambahKatalog_SatuanTidakValid(t *testing.T) {
 	_, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "99").Return(nil, gorm.ErrRecordNotFound)
 
 	in := ktlTambahInput()
-	in.Satuan = "ton"
+	in.SatuanID = 99
 	hasil, err := svc.TambahKatalog(in)
 
 	assert.Nil(t, hasil)
@@ -195,11 +200,24 @@ func TestTambahKatalog_SatuanTidakValid(t *testing.T) {
 	repo.AssertNotCalled(t, "FindOrCreateMasterSampah", mock.Anything, mock.Anything, mock.Anything)
 }
 
+func TestTambahKatalog_CekSatuanError(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "1").Return(nil, errors.New("db error"))
+
+	hasil, err := svc.TambahKatalog(ktlTambahInput())
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, ktlKode(t, err))
+	repo.AssertNotCalled(t, "AdaNilaiRewardAktif", mock.Anything, mock.Anything)
+}
+
 func TestTambahKatalog_SarokIDDipakaiApaAdanya(t *testing.T) {
 	dbMock, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
 	repo.On("AdaNilaiRewardAktif", mock.Anything, mock.Anything).Return(true, nil)
-	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, NamaSampah: "Botol Plastik", Satuan: models.SatuanKG}, nil)
+	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, NamaSampah: "Botol Plastik", SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}}, nil)
 	repo.On("FindKatalogSejenis", mock.Anything, mock.Anything).Return(nil, gorm.ErrRecordNotFound)
 	repo.On("CreateKatalog", mock.Anything, mock.Anything).Return(nil)
 	repo.On("CreateStok", mock.Anything, mock.Anything).Return(nil)
@@ -217,9 +235,10 @@ func TestTambahKatalog_SarokIDDipakaiApaAdanya(t *testing.T) {
 func TestTambahKatalog_TanpaSarokIDBuatMasterSampah(t *testing.T) {
 	dbMock, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
 	repo.On("AdaNilaiRewardAktif", mock.Anything, mock.Anything).Return(true, nil)
-	repo.On("FindOrCreateMasterSampah", mock.Anything, "Botol Plastik", models.SatuanKG).
-		Return(&models.Sampah{SarokID: 7, NamaSampah: "Botol Plastik", Satuan: models.SatuanKG}, nil)
+	repo.On("FindOrCreateMasterSampah", mock.Anything, "Botol Plastik", 1).
+		Return(&models.Sampah{SarokID: 7, NamaSampah: "Botol Plastik", SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}}, nil)
 	repo.On("FindKatalogSejenis", mock.Anything, mock.Anything).Return(nil, gorm.ErrRecordNotFound)
 	repo.On("CreateKatalog", mock.Anything, mock.Anything).Return(nil)
 	repo.On("CreateStok", mock.Anything, mock.Anything).Return(nil)
@@ -237,6 +256,7 @@ func TestTambahKatalog_TanpaSarokIDBuatMasterSampah(t *testing.T) {
 func TestTambahKatalog_MasterSampahError(t *testing.T) {
 	_, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
 	repo.On("AdaNilaiRewardAktif", mock.Anything, mock.Anything).Return(true, nil)
 	repo.On("FindOrCreateMasterSampah", mock.Anything, mock.Anything, mock.Anything).
 		Return(nil, errors.New("db error"))
@@ -251,8 +271,9 @@ func TestTambahKatalog_MasterSampahError(t *testing.T) {
 func TestTambahKatalog_GenerateIDGagal(t *testing.T) {
 	_, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
 	repo.On("AdaNilaiRewardAktif", mock.Anything, mock.Anything).Return(true, nil)
-	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, Satuan: models.SatuanKG}, nil)
+	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}}, nil)
 
 	in := ktlTambahInput()
 	in.SarokID = 12
@@ -268,8 +289,9 @@ func TestTambahKatalog_GenerateIDGagal(t *testing.T) {
 func TestTambahKatalog_DuplikatJadiConflict(t *testing.T) {
 	dbMock, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
 	repo.On("AdaNilaiRewardAktif", mock.Anything, mock.Anything).Return(true, nil)
-	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, Satuan: models.SatuanKG}, nil)
+	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}}, nil)
 	repo.On("FindKatalogSejenis", mock.Anything, mock.Anything).Return(nil, gorm.ErrRecordNotFound)
 	repo.On("CreateKatalog", mock.Anything, mock.Anything).Return(gorm.ErrDuplicatedKey)
 	expectTxRollback(dbMock)
@@ -287,8 +309,9 @@ func TestTambahKatalog_DuplikatJadiConflict(t *testing.T) {
 func TestTambahKatalog_CreateKatalogError(t *testing.T) {
 	dbMock, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
 	repo.On("AdaNilaiRewardAktif", mock.Anything, mock.Anything).Return(true, nil)
-	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, Satuan: models.SatuanKG}, nil)
+	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}}, nil)
 	repo.On("FindKatalogSejenis", mock.Anything, mock.Anything).Return(nil, gorm.ErrRecordNotFound)
 	repo.On("CreateKatalog", mock.Anything, mock.Anything).Return(errors.New("db error"))
 	expectTxRollback(dbMock)
@@ -305,8 +328,9 @@ func TestTambahKatalog_CreateKatalogError(t *testing.T) {
 func TestTambahKatalog_CreateStokErrorRollback(t *testing.T) {
 	dbMock, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
 	repo.On("AdaNilaiRewardAktif", mock.Anything, mock.Anything).Return(true, nil)
-	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, Satuan: models.SatuanKG}, nil)
+	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}}, nil)
 	repo.On("FindKatalogSejenis", mock.Anything, mock.Anything).Return(nil, gorm.ErrRecordNotFound)
 	repo.On("CreateKatalog", mock.Anything, mock.Anything).Return(nil)
 	repo.On("CreateStok", mock.Anything, mock.Anything).Return(errors.New("db error"))
@@ -324,8 +348,9 @@ func TestTambahKatalog_CreateStokErrorRollback(t *testing.T) {
 func TestTambahKatalog_Sukses(t *testing.T) {
 	dbMock, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSM-001").Return(ktlBank("BSM-001", models.BSM), nil)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
 	repo.On("AdaNilaiRewardAktif", mock.Anything, mock.Anything).Return(true, nil)
-	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, NamaSampah: "Botol Plastik", Satuan: models.SatuanKG}, nil)
+	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, NamaSampah: "Botol Plastik", SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}}, nil)
 
 	var katalogDibuat *models.KatalogSampah
 	var stokDibuat *models.StokSampah
@@ -360,8 +385,9 @@ func TestTambahKatalog_Sukses(t *testing.T) {
 func TestTambahKatalog_KategoriBedaDenganKatalogSejenisDitolak(t *testing.T) {
 	_, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
 	repo.On("AdaNilaiRewardAktif", mock.Anything, mock.Anything).Return(true, nil)
-	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, Satuan: models.SatuanKG}, nil)
+	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}}, nil)
 	repo.On("FindKatalogSejenis", 12, "BSI-001").Return(ktlKatalog("BSI-0010121", "BSI-001"), nil)
 
 	in := ktlTambahInput()
@@ -379,8 +405,9 @@ func TestTambahKatalog_KategoriBedaDenganKatalogSejenisDitolak(t *testing.T) {
 func TestTambahKatalog_KategoriSamaDenganKatalogSejenisDiterima(t *testing.T) {
 	dbMock, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
 	repo.On("AdaNilaiRewardAktif", mock.Anything, mock.Anything).Return(true, nil)
-	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, Satuan: models.SatuanKG}, nil)
+	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}}, nil)
 	repo.On("FindKatalogSejenis", 12, "BSI-001").Return(ktlKatalog("BSI-0010121", "BSI-001"), nil)
 	repo.On("CreateKatalog", mock.Anything, mock.Anything).Return(nil)
 	repo.On("CreateStok", mock.Anything, mock.Anything).Return(nil)
@@ -402,8 +429,9 @@ func TestTambahKatalog_KategoriSamaDenganKatalogSejenisDiterima(t *testing.T) {
 func TestTambahKatalog_FotoDanSyaratKosongIkutKatalogSejenis(t *testing.T) {
 	dbMock, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
 	repo.On("AdaNilaiRewardAktif", mock.Anything, mock.Anything).Return(true, nil)
-	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, Satuan: models.SatuanKG}, nil)
+	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}}, nil)
 	repo.On("FindKatalogSejenis", 12, "BSI-001").Return(ktlKatalog("BSI-0010121", "BSI-001"), nil)
 	var katalogDibuat *models.KatalogSampah
 	repo.On("CreateKatalog", mock.Anything, mock.Anything).
@@ -428,8 +456,9 @@ func TestTambahKatalog_FotoDanSyaratKosongIkutKatalogSejenis(t *testing.T) {
 func TestTambahKatalog_FotoDanSyaratDiRequestDipakai(t *testing.T) {
 	dbMock, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
 	repo.On("AdaNilaiRewardAktif", mock.Anything, mock.Anything).Return(true, nil)
-	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, Satuan: models.SatuanKG}, nil)
+	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}}, nil)
 	repo.On("FindKatalogSejenis", 12, "BSI-001").Return(ktlKatalog("BSI-0010121", "BSI-001"), nil)
 	var katalogDibuat *models.KatalogSampah
 	repo.On("CreateKatalog", mock.Anything, mock.Anything).
@@ -454,8 +483,9 @@ func TestTambahKatalog_FotoDanSyaratDiRequestDipakai(t *testing.T) {
 func TestTambahKatalog_TanpaKatalogSejenisTetapKosong(t *testing.T) {
 	dbMock, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
 	repo.On("AdaNilaiRewardAktif", mock.Anything, mock.Anything).Return(true, nil)
-	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, Satuan: models.SatuanKG}, nil)
+	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}}, nil)
 	repo.On("FindKatalogSejenis", 12, "BSI-001").Return(nil, gorm.ErrRecordNotFound)
 	var katalogDibuat *models.KatalogSampah
 	repo.On("CreateKatalog", mock.Anything, mock.Anything).
@@ -479,8 +509,9 @@ func TestTambahKatalog_TanpaKatalogSejenisTetapKosong(t *testing.T) {
 func TestTambahKatalog_CekKatalogSejenisError(t *testing.T) {
 	_, repo, svc := newKtlSvc(t)
 	repo.On("FindBank", "BSI-001").Return(ktlBank("BSI-001", models.BSI), nil)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
 	repo.On("AdaNilaiRewardAktif", mock.Anything, mock.Anything).Return(true, nil)
-	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, Satuan: models.SatuanKG}, nil)
+	repo.On("FindMasterSampah", 12).Return(&models.Sampah{SarokID: 12, SatuanID: 1, Satuan: models.Satuan{SatuanID: 1, Satuan: "kg"}}, nil)
 	repo.On("FindKatalogSejenis", 12, "BSI-001").Return(nil, errors.New("db error"))
 
 	in := ktlTambahInput()
@@ -789,7 +820,6 @@ func TestAksesKatalog_StaffBSILintasBank(t *testing.T) {
 		repo.On("FindKatalogWithRelasi", "BSM-0010121").Return(katalog, nil)
 		repo.On("FindStok", "BSM-001", "BSM-0010121").Return(float64(5), nil)
 		repo.On("ListSchemaHarga", "BSM-0010121").Return([]models.SchemaHargaSampah{}, nil)
-		repo.On("ListHistoryHarga", "BSM-0010121").Return([]repositories.HistoryHargaRow{}, nil)
 
 		hasil, err := svc.DetailKatalog("BSM-0010121", ktlAkses("BSI-001", role))
 
@@ -929,7 +959,7 @@ func TestListKatalogBank_Mapping(t *testing.T) {
 	assert.NoError(t, err)
 	if assert.Len(t, items, 2) {
 		assert.Equal(t, "Botol Plastik", items[0].NamaSampah, "nama diambil dari master sampah")
-		assert.Equal(t, models.SatuanKG, items[0].Satuan)
+		assert.Equal(t, "kg", items[0].Satuan)
 		assert.Equal(t, "Plastik", items[0].Kategori.Kategori)
 		assert.Equal(t, models.RewardEnumUang, items[0].Reward.NamaReward)
 		assert.Equal(t, 3.25, items[0].Stok)
@@ -983,33 +1013,16 @@ func TestDetailKatalog_SchemaHargaError(t *testing.T) {
 	assert.Contains(t, err.Error(), "harga")
 }
 
-func TestDetailKatalog_HistoryHargaError(t *testing.T) {
+func TestDetailKatalog_HargaPerLevelKosongBukanNull(t *testing.T) {
 	_, repo, svc := newKtlSvc(t)
 	repo.On("FindKatalogWithRelasi", "BSI-0010121").Return(ktlKatalog("BSI-0010121", "BSI-001"), nil)
 	repo.On("FindStok", "BSI-001", "BSI-0010121").Return(float64(5), nil)
 	repo.On("ListSchemaHarga", "BSI-0010121").Return([]models.SchemaHargaSampah{}, nil)
-	repo.On("ListHistoryHarga", "BSI-0010121").Return(nil, errors.New("db error"))
-
-	hasil, err := svc.DetailKatalog("BSI-0010121", ktlAkses("BSI-001", models.AdminBSI))
-
-	assert.Nil(t, hasil)
-	assert.Equal(t, http.StatusInternalServerError, ktlKode(t, err))
-	assert.Contains(t, err.Error(), "riwayat harga")
-}
-
-func TestDetailKatalog_HistoryNilJadiSliceKosong(t *testing.T) {
-	_, repo, svc := newKtlSvc(t)
-	repo.On("FindKatalogWithRelasi", "BSI-0010121").Return(ktlKatalog("BSI-0010121", "BSI-001"), nil)
-	repo.On("FindStok", "BSI-001", "BSI-0010121").Return(float64(5), nil)
-	repo.On("ListSchemaHarga", "BSI-0010121").Return([]models.SchemaHargaSampah{}, nil)
-	repo.On("ListHistoryHarga", "BSI-0010121").Return([]repositories.HistoryHargaRow(nil), nil)
 
 	hasil, err := svc.DetailKatalog("BSI-0010121", ktlAkses("BSI-001", models.AdminBSI))
 
 	assert.NoError(t, err)
 	if assert.NotNil(t, hasil) {
-		assert.NotNil(t, hasil.HistoryHarga, "nil harus jadi [] supaya JSON-nya bukan null")
-		assert.Len(t, hasil.HistoryHarga, 0)
 		assert.NotNil(t, hasil.HargaPerLevel)
 	}
 }
@@ -1020,14 +1033,9 @@ func TestDetailKatalog_Sukses(t *testing.T) {
 		{SchemaID: "2BSI-0010121", SampahID: "BSI-0010121", LevelUser: models.LevelNasabah, Harga: 3000, SatuanReward: models.SatuanRewardEnumRp},
 		{SchemaID: "1BSI-0010121", SampahID: "BSI-0010121", LevelUser: models.LevelEksternal, Harga: 2500, SatuanReward: models.SatuanRewardEnumRp},
 	}
-	histories := []repositories.HistoryHargaRow{
-		{HistoryID: "H-001", SchemaID: "2BSI-0010121", LevelUser: models.LevelNasabah,
-			HargaLama: 2800, HargaBaru: 3000, ChangedByNama: "Admin A"},
-	}
 	repo.On("FindKatalogWithRelasi", "BSI-0010121").Return(ktlKatalog("BSI-0010121", "BSI-001"), nil)
 	repo.On("FindStok", "BSI-001", "BSI-0010121").Return(12.75, nil)
 	repo.On("ListSchemaHarga", "BSI-0010121").Return(schemas, nil)
-	repo.On("ListHistoryHarga", "BSI-0010121").Return(histories, nil)
 
 	hasil, err := svc.DetailKatalog("BSI-0010121", ktlAkses("BSI-001", models.AdminBSI))
 
@@ -1036,7 +1044,7 @@ func TestDetailKatalog_Sukses(t *testing.T) {
 		assert.Equal(t, "BSI-0010121", hasil.SampahID)
 		assert.Equal(t, 12, hasil.SarokID, "sarok_id diambil dari relasi master sampah")
 		assert.Equal(t, "Botol Plastik", hasil.NamaSampah)
-		assert.Equal(t, models.SatuanKG, hasil.Satuan)
+		assert.Equal(t, "kg", hasil.Satuan)
 		assert.Equal(t, "Bersih dan kering", hasil.SyaratPemilahan)
 		assert.Equal(t, "Plastik", hasil.Kategori.Kategori)
 		assert.Equal(t, 12.75, hasil.Stok)
@@ -1045,8 +1053,87 @@ func TestDetailKatalog_Sukses(t *testing.T) {
 			assert.Equal(t, float64(3000), hasil.HargaPerLevel[0].Harga)
 			assert.Equal(t, models.SatuanRewardEnumRp, hasil.HargaPerLevel[0].SatuanReward)
 		}
-		assert.Len(t, hasil.HistoryHarga, 1)
 	}
+}
+
+func TestHistoryHargaKatalog_TidakDitemukan(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("FindKatalog", "BSI-0010121").Return(nil, errors.New("not found"))
+
+	hasil, err := svc.HistoryHargaKatalog("BSI-0010121", "", "", ktlAkses("BSI-001", models.AdminBSI))
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusNotFound, ktlKode(t, err))
+}
+
+func TestHistoryHargaKatalog_BankLainDitolak(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("FindKatalog", "BSI-0010121").Return(ktlKatalog("BSI-0010121", "BSI-001"), nil)
+
+	hasil, err := svc.HistoryHargaKatalog("BSI-0010121", "", "", ktlAkses("BSM-009", models.AdminBSM))
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusForbidden, ktlKode(t, err))
+	repo.AssertNotCalled(t, "ListHistoryHarga", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestHistoryHargaKatalog_RepoError(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("FindKatalog", "BSI-0010121").Return(ktlKatalog("BSI-0010121", "BSI-001"), nil)
+	repo.On("ListHistoryHarga", "BSI-0010121", mock.Anything, mock.Anything).Return(nil, errors.New("db error"))
+
+	hasil, err := svc.HistoryHargaKatalog("BSI-0010121", "", "", ktlAkses("BSI-001", models.AdminBSI))
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, ktlKode(t, err))
+	assert.Contains(t, err.Error(), "riwayat harga")
+}
+
+func TestHistoryHargaKatalog_NilJadiSliceKosong(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("FindKatalog", "BSI-0010121").Return(ktlKatalog("BSI-0010121", "BSI-001"), nil)
+	repo.On("ListHistoryHarga", "BSI-0010121", mock.Anything, mock.Anything).Return([]repositories.HistoryHargaRow(nil), nil)
+
+	hasil, err := svc.HistoryHargaKatalog("BSI-0010121", "", "", ktlAkses("BSI-001", models.AdminBSI))
+
+	assert.NoError(t, err)
+	assert.NotNil(t, hasil, "nil harus jadi [] supaya JSON-nya bukan null")
+	assert.Len(t, hasil, 0)
+}
+
+func TestHistoryHargaKatalog_TanpaFilter(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	histories := []repositories.HistoryHargaRow{
+		{HistoryID: "H-001", SchemaID: "2BSI-0010121", LevelUser: models.LevelNasabah,
+			HargaLama: 2800, HargaBaru: 3000, ChangedByNama: "Admin A"},
+	}
+	repo.On("FindKatalog", "BSI-0010121").Return(ktlKatalog("BSI-0010121", "BSI-001"), nil)
+	repo.On("ListHistoryHarga", "BSI-0010121", (*time.Time)(nil), (*time.Time)(nil)).Return(histories, nil)
+
+	hasil, err := svc.HistoryHargaKatalog("BSI-0010121", "", "", ktlAkses("BSI-001", models.AdminBSI))
+
+	assert.NoError(t, err)
+	assert.Len(t, hasil, 1)
+	repo.AssertExpectations(t)
+}
+
+func TestHistoryHargaKatalog_FilterTanggal(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("FindKatalog", "BSI-0010121").Return(ktlKatalog("BSI-0010121", "BSI-001"), nil)
+	repo.On("ListHistoryHarga", "BSI-0010121",
+		mock.MatchedBy(func(start *time.Time) bool {
+			return start != nil && start.Equal(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+		}),
+		mock.MatchedBy(func(end *time.Time) bool {
+			return end != nil && end.Equal(time.Date(2026, 1, 31, 23, 59, 59, 0, time.UTC))
+		}),
+	).Return([]repositories.HistoryHargaRow{}, nil)
+
+	hasil, err := svc.HistoryHargaKatalog("BSI-0010121", "2026-01-01", "2026-01-31", ktlAkses("BSI-001", models.AdminBSI))
+
+	assert.NoError(t, err)
+	assert.NotNil(t, hasil)
+	repo.AssertExpectations(t)
 }
 
 func TestListKategori_RepoError(t *testing.T) {
@@ -1232,6 +1319,194 @@ func TestHapusKategori_Sukses(t *testing.T) {
 	repo.On("DeleteKategori", kategori).Return(nil)
 
 	err := svc.HapusKategori("3")
+
+	assert.NoError(t, err)
+	repo.AssertExpectations(t)
+}
+
+func TestListSatuan_RepoError(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("ListSatuan").Return(nil, errors.New("db error"))
+
+	hasil, err := svc.ListSatuan()
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, ktlKode(t, err))
+}
+
+func TestListSatuan_Sukses(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("ListSatuan").Return([]models.Satuan{
+		{SatuanID: 1, Satuan: "kg"},
+		{SatuanID: 2, Satuan: "pcs"},
+	}, nil)
+
+	hasil, err := svc.ListSatuan()
+
+	assert.NoError(t, err)
+	assert.Len(t, hasil, 2)
+}
+
+func TestTambahSatuan_CekNamaError(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("CountSatuanDenganNama", "unit", "").Return(int64(0), errors.New("db error"))
+
+	hasil, err := svc.TambahSatuan("Unit")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, ktlKode(t, err))
+}
+
+func TestTambahSatuan_NamaDinormalisasiSaatCekUnik(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("CountSatuanDenganNama", "kg", "").Return(int64(1), nil)
+
+	hasil, err := svc.TambahSatuan("K.G")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusConflict, ktlKode(t, err))
+	assert.Contains(t, err.Error(), "sudah ada")
+	repo.AssertExpectations(t)
+}
+
+func TestTambahSatuan_CreateError(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("CountSatuanDenganNama", "unit", "").Return(int64(0), nil)
+	repo.On("CreateSatuan", mock.Anything).Return(errors.New("db error"))
+
+	hasil, err := svc.TambahSatuan("Unit")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, ktlKode(t, err))
+}
+
+func TestTambahSatuan_Sukses(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("CountSatuanDenganNama", "unit", "").Return(int64(0), nil)
+	repo.On("CreateSatuan", mock.Anything).Return(nil)
+
+	hasil, err := svc.TambahSatuan("Unit")
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, hasil) {
+		assert.Equal(t, "Unit", hasil.Satuan, "nama disimpan apa adanya, normalisasi cuma buat cek unik")
+	}
+}
+
+func TestUbahSatuan_TidakDitemukan(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("FindSatuan", "9").Return(nil, errors.New("not found"))
+
+	hasil, err := svc.UbahSatuan("9", "kg")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusNotFound, ktlKode(t, err))
+}
+
+func TestUbahSatuan_DirinyaSendiriDikecualikan(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
+	repo.On("CountSatuanDenganNama", "kg", "1").Return(int64(0), nil)
+	repo.On("SaveSatuan", mock.Anything).Return(nil)
+
+	hasil, err := svc.UbahSatuan("1", "Kg")
+
+	assert.NoError(t, err)
+	assert.NotNil(t, hasil)
+	repo.AssertExpectations(t)
+}
+
+func TestUbahSatuan_NamaSudahDipakaiSatuanLain(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
+	repo.On("CountSatuanDenganNama", "pcs", "1").Return(int64(1), nil)
+
+	hasil, err := svc.UbahSatuan("1", "pcs")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusConflict, ktlKode(t, err))
+	repo.AssertNotCalled(t, "SaveSatuan", mock.Anything)
+}
+
+func TestUbahSatuan_SaveError(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
+	repo.On("CountSatuanDenganNama", "kilogram", "1").Return(int64(0), nil)
+	repo.On("SaveSatuan", mock.Anything).Return(errors.New("db error"))
+
+	hasil, err := svc.UbahSatuan("1", "kilogram")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, ktlKode(t, err))
+}
+
+func TestUbahSatuan_Sukses(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	satuan := &models.Satuan{SatuanID: 1, Satuan: "kg"}
+	repo.On("FindSatuan", "1").Return(satuan, nil)
+	repo.On("CountSatuanDenganNama", "kilogram", "1").Return(int64(0), nil)
+	repo.On("SaveSatuan", satuan).Return(nil)
+
+	hasil, err := svc.UbahSatuan("1", "kilogram")
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, hasil) {
+		assert.Equal(t, "kilogram", hasil.Satuan)
+		assert.Equal(t, 1, hasil.SatuanID)
+	}
+}
+
+func TestHapusSatuan_TidakDitemukan(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("FindSatuan", "9").Return(nil, errors.New("not found"))
+
+	err := svc.HapusSatuan("9")
+
+	assert.Equal(t, http.StatusNotFound, ktlKode(t, err))
+}
+
+func TestHapusSatuan_CekPemakaianError(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
+	repo.On("CountSampahBySatuan", "1").Return(int64(0), errors.New("db error"))
+
+	err := svc.HapusSatuan("1")
+
+	assert.Equal(t, http.StatusInternalServerError, ktlKode(t, err))
+}
+
+func TestHapusSatuan_MasihDipakai(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	repo.On("FindSatuan", "1").Return(&models.Satuan{SatuanID: 1, Satuan: "kg"}, nil)
+	repo.On("CountSampahBySatuan", "1").Return(int64(5), nil)
+
+	err := svc.HapusSatuan("1")
+
+	assert.Equal(t, http.StatusConflict, ktlKode(t, err))
+	assert.Contains(t, err.Error(), "masih digunakan")
+	repo.AssertNotCalled(t, "DeleteSatuan", mock.Anything)
+}
+
+func TestHapusSatuan_DeleteError(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	satuan := &models.Satuan{SatuanID: 4, Satuan: "unit"}
+	repo.On("FindSatuan", "4").Return(satuan, nil)
+	repo.On("CountSampahBySatuan", "4").Return(int64(0), nil)
+	repo.On("DeleteSatuan", satuan).Return(errors.New("db error"))
+
+	err := svc.HapusSatuan("4")
+
+	assert.Equal(t, http.StatusInternalServerError, ktlKode(t, err))
+}
+
+func TestHapusSatuan_Sukses(t *testing.T) {
+	_, repo, svc := newKtlSvc(t)
+	satuan := &models.Satuan{SatuanID: 4, Satuan: "unit"}
+	repo.On("FindSatuan", "4").Return(satuan, nil)
+	repo.On("CountSampahBySatuan", "4").Return(int64(0), nil)
+	repo.On("DeleteSatuan", satuan).Return(nil)
+
+	err := svc.HapusSatuan("4")
 
 	assert.NoError(t, err)
 	repo.AssertExpectations(t)

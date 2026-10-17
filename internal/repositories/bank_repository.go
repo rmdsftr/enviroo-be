@@ -402,6 +402,20 @@ func (r *BankRepo) FindAdminByUserAndBankTx(tx *gorm.DB, userID, bankID string) 
 	return &admin, err
 }
 
+func (r *BankRepo) FindAdminAktifByUser(userID string) (*models.Admin, error) {
+	var admin models.Admin
+	err := r.db.Where("user_id = ? AND status_admin = ?", userID, models.Aktif).First(&admin).Error
+	return &admin, err
+}
+
+func (r *BankRepo) AdminPernahAktif(adminID string) (bool, error) {
+	var count int64
+	err := r.db.Model(&models.AktivasiAkun{}).
+		Where("admin_id = ? AND is_used = ?", adminID, true).
+		Count(&count).Error
+	return count > 0, err
+}
+
 func (r *BankRepo) DeleteAktivasiAdminBelumDipakai(tx *gorm.DB, userID string, tujuan *models.TujuanEnum) error {
 	q := tx.Where("user_id = ? AND as_role = ? AND is_used = ?", userID, models.RoleUserAdmin, false)
 	if tujuan != nil {

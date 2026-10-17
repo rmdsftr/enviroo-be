@@ -12,6 +12,8 @@ type TabunganRepoIface interface {
 	ListTabunganBank(bankID string, start, end *time.Time) ([]models.TabunganSampah, error)
 	ListPencairanTabungan(tabunganIDs []string) ([]repositories.PencairanTabunganRow, error)
 	ListTanggalPengangkutanCompleted(pengangkutanIDs []string) (map[string]string, error)
+	FindBank(bankID string) (*models.BankSampah, error)
+	ListAntrianSampaiNasabah(bankID, nasabahID string) ([]repositories.AntrianSampahRow, error)
 }
 
 type DetailPencairan struct {
@@ -31,6 +33,14 @@ type ItemTabungan struct {
 	DetailPencairan []DetailPencairan `json:"detail_pencairan"`
 }
 
+type ItemAntrian struct {
+	Nomor        int       `json:"nomor"`
+	NasabahID    string    `json:"nasabah_id"`
+	NamaNasabah  string    `json:"nama_nasabah"`
+	SisaQty      float64   `json:"sisa_qty"`
+	TanggalSetor time.Time `json:"tanggal_setor"`
+}
+
 type KelompokSampah struct {
 	SampahID       string         `json:"sampah_id"`
 	NamaSampah     string         `json:"nama_sampah"`
@@ -38,6 +48,7 @@ type KelompokSampah struct {
 	SatuanDiterima string         `json:"satuan_diterima"`
 	RewardID       int            `json:"reward_id"`
 	NamaReward     string         `json:"nama_reward"`
+	Antrian        []ItemAntrian  `json:"antrian"`
 	Tabungan       []ItemTabungan `json:"tabungan"`
 }
 
@@ -106,9 +117,14 @@ func (s *tabunganService) BukuTabunganNasabah(nasabahID, startDate, endDate stri
 		return nil, err
 	}
 
+	kelompok := susunBukuTabunganPerSampah(tabungans, pencairanMap)
+	if err := s.isiAntrianBSM(nasabahID, tabungans, kelompok); err != nil {
+		return nil, err
+	}
+
 	return &BukuTabunganNasabahResult{
 		NasabahID: nasabahID,
-		Sampah:    susunBukuTabunganPerSampah(tabungans, pencairanMap),
+		Sampah:    kelompok,
 	}, nil
 }
 
@@ -144,6 +160,44 @@ func (s *tabunganService) BukuTabunganBSU(bankID, startDate, endDate string) (*B
 		BankID:       bankID,
 		Pengangkutan: susunBukuTabungan(tabungans, tanggalMap, pencairanMap),
 	}, nil
+}
+
+// Antrian hanya dihitung untuk nasabah BSM; nasabah bank lain tetap dapat antrian kosong.
+func (s *tabunganService) isiAntrianBSM(nasabahID string, tabungans []models.TabunganSampah, kelompok []KelompokSampah) error {
+	bankID := tabungans[0].BankID
+	if bankID == nil {
+		return nil
+	}
+
+	bank, err := s.repo.FindBank(*bankID)
+	if err != nil {
+		return errInternal("Gagal mengambil data bank: " + err.Error())
+	}
+	if bank.JenisBank != models.BSM {
+		return nil
+	}
+
+	rows, err := s.repo.ListAntrianSampaiNasabah(*bankID, nasabahID)
+	if err != nil {
+		return errInternal("Gagal mengambil antrian tabungan: " + err.Error())
+	}
+
+	antrianPerSampah := make(map[string][]ItemAntrian)
+	for _, row := range rows {
+		antrianPerSampah[row.SampahID] = append(antrianPerSampah[row.SampahID], ItemAntrian{
+			Nomor:        row.Nomor,
+			NasabahID:    row.NasabahID,
+			NamaNasabah:  row.NamaNasabah,
+			SisaQty:      row.SisaQty,
+			TanggalSetor: row.TanggalSetor,
+		})
+	}
+	for i := range kelompok {
+		if antrian, ada := antrianPerSampah[kelompok[i].SampahID]; ada {
+			kelompok[i].Antrian = antrian
+		}
+	}
+	return nil
 }
 
 func (s *tabunganService) ambilPencairanMap(tabungans []models.TabunganSampah) (map[string][]repositories.PencairanTabunganRow, error) {
@@ -186,7 +240,7 @@ func susunBukuTabunganPerSampah(
 		rewardID := 0
 		if k := anggota[0].KatalogSampah; k != nil {
 			namaSampah = k.Sarok.NamaSampah
-			satuanSampah = string(k.Sarok.Satuan)
+			satuanSampah = k.Sarok.Satuan.Satuan
 			satuanDiterima = string(k.Reward.Satuan)
 			namaReward = string(k.Reward.NamaReward)
 			rewardID = k.RewardID
@@ -228,6 +282,7 @@ func susunBukuTabunganPerSampah(
 			SatuanDiterima: satuanDiterima,
 			RewardID:       rewardID,
 			NamaReward:     namaReward,
+			Antrian:        []ItemAntrian{},
 			Tabungan:       items,
 		})
 	}
@@ -264,7 +319,7 @@ func susunBukuTabungan(
 			rewardID := 0
 			if tab.KatalogSampah != nil {
 				namaSampah = tab.KatalogSampah.Sarok.NamaSampah
-				satuan = string(tab.KatalogSampah.Sarok.Satuan)
+				satuan = tab.KatalogSampah.Sarok.Satuan.Satuan
 				rewardID = tab.KatalogSampah.RewardID
 				namaReward = string(tab.KatalogSampah.Reward.NamaReward)
 			}
