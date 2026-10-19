@@ -358,7 +358,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 		dashboard.GET("/saldo-bank/:bank_id", allStaff, bankParamOrBSI, dashboardController.GetSaldoBank)
 		dashboard.GET("/saldo-nasabah/:nasabah_id", middleware.RequireRole(models.RoleNasabah, models.AdminBSI, models.PetugasBSI, models.AdminBSU, models.PetugasBSU, models.AdminBSM, models.PetugasBSM), middleware.RequireNasabahBankAccess(db, "nasabah_id"), dashboardController.GetSaldoNasabah)
 		dashboard.GET("/mutasi-nasabah/:nasabah_id", nasabahRole, sameNasabah, dashboardController.MutasiSaldoNasabah)
-		dashboard.GET("/mutasi-bank/:bank_id", allAdmin, bankParamOrBSI, dashboardController.MutasiSaldoBank)
+		dashboard.GET("/mutasi-bank/:bank_id", allStaff, middleware.RequireSameBankParam("bank_id", models.AdminBSI), dashboardController.MutasiSaldoBank)
 		
 		dashboard.POST("/catat-manual/:bank_id", allAdmin, bankParam, dashboardController.CatatManualMutasiBank)
 		dashboard.GET("/total-saldo-all-nasabah/:bank_id", allAdmin, bankParamOrBSI, dashboardController.TotalSaldoAllNasabah)
@@ -457,6 +457,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 		tabunganSampahController := controllers.NewTabunganSampahController(tabunganSvc)
 		tabunganSampah.GET("/buku-tabungan/:nasabah_id", nasabahRole, sameNasabah, tabunganSampahController.GetBukuTabunganSampahNasabah)
 		tabunganSampah.GET("/buku-tabungan-bsu/:bsu_id", staffBSU, bsuParam, tabunganSampahController.GetBukuTabunganSampahBSU)
+		tabunganSampah.GET("/antrian/:bank_id/:sampah_id", allAdmin, bankParam, tabunganSampahController.GetAntrianPencairanSampah)
 	}
 
 	penarikan := r.Group("/penarikan", requireAuth)

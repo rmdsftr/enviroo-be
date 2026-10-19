@@ -41,3 +41,15 @@ func (tc *TabunganSampahController) GetBukuTabunganSampahBSU(c *gin.Context) {
 
 	c.JSON(http.StatusOK, buku)
 }
+
+func (tc *TabunganSampahController) GetAntrianPencairanSampah(c *gin.Context) {
+	antrian, err := tc.Svc.AntrianPencairanSampah(
+		c.Param("bank_id"),
+		c.Param("sampah_id"),
+	)
+	if err := handleServiceError(c, err); err != nil {
+		return
+	}
+
+	c.JSON(http.StatusOK, antrian)
+}
