@@ -60,3 +60,19 @@ func (m *MockTabunganRepo) ListAntrianSampaiNasabah(bankID, nasabahID string) ([
 	}
 	return args.Get(0).([]repositories.AntrianSampahRow), args.Error(1)
 }
+
+func (m *MockTabunganRepo) FindKatalogBank(bankID, sampahID string) (*models.KatalogSampah, error) {
+	args := m.Called(bankID, sampahID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.KatalogSampah), args.Error(1)
+}
+
+func (m *MockTabunganRepo) ListAntrianPerSampah(bankID, sampahID string) ([]repositories.AntrianPencairanRow, error) {
+	args := m.Called(bankID, sampahID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]repositories.AntrianPencairanRow), args.Error(1)
+}

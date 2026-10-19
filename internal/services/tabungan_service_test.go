@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"gorm.io/gorm"
 )
 
 func tabunganKatalog(sampahID, namaSampah string) *models.KatalogSampah {
@@ -305,4 +306,104 @@ func TestBukuTabunganNasabah_AntrianQueryError(t *testing.T) {
 
 	assert.Nil(t, hasil)
 	assert.Equal(t, http.StatusInternalServerError, tabKode(t, err))
+}
+
+func TestAntrianPencairanSampah_ParamKosong(t *testing.T) {
+	kasus := []struct{ bankID, sampahID string }{
+		{"", "SMP-001"},
+		{"BNK-001", ""},
+	}
+	for _, k := range kasus {
+		repo := new(mocks.MockTabunganRepo)
+
+		hasil, err := services.NewTabunganService(repo).AntrianPencairanSampah(k.bankID, k.sampahID)
+
+		assert.Nil(t, hasil)
+		assert.Equal(t, http.StatusBadRequest, tabKode(t, err))
+		repo.AssertNotCalled(t, "FindKatalogBank", mock.Anything, mock.Anything)
+	}
+}
+
+func TestAntrianPencairanSampah_SampahTidakDitemukan(t *testing.T) {
+	repo := new(mocks.MockTabunganRepo)
+	repo.On("FindKatalogBank", "BNK-001", "SMP-999").Return(nil, gorm.ErrRecordNotFound)
+
+	hasil, err := services.NewTabunganService(repo).AntrianPencairanSampah("BNK-001", "SMP-999")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusNotFound, tabKode(t, err))
+	repo.AssertNotCalled(t, "ListAntrianPerSampah", mock.Anything, mock.Anything)
+}
+
+func TestAntrianPencairanSampah_FindKatalogError(t *testing.T) {
+	repo := new(mocks.MockTabunganRepo)
+	repo.On("FindKatalogBank", "BNK-001", "SMP-001").Return(nil, errors.New("db error"))
+
+	hasil, err := services.NewTabunganService(repo).AntrianPencairanSampah("BNK-001", "SMP-001")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, tabKode(t, err))
+	repo.AssertNotCalled(t, "ListAntrianPerSampah", mock.Anything, mock.Anything)
+}
+
+func TestAntrianPencairanSampah_AntrianQueryError(t *testing.T) {
+	repo := new(mocks.MockTabunganRepo)
+	repo.On("FindKatalogBank", "BNK-001", "SMP-001").Return(tabunganKatalog("SMP-001", "Botol Plastik"), nil)
+	repo.On("ListAntrianPerSampah", "BNK-001", "SMP-001").Return(nil, errors.New("db error"))
+
+	hasil, err := services.NewTabunganService(repo).AntrianPencairanSampah("BNK-001", "SMP-001")
+
+	assert.Nil(t, hasil)
+	assert.Equal(t, http.StatusInternalServerError, tabKode(t, err))
+}
+
+func TestAntrianPencairanSampah_AntrianKosong(t *testing.T) {
+	repo := new(mocks.MockTabunganRepo)
+	repo.On("FindKatalogBank", "BNK-001", "SMP-001").Return(tabunganKatalog("SMP-001", "Botol Plastik"), nil)
+	repo.On("ListAntrianPerSampah", "BNK-001", "SMP-001").Return(nil, nil)
+
+	hasil, err := services.NewTabunganService(repo).AntrianPencairanSampah("BNK-001", "SMP-001")
+
+	assert.NoError(t, err)
+	assert.Equal(t, "Botol Plastik", hasil.NamaSampah)
+	assert.Equal(t, "kg", hasil.SatuanSampah)
+	assert.NotNil(t, hasil.Antrian, "antrian kosong tetap [] di JSON, bukan null")
+	assert.Empty(t, hasil.Antrian)
+}
+
+func TestAntrianPencairanSampah_Sukses(t *testing.T) {
+	tanggal := func(hari int) time.Time { return time.Date(2026, 10, hari, 8, 0, 0, 0, time.UTC) }
+	rows := []repositories.AntrianPencairanRow{
+		{Nomor: 1, NasabahID: "NSB-ANI", NamaNasabah: "Ani", FotoNasabah: "https://cdn/ani.jpg", SisaQty: 2, TanggalSetor: tanggal(1)},
+		{Nomor: 2, NasabahID: "NSB-BUDI", NamaNasabah: "Budi", FotoNasabah: "", SisaQty: 3, TanggalSetor: tanggal(2)},
+		{Nomor: 3, NasabahID: "NSB-BUDI", NamaNasabah: "Budi", FotoNasabah: "", SisaQty: 1, TanggalSetor: tanggal(3)},
+	}
+
+	repo := new(mocks.MockTabunganRepo)
+	repo.On("FindKatalogBank", "BNK-001", "SMP-001").Return(tabunganKatalog("SMP-001", "Botol Plastik"), nil)
+	repo.On("ListAntrianPerSampah", "BNK-001", "SMP-001").Return(rows, nil)
+
+	hasil, err := services.NewTabunganService(repo).AntrianPencairanSampah("BNK-001", "SMP-001")
+
+	assert.NoError(t, err)
+	assert.Equal(t, "BNK-001", hasil.BankID)
+	assert.Equal(t, "SMP-001", hasil.SampahID)
+	assert.Equal(t, "Botol Plastik", hasil.NamaSampah)
+	assert.Equal(t, "kg", hasil.SatuanSampah)
+
+	if assert.Len(t, hasil.Antrian, 3) {
+		for i, item := range hasil.Antrian {
+			assert.Equal(t, i+1, item.Nomor)
+		}
+
+		pertama := hasil.Antrian[0]
+		assert.Equal(t, "NSB-ANI", pertama.NasabahID)
+		assert.Equal(t, "Ani", pertama.NamaNasabah)
+		assert.Equal(t, "https://cdn/ani.jpg", pertama.FotoNasabah)
+		assert.Equal(t, 2.0, pertama.SisaQty)
+		assert.Equal(t, tanggal(1), pertama.TanggalSetor)
+
+		assert.Equal(t, "NSB-BUDI", hasil.Antrian[1].NasabahID)
+		assert.Equal(t, "NSB-BUDI", hasil.Antrian[2].NasabahID, "satu baris = satu setoran, nasabah boleh muncul berkali-kali")
+	}
 }

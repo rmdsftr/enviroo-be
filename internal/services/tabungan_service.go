@@ -1,10 +1,13 @@
 package services
 
 import (
+	"errors"
 	"time"
 
 	"enviroo-be/internal/models"
 	"enviroo-be/internal/repositories"
+
+	"gorm.io/gorm"
 )
 
 type TabunganRepoIface interface {
@@ -14,6 +17,8 @@ type TabunganRepoIface interface {
 	ListTanggalPengangkutanCompleted(pengangkutanIDs []string) (map[string]string, error)
 	FindBank(bankID string) (*models.BankSampah, error)
 	ListAntrianSampaiNasabah(bankID, nasabahID string) ([]repositories.AntrianSampahRow, error)
+	FindKatalogBank(bankID, sampahID string) (*models.KatalogSampah, error)
+	ListAntrianPerSampah(bankID, sampahID string) ([]repositories.AntrianPencairanRow, error)
 }
 
 type DetailPencairan struct {
@@ -81,9 +86,27 @@ type BukuTabunganBSUResult struct {
 	Pengangkutan []KelompokBukuTabungan `json:"pengangkutan"`
 }
 
+type ItemAntrianPencairan struct {
+	Nomor        int       `json:"nomor"`
+	NasabahID    string    `json:"nasabah_id"`
+	NamaNasabah  string    `json:"nama_nasabah"`
+	FotoNasabah  string    `json:"foto_nasabah"`
+	SisaQty      float64   `json:"sisa_qty"`
+	TanggalSetor time.Time `json:"tanggal_setor"`
+}
+
+type AntrianPencairanResult struct {
+	BankID       string                 `json:"bank_id"`
+	SampahID     string                 `json:"sampah_id"`
+	NamaSampah   string                 `json:"nama_sampah"`
+	SatuanSampah string                 `json:"satuan_sampah"`
+	Antrian      []ItemAntrianPencairan `json:"antrian"`
+}
+
 type TabunganService interface {
 	BukuTabunganNasabah(nasabahID, startDate, endDate string) (*BukuTabunganNasabahResult, error)
 	BukuTabunganBSU(bankID, startDate, endDate string) (*BukuTabunganBSUResult, error)
+	AntrianPencairanSampah(bankID, sampahID string) (*AntrianPencairanResult, error)
 }
 
 type tabunganService struct {
@@ -159,6 +182,45 @@ func (s *tabunganService) BukuTabunganBSU(bankID, startDate, endDate string) (*B
 	return &BukuTabunganBSUResult{
 		BankID:       bankID,
 		Pengangkutan: susunBukuTabungan(tabungans, tanggalMap, pencairanMap),
+	}, nil
+}
+
+func (s *tabunganService) AntrianPencairanSampah(bankID, sampahID string) (*AntrianPencairanResult, error) {
+	if bankID == "" || sampahID == "" {
+		return nil, errBadRequest("bank_id dan sampah_id wajib diisi")
+	}
+
+	katalog, err := s.repo.FindKatalogBank(bankID, sampahID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errNotFound("Sampah tidak ditemukan di bank sampah ini")
+		}
+		return nil, errInternal("Gagal mengambil data sampah: " + err.Error())
+	}
+
+	rows, err := s.repo.ListAntrianPerSampah(bankID, sampahID)
+	if err != nil {
+		return nil, errInternal("Gagal mengambil antrian pencairan: " + err.Error())
+	}
+
+	antrian := make([]ItemAntrianPencairan, 0, len(rows))
+	for _, row := range rows {
+		antrian = append(antrian, ItemAntrianPencairan{
+			Nomor:        row.Nomor,
+			NasabahID:    row.NasabahID,
+			NamaNasabah:  row.NamaNasabah,
+			FotoNasabah:  row.FotoNasabah,
+			SisaQty:      row.SisaQty,
+			TanggalSetor: row.TanggalSetor,
+		})
+	}
+
+	return &AntrianPencairanResult{
+		BankID:       bankID,
+		SampahID:     sampahID,
+		NamaSampah:   katalog.Sarok.NamaSampah,
+		SatuanSampah: katalog.Sarok.Satuan.Satuan,
+		Antrian:      antrian,
 	}, nil
 }
 

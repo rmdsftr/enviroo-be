@@ -24,6 +24,15 @@ type AntrianSampahRow struct {
 	TanggalSetor time.Time `gorm:"column:tanggal_setor"`
 }
 
+type AntrianPencairanRow struct {
+	Nomor        int       `gorm:"column:nomor"`
+	NasabahID    string    `gorm:"column:nasabah_id"`
+	NamaNasabah  string    `gorm:"column:nama_nasabah"`
+	FotoNasabah  string    `gorm:"column:foto_nasabah"`
+	SisaQty      float64   `gorm:"column:sisa_qty"`
+	TanggalSetor time.Time `gorm:"column:tanggal_setor"`
+}
+
 type TabunganRepo struct {
 	db *gorm.DB
 }
@@ -145,5 +154,34 @@ func (r *TabunganRepo) ListAntrianSampaiNasabah(bankID, nasabahID string) ([]Ant
 		JOIN batas b ON b.sampah_id = a.sampah_id AND a.nomor <= b.nomor_terakhir
 		ORDER BY a.sampah_id, a.nomor`,
 		models.EntitasNasabah, bankID, nasabahID).Scan(&rows).Error
+	return rows, err
+}
+
+func (r *TabunganRepo) FindKatalogBank(bankID, sampahID string) (*models.KatalogSampah, error) {
+	var katalog models.KatalogSampah
+	err := r.db.
+		Preload("Sarok.Satuan").
+		Where("bank_id = ? AND sampah_id = ?", bankID, sampahID).
+		First(&katalog).Error
+	return &katalog, err
+}
+
+// Antrian FIFO satu sampah di satu bank; urutan nomor sama dengan ListAntrianSampaiNasabah.
+func (r *TabunganRepo) ListAntrianPerSampah(bankID, sampahID string) ([]AntrianPencairanRow, error) {
+	var rows []AntrianPencairanRow
+	err := r.db.Raw(`
+		SELECT
+			ROW_NUMBER() OVER (ORDER BY ts.created_at, ts.tabungan_id) AS nomor,
+			n.nasabah_id,
+			u.nama                     AS nama_nasabah,
+			COALESCE(u.photo_url, '')  AS foto_nasabah,
+			ts.sisa_qty,
+			ts.created_at              AS tanggal_setor
+		FROM tabungan_sampah ts
+		JOIN nasabah n ON n.nasabah_id = ts.nasabah_id
+		JOIN users u   ON u.user_id     = n.user_id
+		WHERE ts.entitas = ? AND ts.bank_id = ? AND ts.sampah_id = ? AND ts.sisa_qty > 0
+		ORDER BY nomor`,
+		models.EntitasNasabah, bankID, sampahID).Scan(&rows).Error
 	return rows, err
 }
