@@ -192,7 +192,7 @@ func (r *BagiHasilRepo) FindDistribusiSisaID(bagiHasilID string) *string {
 
 func (r *BagiHasilRepo) GetPenerimaByNasabah(nasabahID, startDate, endDate string) ([]models.PenerimaBagiHasil, error) {
 	var list []models.PenerimaBagiHasil
-	q := r.DB.Preload("BagiHasil.Penjualan.Reward").
+	q := r.DB.Preload("BagiHasil.Penjualan.Reward").Preload("PencairanTabungan").
 		Where("nasabah_id = ?", nasabahID)
 
 	if startDate != "" {

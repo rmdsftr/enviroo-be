@@ -1082,6 +1082,10 @@ func TestGetListBagiHasilNasabah_Sukses(t *testing.T) {
 	repo, svc := newBHSvc(t)
 	valid := bhPenerima("P-001", "NSB-001", "BSM-001", "BSM Satu", "Budi", 15000)
 	valid.BagiHasil = bhBagiHasil()
+	valid.PencairanTabungan = []models.PencairanTabungan{
+		{PenerimaID: "P-001", TabunganID: "TAB-001", QtyDipakai: 4},
+		{PenerimaID: "P-001", TabunganID: "TAB-002", QtyDipakai: 6},
+	}
 	tanpaBagiHasil := bhPenerima("P-002", "NSB-001", "BSM-001", "BSM Satu", "Budi", 7000)
 	tanpaPenjualan := bhPenerima("P-003", "NSB-001", "BSM-001", "BSM Satu", "Budi", 3000)
 	tanpaPenjualan.BagiHasil = &models.BagiHasil{BagiHasilID: "BH-PJL-002"}
@@ -1104,6 +1108,7 @@ func TestGetListBagiHasilNasabah_Sukses(t *testing.T) {
 			Tanggal:        "2026-03-10T09:00:00Z",
 			TotalDiterima:  15000,
 			SatuanDiterima: models.SatuanRewardEnumRp,
+			TabunganIDs:    []string{"TAB-001", "TAB-002"},
 		}}, hasil.RiwayatBagiHasil, "penerima tanpa bagi hasil/penjualan dilewati")
 	}
 	repo.AssertExpectations(t)
