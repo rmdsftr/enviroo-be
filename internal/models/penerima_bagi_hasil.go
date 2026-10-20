@@ -21,6 +21,8 @@ type PenerimaBagiHasil struct {
 	BagiHasil *BagiHasil `gorm:"foreignKey:BagiHasilID;references:BagiHasilID;constraint:OnDelete:RESTRICT"`
 	Reward    *Reward    `gorm:"foreignKey:RewardID;references:RewardID;constraint:OnDelete:RESTRICT"`
 	Nasabah   *Nasabah   `gorm:"foreignKey:NasabahID;references:NasabahID;constraint:OnDelete:RESTRICT"`
+
+	PencairanTabungan []PencairanTabungan `gorm:"foreignKey:PenerimaID;references:PenerimaID"`
 }
 
 func (PenerimaBagiHasil) TableName() string {

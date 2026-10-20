@@ -544,6 +544,7 @@ type ListBagiHasilNasabahItem struct {
 	Tanggal        string                  `json:"tanggal"`
 	TotalDiterima  float64                 `json:"total_diterima"`
 	SatuanDiterima models.SatuanRewardEnum `json:"satuan_diterima"`
+	TabunganIDs    []string                `json:"tabungan_ids"`
 }
 
 type ListBagiHasilNasabahResp struct {
@@ -568,6 +569,10 @@ func (s *BagiHasilService) GetListNasabah(nasabahID, startDate, endDate string) 
 		if p.BagiHasil == nil || p.BagiHasil.Penjualan == nil {
 			continue
 		}
+		tabunganIDs := make([]string, 0, len(p.PencairanTabungan))
+		for _, pt := range p.PencairanTabungan {
+			tabunganIDs = append(tabunganIDs, pt.TabunganID)
+		}
 		list = append(list, ListBagiHasilNasabahItem{
 			PenerimaID:     p.PenerimaID,
 			BagiHasilID:    *p.BagiHasilID,
@@ -575,6 +580,7 @@ func (s *BagiHasilService) GetListNasabah(nasabahID, startDate, endDate string) 
 			Tanggal:        p.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 			TotalDiterima:  p.TotalDiterima,
 			SatuanDiterima: p.SatuanDiterima,
+			TabunganIDs:    tabunganIDs,
 		})
 	}
 
