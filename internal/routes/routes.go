@@ -17,7 +17,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorage, mailer *mailer.Mailer, fcmClient *fcm.Client) {
+func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorage, mailer *mailer.Mailer, fcmClient *fcm.Client, apiPublicURL string) {
 	notifRepo := repositories.NewNotifikasiRepository(db)
 	notifSvc := services.NewNotifikasiService(notifRepo, fcmClient)
 
@@ -65,6 +65,22 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 
 	requireAuth := middleware.RequireAuth(db)
 	superadminRole := middleware.RequireRole(models.SuperAdmin)
+
+	appReleaseRepo := repositories.NewAppReleaseRepo(db)
+	appReleaseSvc := services.NewAppReleaseService(appReleaseRepo, cfStorage, apiPublicURL)
+	appReleaseController := controllers.NewAppReleaseController(appReleaseSvc)
+
+	appVersion := r.Group("/app-version")
+	{
+		appVersion.GET("", appReleaseController.CekVersi)
+		appVersion.GET("/latest", appReleaseController.Latest)
+
+		rilis := appVersion.Group("/rilis", requireAuth, superadminRole)
+		rilis.GET("", appReleaseController.ListRilis)
+		rilis.POST("", appReleaseController.TambahRilis)
+		rilis.PATCH("/:release_id", appReleaseController.UbahRilis)
+		rilis.DELETE("/:release_id", appReleaseController.HapusRilis)
+	}
 	nasabahRole := middleware.RequireRole(models.RoleNasabah)
 	adminBSI := middleware.RequireRole(models.AdminBSI)
 	petugasBSI := middleware.RequireRole(models.PetugasBSI)
@@ -87,7 +103,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 
 
 	bankRepo := repositories.NewBankRepo(db)
-	bankSvc := services.NewBankService(db, bankRepo, mailer)
+	bankSvc := services.NewBankService(db, bankRepo, mailer, appReleaseSvc)
 
 	bank := r.Group("/bank", requireAuth)
 	{
@@ -124,7 +140,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 	userSvc := services.NewUserService(db, userRepo, mailer)
 
 	nasabahRepo := repositories.NewNasabahRepo(db)
-	nasabahSvc := services.NewNasabahService(db, nasabahRepo, mailer)
+	nasabahSvc := services.NewNasabahService(db, nasabahRepo, mailer, appReleaseSvc)
 
 	nasabah := r.Group("/nasabah", requireAuth)
 	{

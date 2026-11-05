@@ -84,8 +84,13 @@ func main() {
 	globalLimiter := middleware.NewIPRateLimiter(rate.Every(600*time.Millisecond), 50)
 	r.Use(globalLimiter.Middleware())
 
+	if len(cfg.CORSOrigins) == 0 {
+		log.Fatal("CORS_ORIGINS kosong. Isi dengan origin web admin, mis. https://admin.enviroo.tech")
+	}
+	log.Printf("CORS origins: %v", cfg.CORSOrigins)
+
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:5173", "https://enviroo.tech", "https://www.enviroo.tech"},
+		AllowOrigins:     cfg.CORSOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
 		ExposeHeaders:    []string{"Content-Length"},
@@ -93,7 +98,7 @@ func main() {
 		MaxAge:           12 * time.Hour,
 	}))
 
-	routes.SetupRoutes(r, db, cfStorage, mail, fcmClient)
+	routes.SetupRoutes(r, db, cfStorage, mail, fcmClient, cfg.APIPublicURL)
 
 	go func() {
 		log.Printf("Server starting on %s", cfg.ServerPort)

@@ -468,7 +468,7 @@ func (s *userService) TambahSuperadmin(in TambahSuperadminInput) (*SuperadminBar
 
 		body := mailer.BuildOTPEmail(user.Nama,
 			"Anda telah ditunjuk sebagai <b>Superadmin</b> dalam aplikasi Enviroo. Untuk menyelesaikan proses aktivasi akun, gunakan kode OTP berikut:",
-			otp, "24 jam", "Mohon untuk tidak membagikan kode OTP ini ke siapapun.", expiredAt)
+			otp, "24 jam", "Mohon untuk tidak membagikan kode OTP ini ke siapapun.", expiredAt, nil)
 
 		if err := s.mailer.SendEmail(mailer.Params{
 			To:      user.Email,

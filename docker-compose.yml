@@ -1,7 +1,11 @@
+# Deploy baru (svc.enviroo.tech). Berjalan berdampingan dengan deploy lama
+# (enviroo-db, enviroo-app, :5432, :8080), jadi nama project, port host, dan
+# network sengaja dibuat berbeda supaya tidak menimpa / tersambung ke yang lama.
+name: enviroo-svc
+
 services:
   db:
     image: postgres:16-alpine
-    container_name: enviroo-db
     restart: always
     environment:
       POSTGRES_USER: ${DB_USER}
@@ -9,17 +13,18 @@ services:
       POSTGRES_DB: ${DB_NAME}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    # Hanya dari server sendiri (mis. SSH tunnel). Backend memakai jaringan docker (DB_HOST=db).
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5434:5432"
 
   app:
     build: .
-    container_name: enviroo-app
     restart: always
     depends_on:
       - db
+    # Diakses publik lewat nginx (svc.enviroo.tech -> localhost:8081).
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8081:8080"
     env_file:
       - .env
     volumes:
@@ -27,7 +32,7 @@ services:
 
 networks:
   default:
-    name: enviroo-network
+    name: enviroo-svc-network
 
 volumes:
   postgres_data:

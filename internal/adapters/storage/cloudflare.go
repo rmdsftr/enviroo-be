@@ -105,6 +105,41 @@ func (cs *CloudflareStorage) UploadFile(file multipart.File, fileHeader *multipa
 	return publicURL + objectKey, nil
 }
 
+// UploadObject meng-upload body apa adanya ke key tertentu tanpa dibaca
+// penuh ke memori. Dipakai untuk file besar seperti APK.
+func (cs *CloudflareStorage) UploadObject(body io.ReadSeeker, size int64, key, contentType string) error {
+	_, err := cs.client.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket:        aws.String(cs.config.CFBucket),
+		Key:           aws.String(key),
+		Body:          body,
+		ContentLength: aws.Int64(size),
+		ContentType:   aws.String(contentType),
+	})
+	if err != nil {
+		return fmt.Errorf("gagal upload ke r2: %w", err)
+	}
+	return nil
+}
+
+func (cs *CloudflareStorage) DeleteObject(key string) error {
+	_, err := cs.client.DeleteObject(context.TODO(), &s3.DeleteObjectInput{
+		Bucket: aws.String(cs.config.CFBucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("gagal hapus objek r2: %w", err)
+	}
+	return nil
+}
+
+func (cs *CloudflareStorage) PublicURL(key string) string {
+	publicURL := cs.config.CFPublicURL
+	if !strings.HasSuffix(publicURL, "/") {
+		publicURL += "/"
+	}
+	return publicURL + strings.TrimPrefix(key, "/")
+}
+
 func compressImage(data []byte) ([]byte, error) {
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {

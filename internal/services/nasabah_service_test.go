@@ -3,8 +3,11 @@ package services_test
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
+	"enviroo-be/internal/adapters/mailer"
 	"enviroo-be/internal/models"
 	"enviroo-be/internal/repositories"
 	"enviroo-be/internal/services"
@@ -32,7 +35,40 @@ func newNsbSvc(t *testing.T) (sqlmock.Sqlmock, *mocks.MockNasabahRepo, *mocks.Mo
 
 	mailerMock.On("SendEmail", mock.Anything).Return(nil).Maybe()
 
-	return dbMock, repo, mailerMock, services.NewNasabahService(gdb, repo, mailerMock)
+	install := new(mocks.MockLinkInstallProvider)
+	install.On("InfoInstallTerbaru").Return(nil).Maybe()
+
+	return dbMock, repo, mailerMock, services.NewNasabahService(gdb, repo, mailerMock, install)
+}
+
+// newNsbSvcDenganInstall menangkap body email aktivasi (dikirim async)
+// dan mengatur info APK terbaru yang dikembalikan provider.
+func newNsbSvcDenganInstall(t *testing.T, info *mailer.InstallInfo) (sqlmock.Sqlmock, *mocks.MockNasabahRepo, chan string, services.NasabahService) {
+	t.Helper()
+	gdb, dbMock := newTestDB(t)
+	repo := new(mocks.MockNasabahRepo)
+
+	bodies := make(chan string, 1)
+	mailerMock := new(mocks.MockMailer)
+	mailerMock.On("SendEmail", mock.Anything).Run(func(args mock.Arguments) {
+		bodies <- args.Get(0).(mailer.Params).Body
+	}).Return(nil)
+
+	install := new(mocks.MockLinkInstallProvider)
+	install.On("InfoInstallTerbaru").Return(info)
+
+	return dbMock, repo, bodies, services.NewNasabahService(gdb, repo, mailerMock, install)
+}
+
+func tungguBodyEmail(t *testing.T, bodies chan string) string {
+	t.Helper()
+	select {
+	case body := <-bodies:
+		return body
+	case <-time.After(time.Second):
+		t.Fatal("email aktivasi tidak terkirim")
+		return ""
+	}
 }
 
 func nsbBank(bankID string, jenis models.JenisBank) *models.BankSampah {
@@ -746,4 +782,59 @@ func TestGetDetailNasabah_Sukses(t *testing.T) {
 		assert.Equal(t, "BSU Mawar", hasil.NamaBank)
 		assert.True(t, hasil.IsAdmin, "nasabah yang juga petugas ikut terbawa di detail")
 	}
+}
+
+func TestDaftarNasabahBaru_EmailBerisiLinkInstall(t *testing.T) {
+	info := &mailer.InstallInfo{URL: "https://media.enviroo.tech/apk/enviroo-1.0.2-3-abcd1234.apk", VersionName: "1.0.2"}
+	dbMock, repo, bodies, svc := newNsbSvcDenganInstall(t, info)
+	repo.On("CountUser", nsbUserID).Return(int64(0), nil)
+	repo.On("CountUserByEmail", nsbEmail).Return(int64(0), nil)
+	repo.On("FindBank", nsbBankBSU).Return(nsbBank(nsbBankBSU, models.BSU), nil)
+	repo.On("CreateUser", mock.Anything, mock.Anything).Return(nil)
+	nsbStubPendaftaran(repo)
+	expectTxPendaftaran(dbMock, true)
+
+	_, err := svc.DaftarNasabahBaru(nsbBaruInput())
+	assert.NoError(t, err)
+
+	body := tungguBodyEmail(t, bodies)
+	assert.Contains(t, body, info.URL)
+	assert.Contains(t, body, "Unduh Aplikasi Enviroo")
+	assert.Contains(t, body, "Aktivasi di sini")
+	assert.Contains(t, body, "Versi 1.0.2")
+}
+
+func TestDaftarNasabahBaru_TanpaRilisEmailTanpaLinkInstall(t *testing.T) {
+	dbMock, repo, bodies, svc := newNsbSvcDenganInstall(t, nil)
+	repo.On("CountUser", nsbUserID).Return(int64(0), nil)
+	repo.On("CountUserByEmail", nsbEmail).Return(int64(0), nil)
+	repo.On("FindBank", nsbBankBSU).Return(nsbBank(nsbBankBSU, models.BSU), nil)
+	repo.On("CreateUser", mock.Anything, mock.Anything).Return(nil)
+	nsbStubPendaftaran(repo)
+	expectTxPendaftaran(dbMock, true)
+
+	_, err := svc.DaftarNasabahBaru(nsbBaruInput())
+	assert.NoError(t, err)
+
+	body := tungguBodyEmail(t, bodies)
+	assert.False(t, strings.Contains(body, "Unduh Aplikasi Enviroo"), "tanpa rilis, blok install tidak dicantumkan")
+}
+
+func TestDaftarNasabahUserLama_EmailBerisiLinkInstall(t *testing.T) {
+	info := &mailer.InstallInfo{URL: "https://media.enviroo.tech/apk/enviroo-1.0.2-3-abcd1234.apk", VersionName: "1.0.2"}
+	dbMock, repo, bodies, svc := newNsbSvcDenganInstall(t, info)
+	repo.On("FindUser", nsbUserID).Return(nsbUser(), nil)
+	repo.On("CountNasabahAktif", nsbUserID).Return(int64(0), nil)
+	repo.On("CountNasabahPendingDiBankLain", nsbUserID, nsbBankBSU).Return(int64(0), nil)
+	repo.On("FindNasabahByUserAndBank", nsbUserID, nsbBankBSU).Return(nil, gorm.ErrRecordNotFound)
+	repo.On("FindBank", nsbBankBSU).Return(nsbBank(nsbBankBSU, models.BSU), nil)
+	nsbStubPendaftaran(repo)
+	expectTxPendaftaran(dbMock, true)
+
+	_, err := svc.DaftarNasabahUserLama(nsbLamaInput())
+	assert.NoError(t, err)
+
+	body := tungguBodyEmail(t, bodies)
+	assert.Contains(t, body, info.URL)
+	assert.Contains(t, body, "Unduh Aplikasi Enviroo")
 }

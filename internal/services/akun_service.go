@@ -337,7 +337,7 @@ func (s *akunService) GenerateReaktivasi(in GenerateReaktivasiInput) (*Reaktivas
 
 	paragraf := fmt.Sprintf("Untuk mengaktifkan kembali akun %s Anda di <b>%s</b>, gunakan kode OTP berikut:", successRoleName, namaBank)
 	body := mailer.BuildOTPEmail(user.Nama, paragraf, otp, "24 jam",
-		"Mohon untuk tidak membagikan kode OTP ini ke siapapun.", expiredAt)
+		"Mohon untuk tidak membagikan kode OTP ini ke siapapun.", expiredAt, nil)
 	kirimEmailAsync(s.mailer, user.Email, "Aktivasi Kembali Akun Enviroo", body)
 
 	return &ReaktivasiTokenResult{
@@ -562,7 +562,7 @@ func (s *akunService) KirimOTPResetPassword(email string) (*ResetOTPResult, erro
 
 	paragraf := fmt.Sprintf("Kami menerima permintaan reset password untuk akun email <b>%s</b>. Gunakan kode OTP berikut untuk melanjutkan:", user.Email)
 	body := mailer.BuildOTPEmail(user.Nama, paragraf, otp, "10 menit",
-		"Jika Anda tidak meminta reset password, abaikan email ini.", expiredAt)
+		"Jika Anda tidak meminta reset password, abaikan email ini.", expiredAt, nil)
 	kirimEmailAsync(s.mailer, user.Email, "Reset Password Enviroo APP", body)
 
 	return &ResetOTPResult{AktivasiID: aktivasiID, ExpiredAt: expiredAt}, nil

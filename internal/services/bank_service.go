@@ -169,13 +169,14 @@ type BankService interface {
 }
 
 type bankService struct {
-	db     *gorm.DB
-	repo   BankRepoIface
-	mailer MailerIface
+	db      *gorm.DB
+	repo    BankRepoIface
+	mailer  MailerIface
+	install LinkInstallProvider
 }
 
-func NewBankService(db *gorm.DB, repo BankRepoIface, mailer MailerIface) BankService {
-	return &bankService{db: db, repo: repo, mailer: mailer}
+func NewBankService(db *gorm.DB, repo BankRepoIface, mailer MailerIface, install LinkInstallProvider) BankService {
+	return &bankService{db: db, repo: repo, mailer: mailer, install: install}
 }
 
 func (s *bankService) CreateBank(in CreateBankInput) (*models.BankSampah, error) {
@@ -302,7 +303,7 @@ func (s *bankService) createAdminBank(tx *gorm.DB, bank *models.BankSampah, cfg 
 		return errInternal("Failed to create aktivasi akun: " + err.Error())
 	}
 
-	emailBody := mailer.BuildAktivasiAdminEmail(existingUser.Nama, "Administrator", bank.NamaBank, cfg.emailLabel, otp, expiredAt)
+	emailBody := mailer.BuildAktivasiAdminEmail(existingUser.Nama, "Administrator", bank.NamaBank, cfg.emailLabel, otp, expiredAt, nil)
 	subject := "Aktivasi Akun Administrator Enviroo"
 	if cfg.emailLabel != "" {
 		subject = "Aktivasi Akun Administrator" + cfg.emailLabel + " Enviroo"
@@ -846,7 +847,14 @@ func (s *bankService) AddAdminBank(in AddAdminBankInput) (*models.Admin, error) 
 		return nil, errInternal("Failed to commit transaction")
 	}
 
-	emailBody := mailer.BuildAktivasiAdminEmail(existingUser.Nama, roleTitle, bank.NamaBank, "", otp, expiredAt)
+	// Petugas memakai aplikasi mobile, jadi emailnya menyertakan link APK.
+	// Admin memakai web, emailnya tetap tanpa link.
+	var install *mailer.InstallInfo
+	if role == models.PetugasBSI || role == models.PetugasBSU || role == models.PetugasBSM {
+		install = infoInstall(s.install)
+	}
+
+	emailBody := mailer.BuildAktivasiAdminEmail(existingUser.Nama, roleTitle, bank.NamaBank, "", otp, expiredAt, install)
 	go func() {
 		if err := s.mailer.SendEmail(mailer.Params{
 			To:      existingUser.Email,

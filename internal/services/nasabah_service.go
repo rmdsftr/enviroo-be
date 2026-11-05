@@ -79,13 +79,14 @@ type NasabahService interface {
 }
 
 type nasabahService struct {
-	db     *gorm.DB
-	repo   NasabahRepoIface
-	mailer MailerIface
+	db      *gorm.DB
+	repo    NasabahRepoIface
+	mailer  MailerIface
+	install LinkInstallProvider
 }
 
-func NewNasabahService(db *gorm.DB, repo NasabahRepoIface, mailer MailerIface) NasabahService {
-	return &nasabahService{db: db, repo: repo, mailer: mailer}
+func NewNasabahService(db *gorm.DB, repo NasabahRepoIface, mailer MailerIface, install LinkInstallProvider) NasabahService {
+	return &nasabahService{db: db, repo: repo, mailer: mailer, install: install}
 }
 
 func (s *nasabahService) DaftarNasabahBaru(in DaftarNasabahBaruInput) (*models.Nasabah, error) {
@@ -352,6 +353,6 @@ func (s *nasabahService) buatRekeningAwal(tx *gorm.DB, nasabahID, adminID string
 func (s *nasabahService) kirimEmailAktivasi(email, nama, namaBank, otp string, expiredAt time.Time) {
 	paragraf := fmt.Sprintf("Terima kasih telah mendaftar sebagai Nasabah di <b>%s</b>. Untuk menyelesaikan proses aktivasi akun, gunakan kode OTP berikut:", namaBank)
 	body := mailer.BuildOTPEmail(nama, paragraf, otp, "24 jam",
-		"Mohon untuk tidak membagikan kode OTP ini ke siapapun.", expiredAt)
+		"Mohon untuk tidak membagikan kode OTP ini ke siapapun.", expiredAt, infoInstall(s.install))
 	kirimEmailAsync(s.mailer, email, "Aktivasi Akun Nasabah Enviroo", body)
 }

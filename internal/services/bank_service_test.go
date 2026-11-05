@@ -34,7 +34,9 @@ func newBnkSvc(t *testing.T) (sqlmock.Sqlmock, *mocks.MockBankRepo, *mocks.MockM
 	gdb, dbMock := newTestDB(t)
 	repo := new(mocks.MockBankRepo)
 	mailerMock := new(mocks.MockMailer)
-	return dbMock, repo, mailerMock, services.NewBankService(gdb, repo, mailerMock)
+	install := new(mocks.MockLinkInstallProvider)
+	install.On("InfoInstallTerbaru").Return(nil).Maybe()
+	return dbMock, repo, mailerMock, services.NewBankService(gdb, repo, mailerMock, install)
 }
 
 func bnkBank(bankID string, jenis models.JenisBank) *models.BankSampah {

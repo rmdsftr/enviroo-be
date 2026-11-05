@@ -17,9 +17,9 @@ import (
 
 const (
 	superadminUserID   = "1234567890"
-	superadminNama     = "Annin Carista"
-	superadminEmail    = "annincarista@gmail.com"
-	superadminWhatsapp = "081299001122"
+	superadminNama     = "Enviroo Developer"
+	superadminEmail    = "enviroodev@gmail.com"
+	superadminWhatsapp = "082284745760"
 )
 
 func main() {
