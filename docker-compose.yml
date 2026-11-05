@@ -27,6 +27,10 @@ services:
       - "127.0.0.1:8081:8080"
     env_file:
       - .env
+    # Jam container = WIB. Tanpa ini Go memakai UTC, sehingga worker terjadwal
+    # (sesi pending jam 20, reminder jam 18) meleset 7 jam.
+    environment:
+      TZ: Asia/Jakarta
     volumes:
       - ./internal/config:/app/internal/config
 
