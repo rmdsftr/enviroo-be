@@ -337,7 +337,7 @@ func (s *penarikanService) Preview(nasabahID string, req AjukanPenarikanReq) (*P
 		SatuanSaldo:      saldo.SatuanNominalSaldo,
 		NominalPenarikan: finalNominal,
 		SaldoSetelah:     saldoSetelah,
-		SaldoCukup:       saldoSetelah >= 0,
+		SaldoCukup:       utils.Round4(saldoSetelah) >= 0,
 		ItemBarang:       itemsBarang,
 	}, nil
 }
@@ -423,7 +423,7 @@ func (s *penarikanService) Ajukan(nasabahID string, req AjukanPenarikanReq) (*Aj
 			nominalTx = totalPoin
 		}
 
-		if saldo.NominalSaldo < nominalTx {
+		if utils.Round4(saldo.NominalSaldo-nominalTx) < 0 {
 			return errBadRequest("Saldo tidak mencukupi untuk melakukan penarikan")
 		}
 

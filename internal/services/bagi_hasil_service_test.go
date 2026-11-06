@@ -904,6 +904,115 @@ func TestPreviewBagiHasil_StokTidakCukup(t *testing.T) {
 	sk.repo.AssertNotCalled(t, "GetNasabahInfoBatch", mock.Anything)
 }
 
+// 0.4 - 0.1 - 0.1 - 0.2 di float64 menyisakan 2.78e-17, bukan 0.
+// Qty yang pas tidak boleh dianggap stok tabungan kurang.
+func TestPreviewBagiHasil_FIFOQtyDesimalPas(t *testing.T) {
+	gdb, _ := newTestDB(t)
+	sk := skenarioBaruBSM(basePenjualan(models.BagiHasilPending), []models.DetailPenjualan{
+		{SampahID: "SMP-001", Qty: 0.4, HargaNasabahSnapshot: 1000},
+	})
+	svc := services.NewBagiHasilServiceWithRepo(gdb, sk.repo)
+	sk.sediakanTabungan("SMP-001",
+		baseTabunganNasabah("TBG-01", "NSB-001", "SMP-001", 0.1),
+		baseTabunganNasabah("TBG-02", "NSB-001", "SMP-001", 0.1),
+		baseTabunganNasabah("TBG-03", "NSB-001", "SMP-001", 0.2),
+	)
+	sk.repo.On("GetNasabahInfoBatch", mock.Anything).Return([]repositories.NasabahRow{
+		{NasabahID: "NSB-001", NamaNasabah: "Budi", BankID: "BSM-001", NamaBank: "BSM Satu"},
+	}, nil).Once()
+
+	hasil, err := svc.Preview("PJL-001", "BSM-001")
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, hasil) {
+		assert.InDelta(t, 400, hasil.Summary.TotalDistribusiNasabah, 1e-9)
+	}
+}
+
+func TestSubmitBagiHasil_FIFOQtyDesimalPas(t *testing.T) {
+	gdb, dbMock := newTestDB(t)
+	repo := new(mocks.MockBagiHasilRepo)
+	svc := services.NewBagiHasilServiceWithRepo(gdb, repo)
+
+	bank := &models.BankSampah{BankID: "BSM-001", JenisBank: models.BSM}
+	detailPenjualan := []models.DetailPenjualan{
+		{SampahID: "SMP-001", Qty: 0.4, HargaNasabahSnapshot: 1000},
+	}
+	tabungan := []models.TabunganSampah{
+		baseTabunganNasabah("TBG-01", "NSB-001", "SMP-001", 0.1),
+		baseTabunganNasabah("TBG-02", "NSB-001", "SMP-001", 0.1),
+		baseTabunganNasabah("TBG-03", "NSB-001", "SMP-001", 0.2),
+	}
+	penjualan := basePenjualan(models.BagiHasilPending)
+	penjualan.TotalPenjualan = 1000
+
+	repo.On("GetPenjualanWithReward", "PJL-001", "BSM-001").Return(penjualan, nil)
+	repo.On("GetBankByID", "BSM-001").Return(bank, nil)
+	repo.On("GetDetailPenjualan", mock.Anything, "PJL-001").Return(detailPenjualan, nil)
+	repo.On("GetTabunganNasabah", mock.Anything, "SMP-001", []string{"BSM-001"}).Return(tabungan, nil)
+	repo.On("SaveTabungan", mock.Anything, mock.Anything).Return(nil)
+	repo.On("UpsertSchemaHargaNasabah", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	repo.On("CreateBagiHasil", mock.Anything, mock.Anything).Return(nil)
+	repo.On("CreatePenerimaBagiHasil", mock.Anything, mock.Anything).Return(nil)
+	repo.On("CreateDetailBagiHasil", mock.Anything, mock.Anything).Return(nil)
+	repo.On("CreatePencairanTabungan", mock.Anything, mock.Anything).Return(nil)
+	repo.On("UpdateSaldoRekening", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	repo.On("GetNasabahWithUser", "NSB-001").Return(&models.Nasabah{NasabahID: "NSB-001", User: models.User{UserID: "USR-1"}}, nil)
+	repo.On("UpdatePenjualanStatus", mock.Anything, mock.Anything, models.BagiHasilBerhasil).Return(nil)
+
+	expectTx(dbMock, 1)
+
+	result, err := svc.Submit("PJL-001", "BSM-001", "ADM-001")
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, result) {
+		assert.InDelta(t, 400, result.TotalDistribusiNasabah, 1e-9)
+	}
+	repo.AssertNumberOfCalls(t, "SaveTabungan", 3)
+	repo.AssertNumberOfCalls(t, "CreatePencairanTabungan", 3)
+}
+
+// 0.1 + 0.7 di float64 = 0.7999999999999999, jadi gross 0.8 dikurangi distribusi
+// menyisakan 1.1e-16. Sisa sekecil itu tidak boleh dicatat sebagai mutasi saldo bank.
+func TestSubmitBagiHasil_SisaNoiseTidakMasukSaldoBank(t *testing.T) {
+	gdb, dbMock := newTestDB(t)
+	repo := new(mocks.MockBagiHasilRepo)
+	svc := services.NewBagiHasilServiceWithRepo(gdb, repo)
+
+	bank := &models.BankSampah{BankID: "BSM-001", JenisBank: models.BSM}
+	detailPenjualan := []models.DetailPenjualan{
+		{SampahID: "SMP-001", Qty: 1, HargaNasabahSnapshot: 0.1},
+		{SampahID: "SMP-002", Qty: 1, HargaNasabahSnapshot: 0.7},
+	}
+	penjualan := basePenjualan(models.BagiHasilPending)
+	penjualan.TotalPenjualan = 0.8
+
+	repo.On("GetPenjualanWithReward", "PJL-001", "BSM-001").Return(penjualan, nil)
+	repo.On("GetBankByID", "BSM-001").Return(bank, nil)
+	repo.On("GetDetailPenjualan", mock.Anything, "PJL-001").Return(detailPenjualan, nil)
+	repo.On("GetTabunganNasabah", mock.Anything, "SMP-001", []string{"BSM-001"}).
+		Return([]models.TabunganSampah{baseTabunganNasabah("TBG-01", "NSB-001", "SMP-001", 1)}, nil)
+	repo.On("GetTabunganNasabah", mock.Anything, "SMP-002", []string{"BSM-001"}).
+		Return([]models.TabunganSampah{baseTabunganNasabah("TBG-02", "NSB-001", "SMP-002", 1)}, nil)
+	repo.On("SaveTabungan", mock.Anything, mock.Anything).Return(nil)
+	repo.On("UpsertSchemaHargaNasabah", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	repo.On("CreateBagiHasil", mock.Anything, mock.Anything).Return(nil)
+	repo.On("CreatePenerimaBagiHasil", mock.Anything, mock.Anything).Return(nil)
+	repo.On("CreateDetailBagiHasil", mock.Anything, mock.Anything).Return(nil)
+	repo.On("CreatePencairanTabungan", mock.Anything, mock.Anything).Return(nil)
+	repo.On("UpdateSaldoRekening", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	repo.On("GetNasabahWithUser", "NSB-001").Return(&models.Nasabah{NasabahID: "NSB-001", User: models.User{UserID: "USR-1"}}, nil)
+	repo.On("UpdatePenjualanStatus", mock.Anything, mock.Anything, models.BagiHasilBerhasil).Return(nil)
+
+	expectTx(dbMock, 1)
+
+	_, err := svc.Submit("PJL-001", "BSM-001", "ADM-001")
+
+	assert.NoError(t, err)
+	repo.AssertNumberOfCalls(t, "UpdateSaldoRekening", 1)
+	repo.AssertNotCalled(t, "UpdateSaldoRekening", mock.Anything, ptrStr("BSM-001"), mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
 func TestPreviewBagiHasil_BankTidakDitemukan(t *testing.T) {
 	repo, svc := newBHSvc(t)
 	repo.On("GetPenjualanWithReward", "PJL-001", "BSM-001").Return(basePenjualan(models.BagiHasilPending), nil)

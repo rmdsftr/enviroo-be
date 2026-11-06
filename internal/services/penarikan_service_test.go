@@ -288,6 +288,39 @@ func TestPreviewPenarikan_Barang_Sukses(t *testing.T) {
 	assert.Equal(t, float64(90), result.ItemBarang[1].SubtotalPoin)
 }
 
+// 0.1 + 0.2 di float64 = 0.30000000000000004. Saldo 0.3 yang pas tidak boleh dianggap kurang.
+func TestPreviewPenarikan_Barang_SaldoPasDesimal(t *testing.T) {
+	_, repo, _, svc := newPenarikanSvc(t)
+
+	katalog1 := &models.KatalogBarang{ProdukID: "SMB-001", NilaiPoin: 0.1, MasterBarang: models.Barang{NamaBarang: "Beras"}}
+	katalog2 := &models.KatalogBarang{ProdukID: "SMB-002", NilaiPoin: 0.2, MasterBarang: models.Barang{NamaBarang: "Minyak"}}
+	stok1 := &models.StokBarang{ProdukID: "SMB-001", Stok: 10}
+	stok2 := &models.StokBarang{ProdukID: "SMB-002", Stok: 10}
+	saldo := &models.SaldoRekening{RekeningID: "RK-002", NominalSaldo: 0.3, SatuanNominalSaldo: models.SatuanRewardEnumPoin}
+
+	repo.On("FindNasabahAktif", "NSB-001").Return(penarikanNasabah(), nil)
+	penarikanBolehMenarik(repo)
+	repo.On("FindReward", 2).Return(penarikanRewardBarang(), nil)
+	repo.On("FindSaldoRekening", "NSB-001", 2).Return(saldo, nil)
+	repo.On("FindProduk", "SMB-001", "BSM-001").Return(katalog1, nil)
+	repo.On("FindProduk", "SMB-002", "BSM-001").Return(katalog2, nil)
+	repo.On("FindStokBarang", "SMB-001", "BSM-001").Return(stok1, nil)
+	repo.On("FindStokBarang", "SMB-002", "BSM-001").Return(stok2, nil)
+
+	result, err := svc.Preview("NSB-001", services.AjukanPenarikanReq{
+		RewardID: 2,
+		ItemBarang: []services.BarangItemReq{
+			{ProdukID: "SMB-001", Qty: 1},
+			{ProdukID: "SMB-002", Qty: 1},
+		},
+	})
+
+	assert.NoError(t, err)
+	if assert.NotNil(t, result) {
+		assert.True(t, result.SaldoCukup)
+	}
+}
+
 func TestAjukanPenarikan_NasabahTidakDitemukan(t *testing.T) {
 	_, repo, _, svc := newPenarikanSvc(t)
 
@@ -541,6 +574,53 @@ func TestAjukanPenarikan_Sukses_Barang(t *testing.T) {
 	assert.Equal(t, float64(100), result.Nominal)
 	assert.Equal(t, models.StatusPenarikanPending, result.Status)
 	repo.AssertExpectations(t)
+}
+
+func TestAjukanPenarikan_Barang_SaldoPasDesimal(t *testing.T) {
+	dbMock, repo, _, svc := newPenarikanSvc(t)
+
+	saldo := &models.SaldoRekening{RekeningID: "RK-002", NominalSaldo: 0.3, SatuanNominalSaldo: models.SatuanRewardEnumPoin}
+	katalog1 := &models.KatalogBarang{ProdukID: "SMB-001", NilaiPoin: 0.1, MasterBarang: models.Barang{NamaBarang: "Beras"}}
+	katalog2 := &models.KatalogBarang{ProdukID: "SMB-002", NilaiPoin: 0.2, MasterBarang: models.Barang{NamaBarang: "Minyak"}}
+	stok1 := &models.StokBarang{ProdukID: "SMB-001", Stok: 10}
+	stok2 := &models.StokBarang{ProdukID: "SMB-002", Stok: 10}
+
+	repo.On("FindNasabahAktif", "NSB-001").Return(penarikanNasabah(), nil)
+	penarikanBolehMenarik(repo)
+	repo.On("FindReward", 2).Return(penarikanRewardBarang(), nil)
+	repo.On("LockSaldo", mock.Anything, "NSB-001", 2).Return(saldo, nil)
+	repo.On("LockProduk", mock.Anything, "SMB-001", "BSM-001").Return(katalog1, nil)
+	repo.On("LockProduk", mock.Anything, "SMB-002", "BSM-001").Return(katalog2, nil)
+	repo.On("LockStok", mock.Anything, "SMB-001", "BSM-001").Return(stok1, nil)
+	repo.On("LockStok", mock.Anything, "SMB-002", "BSM-001").Return(stok2, nil)
+	repo.On("UpdateSaldo", mock.Anything, saldo, mock.Anything).Return(nil)
+	repo.On("CreateRiwayat", mock.Anything, mock.Anything).Return(nil)
+	repo.On("SavePenarikan", mock.Anything, mock.Anything).Return(nil)
+	repo.On("SaveRiwayatPenarikan", mock.Anything, mock.Anything).Return(nil)
+	repo.On("SaveDetailBarang", mock.Anything, mock.Anything).Return(nil)
+	repo.On("UpdateStok", mock.Anything, mock.Anything, "BSM-001", float64(-1)).Return(nil)
+
+	dbMock.ExpectBegin()
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"riwayat_saldo_id"}))
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"penarikan_id"}))
+	dbMock.ExpectQuery("SELECT").
+		WillReturnRows(sqlmock.NewRows([]string{"riwayat_penarikan_id"}))
+	dbMock.ExpectCommit()
+
+	result, err := svc.Ajukan("NSB-001", services.AjukanPenarikanReq{
+		RewardID: 2,
+		ItemBarang: []services.BarangItemReq{
+			{ProdukID: "SMB-001", Qty: 1},
+			{ProdukID: "SMB-002", Qty: 1},
+		},
+		DeadlineKonfirmasi: validDeadlineStr(),
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, result)
+	repo.AssertNumberOfCalls(t, "UpdateStok", 2)
 }
 
 func TestKonfirmasiPenarikan_StatusInvalid(t *testing.T) {

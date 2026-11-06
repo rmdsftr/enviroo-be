@@ -4,6 +4,7 @@ import (
 	"enviroo-be/internal/idgen"
 	"enviroo-be/internal/models"
 	"enviroo-be/internal/repositories"
+	"enviroo-be/internal/utils"
 	"errors"
 	"math"
 	"time"
@@ -160,7 +161,7 @@ func (s *BagiHasilService) hitungPreview(penjualan *models.Penjualan, detailPenj
 			}
 			qtyDiambil := math.Min(t.SisaQty, sisaQty)
 			totalDibagikanKeNasabah[*t.NasabahID] += qtyDiambil * detail.HargaNasabahSnapshot
-			sisaQty -= qtyDiambil
+			sisaQty = utils.Round4(sisaQty - qtyDiambil)
 		}
 		if sisaQty > 0 {
 			return nil, &ServiceError{
@@ -352,7 +353,7 @@ func (s *BagiHasilService) distribusikanKeNasabah(tx *gorm.DB, penjualan *models
 			}
 			dist.tabungan[nasabahID][t.TabunganID] += qtyDiambil
 			dist.totals[nasabahID] += nilaiDapat
-			sisaQty -= qtyDiambil
+			sisaQty = utils.Round4(sisaQty - qtyDiambil)
 
 			t.SisaQty -= qtyDiambil
 			if err := s.repo.SaveTabungan(tx, t); err != nil {
@@ -469,7 +470,7 @@ func (s *BagiHasilService) simpanPenerimaNasabah(tx *gorm.DB, penjualan *models.
 }
 
 func (s *BagiHasilService) masukkanSisaKeBank(tx *gorm.DB, penjualan *models.Penjualan, bankID string, sisaBagiHasil float64, adminID string, now time.Time) error {
-	if sisaBagiHasil <= 0 {
+	if utils.Round4(sisaBagiHasil) <= 0 {
 		return nil
 	}
 	if err := s.repo.UpdateSaldoRekening(tx, &bankID, nil,

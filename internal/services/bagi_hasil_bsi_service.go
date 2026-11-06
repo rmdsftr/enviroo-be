@@ -2,6 +2,7 @@ package services
 
 import (
 	"enviroo-be/internal/models"
+	"enviroo-be/internal/utils"
 	"math"
 	"time"
 
@@ -136,7 +137,7 @@ func (s *BagiHasilService) potongStokBSU(tx *gorm.DB, detailPenjualans []models.
 			if err := s.repo.SaveTabungan(tx, t); err != nil {
 				return nil, errInternal("Gagal update tabungan BSU")
 			}
-			sisaQtyBSU -= qtyDiambil
+			sisaQtyBSU = utils.Round4(sisaQtyBSU - qtyDiambil)
 		}
 	}
 	return perhitungan, nil
