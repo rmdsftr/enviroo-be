@@ -12,7 +12,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Batas body upload: APK maksimal + ruang untuk field form lainnya.
 const maxBodyUploadAPK = services.MaxUkuranAPK + 10*1024*1024
 
 type AppReleaseController struct {
@@ -23,7 +22,6 @@ func NewAppReleaseController(svc services.AppReleaseService) *AppReleaseControll
 	return &AppReleaseController{Svc: svc}
 }
 
-// CekVersi dipanggil aplikasi mobile saat dibuka (tanpa auth).
 func (ac *AppReleaseController) CekVersi(c *gin.Context) {
 	row, err := ac.Svc.CekVersi(c.Query("current"))
 	if err := handleServiceError(c, err); err != nil {
@@ -36,7 +34,6 @@ func (ac *AppReleaseController) CekVersi(c *gin.Context) {
 	})
 }
 
-// Latest adalah link install permanen: selalu mengarah ke APK terbaru.
 func (ac *AppReleaseController) Latest(c *gin.Context) {
 	url, err := ac.Svc.URLTerbaru()
 	if err := handleServiceError(c, err); err != nil {

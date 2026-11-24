@@ -9,7 +9,7 @@ import (
 )
 
 func TestRound4(t *testing.T) {
-	a, b := 0.1, 0.2 // variabel supaya dijumlah saat runtime (float64), bukan konstanta eksak
+	a, b := 0.1, 0.2
 	kasus := []struct {
 		nama    string
 		masukan float64

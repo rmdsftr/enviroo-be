@@ -904,8 +904,6 @@ func TestPreviewBagiHasil_StokTidakCukup(t *testing.T) {
 	sk.repo.AssertNotCalled(t, "GetNasabahInfoBatch", mock.Anything)
 }
 
-// 0.4 - 0.1 - 0.1 - 0.2 di float64 menyisakan 2.78e-17, bukan 0.
-// Qty yang pas tidak boleh dianggap stok tabungan kurang.
 func TestPreviewBagiHasil_FIFOQtyDesimalPas(t *testing.T) {
 	gdb, _ := newTestDB(t)
 	sk := skenarioBaruBSM(basePenjualan(models.BagiHasilPending), []models.DetailPenjualan{
@@ -972,8 +970,6 @@ func TestSubmitBagiHasil_FIFOQtyDesimalPas(t *testing.T) {
 	repo.AssertNumberOfCalls(t, "CreatePencairanTabungan", 3)
 }
 
-// 0.1 + 0.7 di float64 = 0.7999999999999999, jadi gross 0.8 dikurangi distribusi
-// menyisakan 1.1e-16. Sisa sekecil itu tidak boleh dicatat sebagai mutasi saldo bank.
 func TestSubmitBagiHasil_SisaNoiseTidakMasukSaldoBank(t *testing.T) {
 	gdb, dbMock := newTestDB(t)
 	repo := new(mocks.MockBagiHasilRepo)

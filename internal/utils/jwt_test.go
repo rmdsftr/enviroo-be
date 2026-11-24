@@ -47,8 +47,6 @@ func tandaTangani(t *testing.T, metode jwt.SigningMethod, kunci interface{}, kla
 	return token
 }
 
-// ===== Generate & Parse =====
-
 func TestGenerateJWT_ClaimsTerbaca(t *testing.T) {
 	t.Setenv("JWT_SECRET", secretUji)
 
@@ -143,8 +141,6 @@ func TestParseJWT_FormatRusak(t *testing.T) {
 	}
 }
 
-// ===== Cookie =====
-
 func TestSetTokenCookies_Development(t *testing.T) {
 	t.Setenv("ENVIRONMENT", "development")
 	c, w := konteksUji(nil)
@@ -197,8 +193,6 @@ func TestClearTokenCookies(t *testing.T) {
 	assert.Less(t, refresh.MaxAge, 0, "cookie langsung kadaluarsa")
 	assert.Equal(t, "/auth/refresh", refresh.Path)
 }
-
-// ===== ExtractTokenFromRequest =====
 
 func TestExtractTokenFromRequest_DariCookie(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

@@ -41,8 +41,6 @@ func newNsbSvc(t *testing.T) (sqlmock.Sqlmock, *mocks.MockNasabahRepo, *mocks.Mo
 	return dbMock, repo, mailerMock, services.NewNasabahService(gdb, repo, mailerMock, install)
 }
 
-// newNsbSvcDenganInstall menangkap body email aktivasi (dikirim async)
-// dan mengatur info APK terbaru yang dikembalikan provider.
 func newNsbSvcDenganInstall(t *testing.T, info *mailer.InstallInfo) (sqlmock.Sqlmock, *mocks.MockNasabahRepo, chan string, services.NasabahService) {
 	t.Helper()
 	gdb, dbMock := newTestDB(t)

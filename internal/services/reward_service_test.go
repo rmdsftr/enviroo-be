@@ -203,8 +203,6 @@ func bankBSUAnak(parentID *string) *models.BankSampah {
 	return &models.BankSampah{BankID: "BSU-001", JenisBank: models.BSU, ParentBankID: parentID, IsActive: true}
 }
 
-// ===== Master reward =====
-
 func TestListReward_RepoError(t *testing.T) {
 	_, repo, svc := newRewardSvc(t)
 	repo.On("ListRewards").Return(nil, errors.New("db error"))
@@ -509,8 +507,6 @@ func TestHapusReward_Sukses(t *testing.T) {
 	assert.NoError(t, svc.HapusReward("1"))
 	repo.AssertExpectations(t)
 }
-
-// ===== Nilai reward bank =====
 
 func TestListNilaiRewardBank_BankTidakDitemukan(t *testing.T) {
 	_, repo, svc := newRewardSvc(t)
@@ -828,7 +824,6 @@ func TestTambahNilaiReward_AdminError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rwdKode(t, err))
 }
 
-// Bank BSI-001, reward 1, admin ADM-001 sudah lolos validasi; FindNilaiReward diatur per test.
 func siapTambahNilaiReward(repo *mocks.MockRewardRepo, reward *models.Reward) {
 	repo.On("FindBank", "BSI-001").Return(bankBSI(), nil)
 	repo.On("FindReward", mock.Anything, reward.RewardID).Return(reward, nil)

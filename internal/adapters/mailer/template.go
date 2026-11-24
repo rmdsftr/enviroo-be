@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-// InstallInfo berisi link APK terbaru untuk disisipkan di email aktivasi
-// pengguna aplikasi mobile (nasabah & petugas).
 type InstallInfo struct {
 	URL         string
 	VersionName string
@@ -56,8 +54,6 @@ func BuildOTPEmail(nama, paragraf, otp, durasi, catatan string, expiredAt time.T
 	`, nama, paragraf, otp, durasi, expiredAt.Format("02 Jan 2006 15:04 WIB"), catatan, blokInstallAplikasi(install))
 }
 
-// blokInstallAplikasi menghasilkan langkah aktivasi + tombol unduh APK.
-// Kosong bila belum ada rilis, sehingga email tampil seperti biasa.
 func blokInstallAplikasi(info *InstallInfo) string {
 	if info == nil || info.URL == "" {
 		return ""

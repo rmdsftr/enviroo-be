@@ -126,8 +126,6 @@ func (r *TabunganRepo) FindBank(bankID string) (*models.BankSampah, error) {
 	return &bank, err
 }
 
-// Antrian FIFO per sampah (urutan yang sama dengan pencairan bagi hasil), dari nomor 1
-// sampai entri terakhir milik nasabah ini.
 func (r *TabunganRepo) ListAntrianSampaiNasabah(bankID, nasabahID string) ([]AntrianSampahRow, error) {
 	var rows []AntrianSampahRow
 	err := r.db.Raw(`
@@ -166,7 +164,6 @@ func (r *TabunganRepo) FindKatalogBank(bankID, sampahID string) (*models.Katalog
 	return &katalog, err
 }
 
-// Antrian FIFO satu sampah di satu bank; urutan nomor sama dengan ListAntrianSampaiNasabah.
 func (r *TabunganRepo) ListAntrianPerSampah(bankID, sampahID string) ([]AntrianPencairanRow, error) {
 	var rows []AntrianPencairanRow
 	err := r.db.Raw(`

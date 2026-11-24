@@ -242,7 +242,6 @@ func (s *penarikanService) pastikanBolehMenarik(nasabah *models.Nasabah) (*model
 	return setting, nil
 }
 
-// Syarat saldo minimal sesuai satuan reward; nil berarti bank tidak melayani penarikan jenis ini.
 func minimalPenarikan(setting *models.SettingPenarikan, satuan models.SatuanRewardEnum) (float64, error) {
 	minimal, jenis := setting.MinRupiah, "uang"
 	if satuan == models.SatuanRewardEnumPoin {
@@ -1129,7 +1128,6 @@ func (s *penarikanService) SimpanSettingWaktuPenarikan(bankID, adminUserID strin
 	})
 }
 
-// Request menggantikan seluruh syarat saldo: field yang tidak dikirim jadi null (jenis penarikan itu tidak dilayani).
 func (s *penarikanService) SimpanSettingSaldoPenarikan(bankID, adminUserID string, req SimpanSettingSaldoReq) (*models.SettingPenarikan, error) {
 	if req.MinRupiah == nil && req.MinPoin == nil {
 		return nil, errBadRequest("Isi minimal salah satu: min_rupiah atau min_poin")

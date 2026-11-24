@@ -847,8 +847,6 @@ func (s *bankService) AddAdminBank(in AddAdminBankInput) (*models.Admin, error) 
 		return nil, errInternal("Failed to commit transaction")
 	}
 
-	// Petugas memakai aplikasi mobile, jadi emailnya menyertakan link APK.
-	// Admin memakai web, emailnya tetap tanpa link.
 	var install *mailer.InstallInfo
 	if role == models.PetugasBSI || role == models.PetugasBSU || role == models.PetugasBSM {
 		install = infoInstall(s.install)
@@ -935,8 +933,6 @@ func (s *bankService) DeleteStaffBank(adminID, actorUserID string) (*DeleteStaff
 	isPending := admin.StatusAdmin == models.Pending
 	staffRole := roleLabel(admin.Role)
 
-	// Pending bisa berarti akun baru atau akun lama yang sedang direaktivasi.
-	// Akun yang pernah aktif tidak boleh dihapus permanen: reaktivasinya dibatalkan saja.
 	hapusPermanen := false
 	if isPending {
 		pernahAktif, err := s.repo.AdminPernahAktif(adminID)

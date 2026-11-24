@@ -81,13 +81,11 @@ func pnrKode(t *testing.T, err error) int {
 
 func pnrFloat(f float64) *float64 { return &f }
 
-// Syarat saldo diisi 0 (tanpa minimal) supaya test yang fokus ke syarat waktu tidak terganggu.
 func pnrSetting(minWaktu int, satuan models.SatuanWaktuEnum) *models.SettingPenarikan {
 	return &models.SettingPenarikan{SettingID: "SPBSM-001", BankID: "BSM-001", MinWaktu: &minWaktu, SatuanWaktu: &satuan,
 		MinRupiah: pnrFloat(0), MinPoin: pnrFloat(0)}
 }
 
-// Nasabah NSB-001 sudah memenuhi syarat: setting 1 bulan, setoran pertama 3 bulan lalu.
 func penarikanBolehMenarik(repo *mocks.MockPenarikanRepo) {
 	pertama := time.Now().AddDate(0, -3, 0)
 	repo.On("FindSettingPenarikan", "BSM-001").Return(pnrSetting(1, models.SatuanWaktuBulan), nil)
@@ -288,7 +286,6 @@ func TestPreviewPenarikan_Barang_Sukses(t *testing.T) {
 	assert.Equal(t, float64(90), result.ItemBarang[1].SubtotalPoin)
 }
 
-// 0.1 + 0.2 di float64 = 0.30000000000000004. Saldo 0.3 yang pas tidak boleh dianggap kurang.
 func TestPreviewPenarikan_Barang_SaldoPasDesimal(t *testing.T) {
 	_, repo, _, svc := newPenarikanSvc(t)
 
@@ -1843,7 +1840,6 @@ func TestSimpanSettingSaldo_UpdateMenggantiSyaratSaldo(t *testing.T) {
 	repo.AssertNotCalled(t, "CreateSettingPenarikan", mock.Anything)
 }
 
-// Nasabah NSB-001 sudah memenuhi syarat waktu; syarat saldo diatur per test.
 func penarikanBolehMenarikDenganSaldo(repo *mocks.MockPenarikanRepo, minRupiah, minPoin *float64) {
 	setting := pnrSetting(1, models.SatuanWaktuBulan)
 	setting.MinRupiah, setting.MinPoin = minRupiah, minPoin
@@ -2013,10 +2009,6 @@ func TestGetSettingPenarikan_Sukses(t *testing.T) {
 	}
 }
 
-// ===== Helper: transaksi "gagal di langkah ke-N" & goroutine notifikasi =====
-
-// langkahTx adalah satu langkah di dalam transaksi. Test "gagal di langkah ke-N" menjalankan
-// semua langkah sebelum N dengan sukses lalu menggagalkan langkah N.
 type langkahTx struct {
 	nama          string
 	sukses, gagal func()
@@ -2060,8 +2052,6 @@ func tungguSinyal(t *testing.T, sinyal <-chan struct{}, jumlah int) {
 	}
 }
 
-// newPenarikanSvc men-stub FindNasabahWithUser supaya goroutine notifikasi langsung berhenti;
-// test yang memeriksa notifikasi melepas stub itu dulu.
 func lepasStub(m *mock.Mock, method string) {
 	var target []*mock.Call
 	for _, c := range m.ExpectedCalls {
@@ -2099,7 +2089,6 @@ func reqAjukanUang(nominal float64) services.AjukanPenarikanReq {
 	return services.AjukanPenarikanReq{RewardID: 1, NominalPenarikan: nominal, DeadlineKonfirmasi: validDeadlineStr()}
 }
 
-// Penarikan barang 3 x 50 poin milik NSB-001 di BSM-001 yang masih pending.
 func penarikanBarangPending(penarikanID string) *models.Penarikan {
 	return &models.Penarikan{
 		PenarikanID:      penarikanID,
@@ -2113,7 +2102,6 @@ func penarikanBarangPending(penarikanID string) *models.Penarikan {
 	}
 }
 
-// Data penarikan yang dibaca ulang goroutine notifikasi.
 func penarikanUntukNotif(penarikanID string) *models.Penarikan {
 	return &models.Penarikan{
 		PenarikanID:      penarikanID,
@@ -2124,7 +2112,6 @@ func penarikanUntukNotif(penarikanID string) *models.Penarikan {
 	}
 }
 
-// Langkah pengembalian saldo dan stok saat penarikan barang ditolak atau dibatalkan.
 func langkahPengembalianBarang(dbMock sqlmock.Sqlmock, repo *mocks.MockPenarikanRepo, p *models.Penarikan) []langkahTx {
 	return []langkahTx{
 		langkahRepo("ubah status", func() *mock.Call { return repo.On("UpdateStatus", mock.Anything, p, mock.Anything) }),
@@ -2152,8 +2139,6 @@ func langkahPengembalianBarang(dbMock sqlmock.Sqlmock, repo *mocks.MockPenarikan
 		langkahRepo("kembalikan stok barang", func() *mock.Call { return repo.On("UpdateStok", mock.Anything, "SMB-001", "BSM-001", float64(3)) }),
 	}
 }
-
-// ===== Preview =====
 
 func TestPreviewPenarikan_Barang_NasabahBSUPakaiKatalogBSI(t *testing.T) {
 	_, repo, _, svc := newPenarikanSvc(t)
@@ -2209,8 +2194,6 @@ func TestPreviewPenarikan_Barang_StokTidakDitemukan(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, pnrKode(t, err))
 	assert.Contains(t, err.Error(), "Stok produk")
 }
-
-// ===== Ajukan =====
 
 func TestAjukanPenarikan_RewardTidakDitemukan(t *testing.T) {
 	_, repo, _, svc := newPenarikanSvc(t)
@@ -2331,7 +2314,6 @@ func TestAjukanPenarikan_GagalDiDalamTx(t *testing.T) {
 	}
 }
 
-// Pengajuan uang Rp100.000 dari saldo Rp300.000 yang berhasil sampai commit.
 func siapAjukanUangSukses(dbMock sqlmock.Sqlmock, repo *mocks.MockPenarikanRepo) {
 	saldo := penarikanSaldo(300000)
 	repo.On("FindNasabahAktif", "NSB-001").Return(penarikanNasabah(), nil)
@@ -2392,8 +2374,6 @@ func TestAjukanPenarikan_NotifPetugasGagalDiambil(t *testing.T) {
 	notif.AssertNotCalled(t, "NotifPengajuanPenarikan",
 		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
-
-// ===== Konfirmasi =====
 
 func TestKonfirmasiPenarikan_CatatanTerlaluPanjang(t *testing.T) {
 	_, repo, _, svc := newPenarikanSvc(t)
@@ -2525,8 +2505,6 @@ func TestKonfirmasiPenarikan_NotifDitolak(t *testing.T) {
 	notif.AssertExpectations(t)
 	notif.AssertNotCalled(t, "NotifPenarikanDisetujui", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
-
-// ===== Selesai =====
 
 func reqSelesaiManual() services.SelesaiPenarikanReq {
 	return services.SelesaiPenarikanReq{
@@ -2681,8 +2659,6 @@ func TestSelesaiPenarikan_NotifBerhasil(t *testing.T) {
 	assert.Equal(t, "Rp100000", notif.Calls[0].Arguments.String(3), "isi notif = nominal yang dicairkan")
 }
 
-// ===== Batal =====
-
 func TestBatalPenarikan_TanpaRewardID(t *testing.T) {
 	dbMock, repo, _, svc := newPenarikanSvc(t)
 	p := penarikanBarangPending("RDM-003")
@@ -2741,8 +2717,6 @@ func TestBatalPenarikan_GagalDiDalamTx(t *testing.T) {
 	}
 }
 
-// ===== GetList / GetListByBank =====
-
 func TestGetListPenarikan_RepoError(t *testing.T) {
 	_, repo, _, svc := newPenarikanSvc(t)
 	repo.On("FindByNasabahID", "NSB-001", repositories.PenarikanFilter{}).
@@ -2764,8 +2738,6 @@ func TestGetListByBankPenarikan_RepoError(t *testing.T) {
 	assert.Nil(t, result)
 	assert.Equal(t, http.StatusInternalServerError, pnrKode(t, err))
 }
-
-// ===== GetDetail =====
 
 func penarikanUntukDetail() *models.Penarikan {
 	return &models.Penarikan{
@@ -2861,8 +2833,6 @@ func TestGetDetailPenarikan_RiwayatError(t *testing.T) {
 	assert.Nil(t, result)
 	assert.Equal(t, http.StatusInternalServerError, pnrKode(t, err))
 }
-
-// ===== Setting =====
 
 func TestGetSettingPenarikan_RepoError(t *testing.T) {
 	_, repo, _, svc := newPenarikanSvc(t)

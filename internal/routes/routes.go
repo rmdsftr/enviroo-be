@@ -17,7 +17,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorage, mailer *mailer.Mailer, fcmClient *fcm.Client, apiPublicURL string) {
+func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorage, mailer *mailer.Mailer, fcmClient *fcm.Client, apiPublicURL string, rateStore middleware.Penyimpanan) {
 	notifRepo := repositories.NewNotifikasiRepository(db)
 	notifSvc := services.NewNotifikasiService(notifRepo, fcmClient)
 
@@ -38,20 +38,26 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 	{
 		authController := controllers.NewAuthController(authSvc, akunSvc)
 
-		loginLimiter := middleware.NewIPRateLimiterWithBlock(rate.Every(6*time.Second), 5, 10*time.Minute)
-		authLimiter := middleware.NewIPRateLimiterWithBlock(rate.Every(6*time.Second), 5, 10*time.Minute)
-		authRL := authLimiter.Middleware()
+		loginIP := middleware.NewIPRateLimiter("login_ip", rate.Every(2*time.Second), 20).WithStore(rateStore)
+		loginEmail := middleware.NewIPRateLimiterWithBlock("login_idt", rate.Every(6*time.Second), 5, 10*time.Minute).WithStore(rateStore)
+		authIP := middleware.NewIPRateLimiter("authsens_ip", rate.Every(2*time.Second), 20).WithStore(rateStore)
+		authBody := middleware.NewIPRateLimiterWithBlock("authsens_idt", rate.Every(6*time.Second), 5, 10*time.Minute).WithStore(rateStore)
 
-		auth.POST("/login", loginLimiter.Middleware(), authController.Login)
+		loginRL := loginIP.Middleware(middleware.DimIP())
+		loginIdentRL := loginEmail.Middleware(middleware.DimBody())
+		authRL := authIP.Middleware(middleware.DimIP())
+		authIdentRL := authBody.Middleware(middleware.DimBody())
+
+		auth.POST("/login", loginRL, loginIdentRL, authController.Login)
 		auth.POST("/refresh", authController.RefreshToken)
 		auth.POST("/logout", authController.Logout)
-		auth.POST("/cek-user-mobile", authRL, authController.CekUserMobile)
+		auth.POST("/cek-user-mobile", authRL, authIdentRL, authController.CekUserMobile)
 
-		auth.POST("/aktivasi-akun", authRL, authController.AktivasiAkun)
+		auth.POST("/aktivasi-akun", authRL, authIdentRL, authController.AktivasiAkun)
 
-		auth.POST("/forget-password/send-email", authRL, authController.SendEmailForgetPassword)
-		auth.POST("/forget-password/verifikasi-otp", authRL, authController.VerifikasiOTP)
-		auth.POST("/forget-password/reset-password", authRL, authController.ResetPassword)
+		auth.POST("/forget-password/send-email", authRL, authIdentRL, authController.SendEmailForgetPassword)
+		auth.POST("/forget-password/verifikasi-otp", authRL, authIdentRL, authController.VerifikasiOTP)
+		auth.POST("/forget-password/reset-password", authRL, authIdentRL, authController.ResetPassword)
 
 		authProtected := auth.Group("", middleware.RequireAuth(db))
 		authProtected.GET("/me", authController.Me)
@@ -59,8 +65,8 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 		authProtected.POST("/switch-role", authController.SwitchRole)
 
 		adminAkun := middleware.RequireRole(models.SuperAdmin, models.AdminBSI, models.AdminBSU, models.AdminBSM)
-		authProtected.POST("/deactivate-akun", authRL, adminAkun, authController.DeactivateAkun)
-		authProtected.POST("/generate-reactivate-akun", authRL, adminAkun, authController.GenerateReactivateAkun)
+		authProtected.POST("/deactivate-akun", authRL, authIdentRL, adminAkun, authController.DeactivateAkun)
+		authProtected.POST("/generate-reactivate-akun", authRL, authIdentRL, adminAkun, authController.GenerateReactivateAkun)
 	}
 
 	requireAuth := middleware.RequireAuth(db)
@@ -100,7 +106,6 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 	bsuParam := middleware.RequireSameBankParam("bsu_id")
 	bankParamOrBSI := middleware.RequireSameBankParam("bank_id", models.AdminBSI, models.PetugasBSI)
 	sameNasabah := middleware.RequireSameNasabah(db, "nasabah_id")
-
 
 	bankRepo := repositories.NewBankRepo(db)
 	bankSvc := services.NewBankService(db, bankRepo, mailer, appReleaseSvc)
@@ -162,7 +167,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 	user := r.Group("/users", requireAuth)
 	{
 		userController := controllers.NewUserController(userSvc, akunSvc, cfStorage)
-		
+
 		sameUser := middleware.RequireSameUser("user_id")
 
 		user.POST("/add-user", superadminAndAdmin, userController.AddUser)
@@ -179,7 +184,6 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 		user.DELETE("/delete-user/:user_id", superadminRole, userController.DeleteUser)
 	}
 
-	
 	masterData := r.Group("/master", requireAuth, superadminRole)
 	{
 		masterDataController := controllers.NewMasterDataController(db)
@@ -375,7 +379,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 		dashboard.GET("/saldo-nasabah/:nasabah_id", middleware.RequireRole(models.RoleNasabah, models.AdminBSI, models.PetugasBSI, models.AdminBSU, models.PetugasBSU, models.AdminBSM, models.PetugasBSM), middleware.RequireNasabahBankAccess(db, "nasabah_id"), dashboardController.GetSaldoNasabah)
 		dashboard.GET("/mutasi-nasabah/:nasabah_id", nasabahRole, sameNasabah, dashboardController.MutasiSaldoNasabah)
 		dashboard.GET("/mutasi-bank/:bank_id", allStaff, middleware.RequireSameBankParam("bank_id", models.AdminBSI), dashboardController.MutasiSaldoBank)
-		
+
 		dashboard.POST("/catat-manual/:bank_id", allAdmin, bankParam, dashboardController.CatatManualMutasiBank)
 		dashboard.GET("/total-saldo-all-nasabah/:bank_id", allAdmin, bankParamOrBSI, dashboardController.TotalSaldoAllNasabah)
 		dashboard.GET("/daftar-saldo-all-nasabah/:bank_id", allAdmin, bankParamOrBSI, dashboardController.ListSaldoAllNasabah)

@@ -526,14 +526,12 @@ func TestSubmitPenjualan_CekPersenError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, pjlKode(t, err))
 }
 
-// Item SMP-001 lolos cek katalog dan stok, setelah penjualan_id berhasil di-generate.
 func itemLolosCek(dbMock sqlmock.Sqlmock, repo *mocks.MockPenjualanRepo) {
 	dbMock.ExpectQuery("SELECT").WillReturnRows(sqlmock.NewRows([]string{"penjualan_id"}))
 	repo.On("GetKatalogSampah", mock.Anything, "SMP-001").Return(katalogBotol(), nil)
 	repo.On("GetStokSampah", mock.Anything, "BSM-001", "SMP-001").Return(stokCukup(), nil)
 }
 
-// Harga jual sama dengan schema eksternal (tanpa perubahan harga), lalu stok berhasil dikurangi.
 func itemTersimpan(dbMock sqlmock.Sqlmock, repo *mocks.MockPenjualanRepo) {
 	itemLolosCek(dbMock, repo)
 	repo.On("GetSchemaHarga", mock.Anything, "SMP-001", models.LevelEksternal).Return(schemaEksternal(5000), nil)

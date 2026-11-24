@@ -224,7 +224,6 @@ func (s *tabunganService) AntrianPencairanSampah(bankID, sampahID string) (*Antr
 	}, nil
 }
 
-// Antrian hanya dihitung untuk nasabah BSM; nasabah bank lain tetap dapat antrian kosong.
 func (s *tabunganService) isiAntrianBSM(nasabahID string, tabungans []models.TabunganSampah, kelompok []KelompokSampah) error {
 	bankID := tabungans[0].BankID
 	if bankID == nil {

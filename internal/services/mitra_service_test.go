@@ -506,8 +506,6 @@ func TestDeleteMitra_HardDeleteError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, mtrKode(t, err))
 }
 
-// resolveOrCreateMitra hanya dipanggil dari SubmitPenjualan, jadi diuji lewat situ dengan daftar item kosong
-// supaya alurnya langsung sampai ke penentuan mitra.
 func siapSubmitMitra(dbMock sqlmock.Sqlmock, repo *mocks.MockPenjualanRepo) {
 	repo.On("GetBankByID", "BSM-001").Return(penjualanBankBSM(), nil)
 	repo.On("GetRewardByID", mock.Anything, 1).Return(rewardUang(), nil)

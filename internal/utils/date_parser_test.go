@@ -85,12 +85,10 @@ func TestWeekOfMonth(t *testing.T) {
 		tanggal time.Time
 		harapan int
 	}{
-		// Februari 2026 diawali hari Minggu.
 		{"1 Feb (Minggu)", tgl(2026, time.February, 1, 0, 0), 1},
 		{"7 Feb (Sabtu)", tgl(2026, time.February, 7, 0, 0), 1},
 		{"8 Feb (Minggu)", tgl(2026, time.February, 8, 0, 0), 2},
 		{"28 Feb (Sabtu)", tgl(2026, time.February, 28, 0, 0), 4},
-		// Agustus 2026 diawali hari Sabtu, jadi bulannya punya 6 minggu.
 		{"1 Agu (Sabtu)", tgl(2026, time.August, 1, 0, 0), 1},
 		{"2 Agu (Minggu)", tgl(2026, time.August, 2, 0, 0), 2},
 		{"31 Agu (Senin)", tgl(2026, time.August, 31, 0, 0), 6},

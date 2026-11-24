@@ -105,8 +105,6 @@ func (cs *CloudflareStorage) UploadFile(file multipart.File, fileHeader *multipa
 	return publicURL + objectKey, nil
 }
 
-// UploadObject meng-upload body apa adanya ke key tertentu tanpa dibaca
-// penuh ke memori. Dipakai untuk file besar seperti APK.
 func (cs *CloudflareStorage) UploadObject(body io.ReadSeeker, size int64, key, contentType string) error {
 	_, err := cs.client.PutObject(context.TODO(), &s3.PutObjectInput{
 		Bucket:        aws.String(cs.config.CFBucket),

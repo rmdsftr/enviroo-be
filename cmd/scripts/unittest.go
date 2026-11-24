@@ -38,7 +38,6 @@ const (
 
 var useColor = os.Getenv("NO_COLOR") == ""
 
-// File test yang dilewati: tidak dijalankan, dan file sumber pasangannya tidak dihitung di coverage.
 var excludedTests = map[string]bool{
 	"internal/services/distribusi_sisa_service_test.go": true,
 	"internal/services/pengangkutan_service_test.go":    true,

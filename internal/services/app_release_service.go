@@ -84,8 +84,6 @@ type UbahRilisInput struct {
 	Wajib     *bool
 }
 
-// LinkInstallProvider dipakai service lain untuk menyisipkan link APK
-// terbaru di email aktivasi. Nil berarti belum ada rilis.
 type LinkInstallProvider interface {
 	InfoInstallTerbaru() *mailer.InstallInfo
 }
@@ -113,8 +111,6 @@ type appReleaseService struct {
 	apiPublicURL string
 }
 
-// apiPublicURL: alamat publik backend untuk link install permanen
-// (<apiPublicURL>/app-version/latest). Boleh kosong.
 func NewAppReleaseService(repo AppReleaseRepoIface, storage AppReleaseStorage, apiPublicURL string) AppReleaseService {
 	return &appReleaseService{
 		repo:         repo,
@@ -167,12 +163,6 @@ func (s *appReleaseService) URLTerbaru() (string, error) {
 	return s.storage.PublicURL(latest.ApkKey), nil
 }
 
-// InfoInstallTerbaru tidak pernah mengembalikan error: gagal atau belum ada
-// rilis cukup berarti email dikirim tanpa blok install.
-//
-// Link memakai endpoint permanen /app-version/latest (selalu ke versi terbaru,
-// tidak berakhiran .apk sehingga lebih aman dari filter spam). Bila alamat
-// publik backend tidak diset, jatuh ke URL R2 rilis terbaru.
 func (s *appReleaseService) InfoInstallTerbaru() *mailer.InstallInfo {
 	latest, err := s.repo.FindLatest()
 	if err != nil {
@@ -222,8 +212,6 @@ func (s *appReleaseService) TambahRilis(in TambahRilisInput) (*RilisRow, error) 
 		)
 	}
 
-	// Suffix acak supaya key tidak pernah menimpa objek rilis lain,
-	// sehingga rollback (hapus objek) selalu aman.
 	key := fmt.Sprintf("%s/enviroo-%s-%d-%s.apk",
 		folderAPK, in.VersionName, in.VersionCode, uuid.New().String()[:8])
 

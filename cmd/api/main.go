@@ -20,11 +20,11 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/time/rate"
 )
 
 func main() {
-
 	cfg := config.LoadConfig()
 
 	jwtSecret := os.Getenv("JWT_SECRET")
@@ -81,8 +81,12 @@ func main() {
 		log.Printf("Warning: gagal set trusted proxies: %v", err)
 	}
 
-	globalLimiter := middleware.NewIPRateLimiter(rate.Every(600*time.Millisecond), 50)
-	r.Use(globalLimiter.Middleware())
+	rdb, rateStore := bangunRateLimitStore(cfg)
+
+	globalIP := middleware.NewIPRateLimiter("glob_ip", rate.Every(300*time.Millisecond), 100).WithStore(rateStore)
+	globalUser := middleware.NewIPRateLimiter("glob_usr", rate.Every(600*time.Millisecond), 50).WithStore(rateStore)
+	r.Use(globalIP.Middleware(middleware.DimIP()))
+	r.Use(globalUser.Middleware(middleware.DimUser()))
 
 	if len(cfg.CORSOrigins) == 0 {
 		log.Fatal("CORS_ORIGINS kosong. Isi dengan origin web admin, mis. https://admin.enviroo.tech")
@@ -98,7 +102,7 @@ func main() {
 		MaxAge:           12 * time.Hour,
 	}))
 
-	routes.SetupRoutes(r, db, cfStorage, mail, fcmClient, cfg.APIPublicURL)
+	routes.SetupRoutes(r, db, cfStorage, mail, fcmClient, cfg.APIPublicURL, rateStore)
 
 	go func() {
 		log.Printf("Server starting on %s", cfg.ServerPort)
@@ -115,5 +119,26 @@ func main() {
 	penarikanWorker.Stop()
 	penimbanganWorker.Stop()
 	reminderWorker.Stop()
+	if rdb != nil {
+		_ = rdb.Close()
+	}
 	log.Println("Server stopped gracefully.")
+}
+
+func bangunRateLimitStore(cfg *config.Config) (*redis.Client, middleware.Penyimpanan) {
+	memori := middleware.NewStoreMemori()
+	if cfg.RedisAddr == "" {
+		log.Println("Warning: REDIS_ADDR tidak diset, rate limiter memakai in-memory (tidak terbagi antar instance)")
+		return nil, memori
+	}
+
+	rdb := middleware.NewClientRedis(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
+	store := middleware.NewStoreRedis(rdb, cfg.RedisTimeout)
+	if err := store.Ping(); err != nil {
+		log.Printf("Warning: Redis di %s tidak bisa dihubungi (%v). Rate limiter jalan in-memory dan akan mencoba Redis lagi otomatis.", cfg.RedisAddr, err)
+	} else {
+		log.Printf("Rate limiter: backend Redis (%s)", cfg.RedisAddr)
+	}
+
+	return rdb, middleware.NewStoreFallback(store, memori)
 }

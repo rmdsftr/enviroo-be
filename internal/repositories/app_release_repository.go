@@ -41,7 +41,6 @@ func (r *AppReleaseRepo) MaxVersionCode() (int, error) {
 	return maks, err
 }
 
-// AdaWajibDiAntara: apakah ada rilis wajib dengan current < version_code <= latest.
 func (r *AppReleaseRepo) AdaWajibDiAntara(current, latest int) (bool, error) {
 	var jumlah int64
 	err := r.db.Model(&models.AppRelease{}).
