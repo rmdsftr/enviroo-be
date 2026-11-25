@@ -303,7 +303,7 @@ func (s *bankService) createAdminBank(tx *gorm.DB, bank *models.BankSampah, cfg 
 		return errInternal("Failed to create aktivasi akun: " + err.Error())
 	}
 
-	emailBody := mailer.BuildAktivasiAdminEmail(existingUser.Nama, "Administrator", bank.NamaBank, cfg.emailLabel, otp, expiredAt, nil)
+	emailBody := mailer.BuildAktivasiAdminEmail(existingUser.Nama, "Administrator", bank.NamaBank, otp, expiredAt, nil)
 	subject := "Aktivasi Akun Administrator Enviroo"
 	if cfg.emailLabel != "" {
 		subject = "Aktivasi Akun Administrator" + cfg.emailLabel + " Enviroo"
@@ -852,7 +852,7 @@ func (s *bankService) AddAdminBank(in AddAdminBankInput) (*models.Admin, error) 
 		install = infoInstall(s.install)
 	}
 
-	emailBody := mailer.BuildAktivasiAdminEmail(existingUser.Nama, roleTitle, bank.NamaBank, "", otp, expiredAt, install)
+	emailBody := mailer.BuildAktivasiAdminEmail(existingUser.Nama, roleTitle, bank.NamaBank, otp, expiredAt, install)
 	go func() {
 		if err := s.mailer.SendEmail(mailer.Params{
 			To:      existingUser.Email,

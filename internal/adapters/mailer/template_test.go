@@ -50,7 +50,7 @@ func TestBuildOTPEmail_URLKosongTanpaInstall(t *testing.T) {
 }
 
 func TestBuildAktivasiAdminEmail_DenganInstall(t *testing.T) {
-	body := BuildAktivasiAdminEmail("Sari", "Petugas", "Bank Sampah A", "", "654321", time.Now(), infoContoh)
+	body := BuildAktivasiAdminEmail("Sari", "Petugas", "Bank Sampah A", "654321", time.Now(), infoContoh)
 	assertAdaBlokInstall(t, body)
 	if !strings.Contains(body, "<b>Petugas</b>") {
 		t.Error("peran harus tetap disebut")
@@ -58,7 +58,7 @@ func TestBuildAktivasiAdminEmail_DenganInstall(t *testing.T) {
 }
 
 func TestBuildAktivasiAdminEmail_TanpaInstall(t *testing.T) {
-	body := BuildAktivasiAdminEmail("Sari", "Admin", "Bank Sampah A", "", "654321", time.Now(), nil)
+	body := BuildAktivasiAdminEmail("Sari", "Admin", "Bank Sampah A", "654321", time.Now(), nil)
 	assertTanpaBlokInstall(t, body)
 }
 
