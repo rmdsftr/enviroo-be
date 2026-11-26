@@ -693,9 +693,9 @@ func bungkusTxError(err error, pesanDefault string) error {
 }
 
 func kirimEmailAsync(m MailerIface, to, subject, body string) {
-	go func() {
+	JalankanLatar(func() {
 		if err := m.SendEmail(mailer.Params{To: to, Subject: subject, Body: body}); err != nil {
 			log.Printf("[Email] Gagal kirim '%s' ke %s: %v", subject, to, err)
 		}
-	}()
+	})
 }

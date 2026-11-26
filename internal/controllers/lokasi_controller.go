@@ -29,7 +29,7 @@ func (lc *LokasiController) GetLokasiBankSampah(c *gin.Context) {
 
 	var results []LokasiBankSampahResponse
 
-	query := lc.DB.Model(&models.BankSampah{}).
+	query := lc.DB.WithContext(c.Request.Context()).Model(&models.BankSampah{}).
 		Select("bank_sampah.bank_id, bank_sampah.nama_bank, bank_sampah.jenis_bank, bank_sampah.latitude, bank_sampah.longitude")
 
 	if err := query.Find(&results).Error; err != nil {
@@ -68,7 +68,7 @@ func (lc *LokasiController) StatistikBankSampahPerKecamatan(c *gin.Context) {
 	}
 
 	var kecamatanList []kecamatanCount
-	if err := lc.DB.Table("kecamatan").
+	if err := lc.DB.WithContext(c.Request.Context()).Table("kecamatan").
 		Select("kecamatan.id_kecamatan, kecamatan.kecamatan, COUNT(bank_sampah.bank_id) as jumlah_bank").
 		Joins("LEFT JOIN bank_sampah ON bank_sampah.id_kecamatan = kecamatan.id_kecamatan").
 		Group("kecamatan.id_kecamatan, kecamatan.kecamatan").
@@ -85,7 +85,7 @@ func (lc *LokasiController) StatistikBankSampahPerKecamatan(c *gin.Context) {
 	}
 
 	var bankRows []bankRow
-	if err := lc.DB.Table("bank_sampah").
+	if err := lc.DB.WithContext(c.Request.Context()).Table("bank_sampah").
 		Select("id_kecamatan, bank_id, nama_bank").
 		Where("id_kecamatan IS NOT NULL").
 		Find(&bankRows).Error; err != nil {
@@ -123,7 +123,7 @@ func (lc *LokasiController) StatistikBankSampahPerKecamatan(c *gin.Context) {
 
 func (lc *LokasiController) GetAllKecamatan(c *gin.Context) {
 	var results []models.Kecamatan
-	if err := lc.DB.Order("id_kecamatan asc").Find(&results).Error; err != nil {
+	if err := lc.DB.WithContext(c.Request.Context()).Order("id_kecamatan asc").Find(&results).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data kecamatan: " + err.Error()})
 		return
 	}
@@ -136,7 +136,7 @@ func (lc *LokasiController) GetAllKecamatan(c *gin.Context) {
 func (lc *LokasiController) GetKecamatanByID(c *gin.Context) {
 	id := c.Param("id")
 	var result models.Kecamatan
-	if err := lc.DB.Where("id_kecamatan = ?", id).First(&result).Error; err != nil {
+	if err := lc.DB.WithContext(c.Request.Context()).Where("id_kecamatan = ?", id).First(&result).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Kecamatan tidak ditemukan"})
 		} else {
@@ -162,7 +162,7 @@ func (lc *LokasiController) CreateKecamatan(c *gin.Context) {
 	}
 
 	var dupCount int64
-	lc.DB.Model(&models.Kecamatan{}).
+	lc.DB.WithContext(c.Request.Context()).Model(&models.Kecamatan{}).
 		Where("LOWER(REGEXP_REPLACE(kecamatan, '[^a-zA-Z0-9]', '', 'g')) = ?", utils.NormalizeString(req.Kecamatan)).
 		Count(&dupCount)
 	if dupCount > 0 {
@@ -173,7 +173,7 @@ func (lc *LokasiController) CreateKecamatan(c *gin.Context) {
 	newKecamatan := models.Kecamatan{
 		Kecamatan: req.Kecamatan,
 	}
-	if err := lc.DB.Create(&newKecamatan).Error; err != nil {
+	if err := lc.DB.WithContext(c.Request.Context()).Create(&newKecamatan).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menambah kecamatan: " + err.Error()})
 		return
 	}
@@ -197,7 +197,7 @@ func (lc *LokasiController) UpdateKecamatan(c *gin.Context) {
 	}
 
 	var kecamatan models.Kecamatan
-	if err := lc.DB.Where("id_kecamatan = ?", id).First(&kecamatan).Error; err != nil {
+	if err := lc.DB.WithContext(c.Request.Context()).Where("id_kecamatan = ?", id).First(&kecamatan).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Kecamatan tidak ditemukan"})
 		} else {
@@ -207,7 +207,7 @@ func (lc *LokasiController) UpdateKecamatan(c *gin.Context) {
 	}
 
 	var dupCount int64
-	lc.DB.Model(&models.Kecamatan{}).
+	lc.DB.WithContext(c.Request.Context()).Model(&models.Kecamatan{}).
 		Where("LOWER(REGEXP_REPLACE(kecamatan, '[^a-zA-Z0-9]', '', 'g')) = ? AND id_kecamatan != ?", utils.NormalizeString(req.Kecamatan), id).
 		Count(&dupCount)
 	if dupCount > 0 {
@@ -216,7 +216,7 @@ func (lc *LokasiController) UpdateKecamatan(c *gin.Context) {
 	}
 
 	kecamatan.Kecamatan = req.Kecamatan
-	if err := lc.DB.Save(&kecamatan).Error; err != nil {
+	if err := lc.DB.WithContext(c.Request.Context()).Save(&kecamatan).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengupdate kecamatan: " + err.Error()})
 		return
 	}
@@ -230,7 +230,7 @@ func (lc *LokasiController) DeleteKecamatan(c *gin.Context) {
 	id := c.Param("id")
 
 	var kecamatan models.Kecamatan
-	if err := lc.DB.Where("id_kecamatan = ?", id).First(&kecamatan).Error; err != nil {
+	if err := lc.DB.WithContext(c.Request.Context()).Where("id_kecamatan = ?", id).First(&kecamatan).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Kecamatan tidak ditemukan"})
 		} else {
@@ -239,7 +239,7 @@ func (lc *LokasiController) DeleteKecamatan(c *gin.Context) {
 		return
 	}
 
-	if err := lc.DB.Delete(&kecamatan).Error; err != nil {
+	if err := lc.DB.WithContext(c.Request.Context()).Delete(&kecamatan).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghapus kecamatan: " + err.Error()})
 		return
 	}
@@ -261,13 +261,13 @@ func (lc *LokasiController) GetAllKelurahan(c *gin.Context) {
 	offset := (page - 1) * limit
 
 	var total int64
-	if err := lc.DB.Model(&models.Kelurahan{}).Count(&total).Error; err != nil {
+	if err := lc.DB.WithContext(c.Request.Context()).Model(&models.Kelurahan{}).Count(&total).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghitung data kelurahan: " + err.Error()})
 		return
 	}
 
 	var results []models.Kelurahan
-	if err := lc.DB.Preload("Kecamatan").Order("id_kelurahan asc").Offset(offset).Limit(limit).Find(&results).Error; err != nil {
+	if err := lc.DB.WithContext(c.Request.Context()).Preload("Kecamatan").Order("id_kelurahan asc").Offset(offset).Limit(limit).Find(&results).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data kelurahan: " + err.Error()})
 		return
 	}
@@ -289,7 +289,7 @@ func (lc *LokasiController) GetAllKelurahan(c *gin.Context) {
 func (lc *LokasiController) GetKelurahanByID(c *gin.Context) {
 	id := c.Param("id")
 	var result models.Kelurahan
-	if err := lc.DB.Preload("Kecamatan").Where("id_kelurahan = ?", id).First(&result).Error; err != nil {
+	if err := lc.DB.WithContext(c.Request.Context()).Preload("Kecamatan").Where("id_kelurahan = ?", id).First(&result).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Kelurahan tidak ditemukan"})
 		} else {
@@ -306,7 +306,7 @@ func (lc *LokasiController) GetKelurahanByID(c *gin.Context) {
 func (lc *LokasiController) GetKelurahanByKecamatan(c *gin.Context) {
 	kecamatanID := c.Param("id")
 	var results []models.Kelurahan
-	if err := lc.DB.Preload("Kecamatan").
+	if err := lc.DB.WithContext(c.Request.Context()).Preload("Kecamatan").
 		Where("id_kecamatan = ?", kecamatanID).
 		Order("kelurahan asc").
 		Find(&results).Error; err != nil {
@@ -332,13 +332,13 @@ func (lc *LokasiController) CreateKelurahan(c *gin.Context) {
 	}
 
 	var kecamatan models.Kecamatan
-	if err := lc.DB.Where("id_kecamatan = ?", req.IDKecamatan).First(&kecamatan).Error; err != nil {
+	if err := lc.DB.WithContext(c.Request.Context()).Where("id_kecamatan = ?", req.IDKecamatan).First(&kecamatan).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Kecamatan tidak ditemukan"})
 		return
 	}
 
 	var dupCount int64
-	lc.DB.Model(&models.Kelurahan{}).
+	lc.DB.WithContext(c.Request.Context()).Model(&models.Kelurahan{}).
 		Where("id_kecamatan = ? AND LOWER(REGEXP_REPLACE(kelurahan, '[^a-zA-Z0-9]', '', 'g')) = ?", req.IDKecamatan, utils.NormalizeString(req.Kelurahan)).
 		Count(&dupCount)
 	if dupCount > 0 {
@@ -350,7 +350,7 @@ func (lc *LokasiController) CreateKelurahan(c *gin.Context) {
 		IDKecamatan: req.IDKecamatan,
 		Kelurahan:   req.Kelurahan,
 	}
-	if err := lc.DB.Create(&newKelurahan).Error; err != nil {
+	if err := lc.DB.WithContext(c.Request.Context()).Create(&newKelurahan).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menambah kelurahan: " + err.Error()})
 		return
 	}
@@ -375,7 +375,7 @@ func (lc *LokasiController) UpdateKelurahan(c *gin.Context) {
 	}
 
 	var kelurahan models.Kelurahan
-	if err := lc.DB.Where("id_kelurahan = ?", id).First(&kelurahan).Error; err != nil {
+	if err := lc.DB.WithContext(c.Request.Context()).Where("id_kelurahan = ?", id).First(&kelurahan).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Kelurahan tidak ditemukan"})
 		} else {
@@ -387,7 +387,7 @@ func (lc *LokasiController) UpdateKelurahan(c *gin.Context) {
 	kelurahan.Kelurahan = req.Kelurahan
 	if req.IDKecamatan != 0 {
 		var kecamatan models.Kecamatan
-		if err := lc.DB.Where("id_kecamatan = ?", req.IDKecamatan).First(&kecamatan).Error; err != nil {
+		if err := lc.DB.WithContext(c.Request.Context()).Where("id_kecamatan = ?", req.IDKecamatan).First(&kecamatan).Error; err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Kecamatan tidak ditemukan"})
 			return
 		}
@@ -396,7 +396,7 @@ func (lc *LokasiController) UpdateKelurahan(c *gin.Context) {
 
 	targetKecamatan := kelurahan.IDKecamatan
 	var dupCount int64
-	lc.DB.Model(&models.Kelurahan{}).
+	lc.DB.WithContext(c.Request.Context()).Model(&models.Kelurahan{}).
 		Where("id_kecamatan = ? AND LOWER(REGEXP_REPLACE(kelurahan, '[^a-zA-Z0-9]', '', 'g')) = ? AND id_kelurahan != ?", targetKecamatan, utils.NormalizeString(req.Kelurahan), id).
 		Count(&dupCount)
 	if dupCount > 0 {
@@ -404,7 +404,7 @@ func (lc *LokasiController) UpdateKelurahan(c *gin.Context) {
 		return
 	}
 
-	if err := lc.DB.Save(&kelurahan).Error; err != nil {
+	if err := lc.DB.WithContext(c.Request.Context()).Save(&kelurahan).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengupdate kelurahan: " + err.Error()})
 		return
 	}
@@ -418,7 +418,7 @@ func (lc *LokasiController) DeleteKelurahan(c *gin.Context) {
 	id := c.Param("id")
 
 	var kelurahan models.Kelurahan
-	if err := lc.DB.Where("id_kelurahan = ?", id).First(&kelurahan).Error; err != nil {
+	if err := lc.DB.WithContext(c.Request.Context()).Where("id_kelurahan = ?", id).First(&kelurahan).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Kelurahan tidak ditemukan"})
 		} else {
@@ -427,7 +427,7 @@ func (lc *LokasiController) DeleteKelurahan(c *gin.Context) {
 		return
 	}
 
-	if err := lc.DB.Delete(&kelurahan).Error; err != nil {
+	if err := lc.DB.WithContext(c.Request.Context()).Delete(&kelurahan).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghapus kelurahan: " + err.Error()})
 		return
 	}

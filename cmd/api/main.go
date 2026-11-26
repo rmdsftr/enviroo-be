@@ -12,7 +12,9 @@ import (
 	"enviroo-be/internal/routes"
 	"enviroo-be/internal/services"
 	"enviroo-be/internal/workers"
+	"errors"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -81,7 +83,7 @@ func main() {
 		log.Printf("Warning: gagal set trusted proxies: %v", err)
 	}
 
-	rdb, rateStore := bangunRateLimitStore(cfg)
+	rdb, memoriStore, rateStore := bangunRateLimitStore(cfg)
 
 	globalIP := middleware.NewIPRateLimiter("glob_ip", rate.Every(300*time.Millisecond), 100).WithStore(rateStore)
 	globalUser := middleware.NewIPRateLimiter("glob_usr", rate.Every(600*time.Millisecond), 50).WithStore(rateStore)
@@ -102,34 +104,63 @@ func main() {
 		MaxAge:           12 * time.Hour,
 	}))
 
-	routes.SetupRoutes(r, db, cfStorage, mail, fcmClient, cfg.APIPublicURL, rateStore)
+	routes.SetupRoutes(r, db, cfStorage, mail, fcmClient, cfg.APIPublicURL, rateStore, cfg.UploadDeadline)
 
+	srv := &http.Server{
+		Addr:              cfg.ServerPort,
+		Handler:           r.Handler(),
+		ReadHeaderTimeout: cfg.ServerReadHeaderTimeout,
+		ReadTimeout:       cfg.ServerReadTimeout,
+		WriteTimeout:      cfg.ServerWriteTimeout,
+		IdleTimeout:       cfg.ServerIdleTimeout,
+	}
+
+	errServer := make(chan error, 1)
 	go func() {
 		log.Printf("Server starting on %s", cfg.ServerPort)
-		if err := r.Run(cfg.ServerPort); err != nil {
-			log.Fatalf("Failed to start server: %v", err)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errServer <- err
 		}
 	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
-	<-quit
 
-	log.Println("Shutting down server...")
+	select {
+	case err := <-errServer:
+		log.Printf("Server gagal dijalankan: %v", err)
+	case <-quit:
+		log.Println("Shutting down server...")
+	}
+
+	ctxShutdown, batalkanShutdown := context.WithTimeout(context.Background(), cfg.ServerShutdownTimeout)
+	defer batalkanShutdown()
+	if err := srv.Shutdown(ctxShutdown); err != nil {
+		log.Printf("Shutdown HTTP server tidak tuntas dalam %s: %v", cfg.ServerShutdownTimeout, err)
+	}
+
 	penarikanWorker.Stop()
 	penimbanganWorker.Stop()
 	reminderWorker.Stop()
+	memoriStore.Stop()
+
+	if !services.TungguLatar(cfg.ServerShutdownTimeout) {
+		log.Printf("Pekerjaan latar belum tuntas dalam %s, dilanjutkan keluar", cfg.ServerShutdownTimeout)
+	}
 	if rdb != nil {
 		_ = rdb.Close()
+	}
+	if sqlDB, err := db.DB(); err == nil {
+		_ = sqlDB.Close()
 	}
 	log.Println("Server stopped gracefully.")
 }
 
-func bangunRateLimitStore(cfg *config.Config) (*redis.Client, middleware.Penyimpanan) {
+func bangunRateLimitStore(cfg *config.Config) (*redis.Client, *middleware.StoreMemori, middleware.Penyimpanan) {
 	memori := middleware.NewStoreMemori()
 	if cfg.RedisAddr == "" {
 		log.Println("Warning: REDIS_ADDR tidak diset, rate limiter memakai in-memory (tidak terbagi antar instance)")
-		return nil, memori
+		return nil, memori, memori
 	}
 
 	rdb := middleware.NewClientRedis(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
@@ -140,5 +171,5 @@ func bangunRateLimitStore(cfg *config.Config) (*redis.Client, middleware.Penyimp
 		log.Printf("Rate limiter: backend Redis (%s)", cfg.RedisAddr)
 	}
 
-	return rdb, middleware.NewStoreFallback(store, memori)
+	return rdb, memori, middleware.NewStoreFallback(store, memori)
 }

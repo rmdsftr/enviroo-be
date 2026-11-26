@@ -505,7 +505,7 @@ func (s *penarikanService) Ajukan(nasabahID string, req AjukanPenarikanReq) (*Aj
 	snapshotNominal := finalNominal
 	snapshotSatuan := models.SatuanRewardEnum(reward.Satuan)
 
-	go func() {
+	JalankanLatar(func() {
 		nas, err := s.repo.FindNasabahWithUser(snapshotNasabahID)
 		if err != nil {
 			return
@@ -523,7 +523,7 @@ func (s *penarikanService) Ajukan(nasabahID string, req AjukanPenarikanReq) (*Aj
 				fmt.Printf("[Notif] Gagal kirim notif pengajuan penarikan ke user %s: %v\n", au.UserID, err)
 			}
 		}
-	}()
+	})
 
 	return &AjukanResult{
 		PenarikanID: penarikanID,
@@ -675,7 +675,7 @@ func (s *penarikanService) Konfirmasi(penarikanID, adminUserID string, req Konfi
 	snapshotStatus := status
 	snapshotDeadlineJemput := deadlineJemput
 
-	go func() {
+	JalankanLatar(func() {
 		p, err := s.repo.FindPenarikanByID(snapshotPenarikanID)
 		if err != nil || p.NasabahID == nil || p.Nasabah == nil {
 			return
@@ -703,7 +703,7 @@ func (s *penarikanService) Konfirmasi(penarikanID, adminUserID string, req Konfi
 		); err != nil {
 			fmt.Printf("[Notif] Gagal kirim notif penarikan ditolak ke user %s: %v\n", p.Nasabah.User.UserID, err)
 		}
-	}()
+	})
 
 	return nil
 }
@@ -819,7 +819,7 @@ func (s *penarikanService) Selesai(adminUserID string, req SelesaiPenarikanReq) 
 	}
 
 	snapshotPenarikanID := penarikanID
-	go func() {
+	JalankanLatar(func() {
 		p, err := s.repo.FindPenarikanByID(snapshotPenarikanID)
 		if err != nil || p.NasabahID == nil || p.Nasabah == nil {
 			return
@@ -834,7 +834,7 @@ func (s *penarikanService) Selesai(adminUserID string, req SelesaiPenarikanReq) 
 		); err != nil {
 			fmt.Printf("[Notif] Gagal kirim notif penarikan berhasil ke user %s: %v\n", p.Nasabah.User.UserID, err)
 		}
-	}()
+	})
 
 	return nil
 }

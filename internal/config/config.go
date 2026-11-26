@@ -40,6 +40,14 @@ type Config struct {
 	RedisPassword string
 	RedisDB       int
 	RedisTimeout  time.Duration
+
+	ServerReadHeaderTimeout time.Duration
+	ServerReadTimeout       time.Duration
+	ServerWriteTimeout      time.Duration
+	ServerIdleTimeout       time.Duration
+	ServerShutdownTimeout   time.Duration
+	UploadDeadline          time.Duration
+	DBStatementTimeout      time.Duration
 }
 
 func LoadConfig() *Config {
@@ -74,6 +82,14 @@ func LoadConfig() *Config {
 		RedisPassword:      getEnv("REDIS_PASSWORD", ""),
 		RedisDB:            getEnvInt("REDIS_DB", 0),
 		RedisTimeout:       time.Duration(getEnvInt("REDIS_TIMEOUT_MS", 50)) * time.Millisecond,
+
+		ServerReadHeaderTimeout: time.Duration(getEnvInt("SERVER_READ_HEADER_TIMEOUT_S", 10)) * time.Second,
+		ServerReadTimeout:       time.Duration(getEnvInt("SERVER_READ_TIMEOUT_S", 120)) * time.Second,
+		ServerWriteTimeout:      time.Duration(getEnvInt("SERVER_WRITE_TIMEOUT_S", 60)) * time.Second,
+		ServerIdleTimeout:       time.Duration(getEnvInt("SERVER_IDLE_TIMEOUT_S", 120)) * time.Second,
+		ServerShutdownTimeout:   time.Duration(getEnvInt("SERVER_SHUTDOWN_TIMEOUT_S", 30)) * time.Second,
+		UploadDeadline:          time.Duration(getEnvInt("UPLOAD_DEADLINE_S", 900)) * time.Second,
+		DBStatementTimeout:      time.Duration(getEnvInt("DB_STATEMENT_TIMEOUT_S", 30)) * time.Second,
 	}
 }
 

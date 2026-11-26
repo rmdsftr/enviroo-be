@@ -12,8 +12,9 @@ import (
 
 func ConnectDB(cfg *config.Config) (*gorm.DB, error) {
 	dsn := fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s TimeZone=Asia/Jakarta",
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s TimeZone=Asia/Jakarta statement_timeout=%d",
 		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName, cfg.DBSSLMode,
+		cfg.DBStatementTimeout.Milliseconds(),
 	)
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{TranslateError: true})

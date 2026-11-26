@@ -680,7 +680,7 @@ func (s *barangService) pastikanBSUCabangDari(bsuID, bsiID string) error {
 }
 
 func (s *barangService) kirimNotifDistribusi(bsiID, bsuID string, totalJenisBarang int) {
-	go func() {
+	JalankanLatar(func() {
 		bankBSI, err := s.repo.FindBank(bsiID)
 		if err != nil {
 			return
@@ -704,7 +704,7 @@ func (s *barangService) kirimNotifDistribusi(bsiID, bsuID string, totalJenisBara
 				log.Printf("[Notif] Gagal kirim notif distribusi barang ke user %s: %v", t.UserID, err)
 			}
 		}
-	}()
+	})
 }
 
 func pastikanAksesBarang(in AksesBarangInput, bankID string) error {

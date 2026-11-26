@@ -161,8 +161,10 @@ func (l *IPRateLimiter) Middleware(dims ...Dimensi) gin.HandlerFunc {
 const ttlEntriMemori = 10 * time.Minute
 
 type StoreMemori struct {
-	mu      sync.Mutex
-	clients map[string]*clientBucket
+	mu       sync.Mutex
+	clients  map[string]*clientBucket
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 type clientBucket struct {
@@ -172,9 +174,16 @@ type clientBucket struct {
 }
 
 func NewStoreMemori() *StoreMemori {
-	s := &StoreMemori{clients: make(map[string]*clientBucket)}
+	s := &StoreMemori{
+		clients: make(map[string]*clientBucket),
+		stopCh:  make(chan struct{}),
+	}
 	go s.cleanupLoop()
 	return s
+}
+
+func (s *StoreMemori) Stop() {
+	s.stopOnce.Do(func() { close(s.stopCh) })
 }
 
 func (s *StoreMemori) allow(key string, r rate.Limit, burst int, block time.Duration) (bool, time.Duration) {
@@ -207,14 +216,19 @@ func (s *StoreMemori) allow(key string, r rate.Limit, burst int, block time.Dura
 func (s *StoreMemori) cleanupLoop() {
 	ticker := time.NewTicker(ttlEntriMemori)
 	defer ticker.Stop()
-	for range ticker.C {
-		s.mu.Lock()
-		now := time.Now()
-		for key, c := range s.clients {
-			if now.Sub(c.lastSeen) > ttlEntriMemori && now.After(c.blockedUntil) {
-				delete(s.clients, key)
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			now := time.Now()
+			for key, c := range s.clients {
+				if now.Sub(c.lastSeen) > ttlEntriMemori && now.After(c.blockedUntil) {
+					delete(s.clients, key)
+				}
 			}
+			s.mu.Unlock()
 		}
-		s.mu.Unlock()
 	}
 }

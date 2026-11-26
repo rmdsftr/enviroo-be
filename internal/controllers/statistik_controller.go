@@ -27,7 +27,7 @@ func (sc *StatistikController) GetBankSampahStatistik(c *gin.Context) {
 		Count     int64  `gorm:"column:count"`
 	}
 
-	if err := sc.DB.Model(&models.BankSampah{}).
+	if err := sc.DB.WithContext(c.Request.Context()).Model(&models.BankSampah{}).
 		Select("jenis_bank, count(*) as count").
 		Group("jenis_bank").
 		Scan(&results).Error; err != nil {
@@ -82,7 +82,7 @@ func (sc *StatistikController) GetStatistikSetoranSampahBank(c *gin.Context) {
 	}
 
 	var bank models.BankSampah
-	if err := sc.DB.Where("bank_id = ?", bankID).First(&bank).Error; err != nil {
+	if err := sc.DB.WithContext(c.Request.Context()).Where("bank_id = ?", bankID).First(&bank).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Bank tidak ditemukan"})
 		return
 	}
@@ -140,7 +140,7 @@ func (sc *StatistikController) GetStatistikSetoranSampahBank(c *gin.Context) {
 	nasabahQuery += ` GROUP BY ks.sampah_id, s.nama_sampah, sat.satuan, r.nama_reward, k.kategori`
 
 	var hasilNasabah []StatistikItem
-	if err := sc.DB.Raw(nasabahQuery, nasabahArgs...).Scan(&hasilNasabah).Error; err != nil {
+	if err := sc.DB.WithContext(c.Request.Context()).Raw(nasabahQuery, nasabahArgs...).Scan(&hasilNasabah).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data setoran: " + err.Error()})
 		return
 	}
@@ -176,7 +176,7 @@ func (sc *StatistikController) GetStatistikSetoranSampahBank(c *gin.Context) {
 		paketQuery += ` GROUP BY ks.sampah_id, s.nama_sampah, sat.satuan, r.nama_reward, k.kategori`
 
 		var hasilPaket []StatistikItem
-		if err := sc.DB.Raw(paketQuery, paketArgs...).Scan(&hasilPaket).Error; err != nil {
+		if err := sc.DB.WithContext(c.Request.Context()).Raw(paketQuery, paketArgs...).Scan(&hasilPaket).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data paket setoran: " + err.Error()})
 			return
 		}
@@ -219,7 +219,7 @@ func (sc *StatistikController) GetRingkasanSuperadmin(c *gin.Context) {
 		Count     int64  `gorm:"column:count"`
 	}
 	var bankRows []bankStatRow
-	if err := sc.DB.Model(&models.BankSampah{}).
+	if err := sc.DB.WithContext(c.Request.Context()).Model(&models.BankSampah{}).
 		Select("jenis_bank, is_active, COUNT(*) as count").
 		Group("jenis_bank, is_active").
 		Scan(&bankRows).Error; err != nil {
@@ -252,7 +252,7 @@ func (sc *StatistikController) GetRingkasanSuperadmin(c *gin.Context) {
 		Count  int64  `gorm:"column:count"`
 	}
 	var nasabahRows []nasabahStatRow
-	if err := sc.DB.Model(&models.Nasabah{}).
+	if err := sc.DB.WithContext(c.Request.Context()).Model(&models.Nasabah{}).
 		Select("status_nasabah as status, COUNT(*) as count").
 		Group("status_nasabah").
 		Scan(&nasabahRows).Error; err != nil {
@@ -305,7 +305,7 @@ func (sc *StatistikController) GetTrenPenjualan(c *gin.Context) {
 		Total  float64 `gorm:"column:total"`
 	}
 	var rows []trenRow
-	if err := sc.DB.Raw(`
+	if err := sc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			EXTRACT(MONTH FROM created_at)::int AS bulan,
 			satuan_reward AS satuan,
@@ -396,7 +396,7 @@ func (sc *StatistikController) GetRankingBank(c *gin.Context) {
 	args = append(args, limit)
 
 	var ranking []rankingRow
-	if err := sc.DB.Raw(query, args...).Scan(&ranking).Error; err != nil {
+	if err := sc.DB.WithContext(c.Request.Context()).Raw(query, args...).Scan(&ranking).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil ranking bank: " + err.Error()})
 		return
 	}
@@ -417,7 +417,7 @@ func (sc *StatistikController) GetStatistikPenjualanSampahBank(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
 	var bank models.BankSampah
-	if err := sc.DB.Where("bank_id = ?", bankID).First(&bank).Error; err != nil {
+	if err := sc.DB.WithContext(c.Request.Context()).Where("bank_id = ?", bankID).First(&bank).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Bank tidak ditemukan"})
 		return
 	}
@@ -493,7 +493,7 @@ func (sc *StatistikController) GetStatistikPenjualanSampahBank(c *gin.Context) {
 		ORDER BY total_qty DESC`
 
 	var hasil []penjualanSampahItem
-	if err := sc.DB.Raw(query, args...).Scan(&hasil).Error; err != nil {
+	if err := sc.DB.WithContext(c.Request.Context()).Raw(query, args...).Scan(&hasil).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil statistik penjualan: " + err.Error()})
 		return
 	}
@@ -513,7 +513,7 @@ func (sc *StatistikController) GetStatistikMasukSampahBSU(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
 	var bank models.BankSampah
-	if err := sc.DB.Where("bank_id = ?", bankID).First(&bank).Error; err != nil {
+	if err := sc.DB.WithContext(c.Request.Context()).Where("bank_id = ?", bankID).First(&bank).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Bank tidak ditemukan"})
 		return
 	}
@@ -583,7 +583,7 @@ func (sc *StatistikController) GetStatistikMasukSampahBSU(c *gin.Context) {
 		ORDER BY total_masuk DESC`
 
 	var hasil []masukItem
-	if err := sc.DB.Raw(query, args...).Scan(&hasil).Error; err != nil {
+	if err := sc.DB.WithContext(c.Request.Context()).Raw(query, args...).Scan(&hasil).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil statistik masuk sampah: " + err.Error()})
 		return
 	}
@@ -633,7 +633,7 @@ func (sc *StatistikController) GetVolumeSampahNasabah(c *gin.Context) {
 		ORDER BY tahun ASC, bulan ASC, sat.satuan ASC`
 
 	var results []VolumeRow
-	if err := sc.DB.Raw(query, args...).Scan(&results).Error; err != nil {
+	if err := sc.DB.WithContext(c.Request.Context()).Raw(query, args...).Scan(&results).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil volume sampah: " + err.Error()})
 		return
 	}
@@ -675,7 +675,7 @@ func (sc *StatistikController) GetKontribusiNasabah(c *gin.Context) {
 	}
 
 	var daftarSatuan []models.Satuan
-	if err := sc.DB.Find(&daftarSatuan).Error; err != nil {
+	if err := sc.DB.WithContext(c.Request.Context()).Find(&daftarSatuan).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data satuan"})
 		return
 	}
@@ -707,7 +707,7 @@ func (sc *StatistikController) GetKontribusiNasabah(c *gin.Context) {
 	offset := (page - 1) * limit
 
 	var bank models.BankSampah
-	if err := sc.DB.Where("bank_id = ?", bankID).First(&bank).Error; err != nil {
+	if err := sc.DB.WithContext(c.Request.Context()).Where("bank_id = ?", bankID).First(&bank).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Bank tidak ditemukan"})
 		return
 	}
@@ -781,7 +781,7 @@ func (sc *StatistikController) GetKontribusiNasabah(c *gin.Context) {
 	}
 
 	var hasil []KontribusiItem
-	if err := sc.DB.Raw(dataQuery, dataArgs...).Scan(&hasil).Error; err != nil {
+	if err := sc.DB.WithContext(c.Request.Context()).Raw(dataQuery, dataArgs...).Scan(&hasil).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data kontribusi: " + err.Error()})
 		return
 	}
@@ -815,7 +815,7 @@ func (sc *StatistikController) GetKontribusiNasabah(c *gin.Context) {
 	}
 
 	var totalRows []TotalSatuanRow
-	if err := sc.DB.Raw(totalsQuery, totalsArgs...).Scan(&totalRows).Error; err != nil {
+	if err := sc.DB.WithContext(c.Request.Context()).Raw(totalsQuery, totalsArgs...).Scan(&totalRows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil total kontribusi bank"})
 		return
 	}

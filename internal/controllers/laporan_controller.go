@@ -34,7 +34,7 @@ func (lc *LaporanController) DownloadLaporanPenimbangan(c *gin.Context) {
 	}
 
 	var hdr headerData
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			p.penimbangan_id,
 			bs.nama_bank,
@@ -65,7 +65,7 @@ func (lc *LaporanController) DownloadLaporanPenimbangan(c *gin.Context) {
 	}
 
 	var details []detailRow
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			sn.setoran_id,
 			n.nasabah_id,
@@ -296,7 +296,7 @@ func (lc *LaporanController) DownloadLaporanRekapPenimbangan(c *gin.Context) {
 		NamaBank string `gorm:"column:nama_bank"`
 	}
 	var bank bankData
-	if err := lc.DB.Raw(`SELECT bank_id, nama_bank FROM bank_sampah WHERE bank_id = ?`, bankID).Scan(&bank).Error; err != nil || bank.BankID == "" {
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`SELECT bank_id, nama_bank FROM bank_sampah WHERE bank_id = ?`, bankID).Scan(&bank).Error; err != nil || bank.BankID == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Bank sampah tidak ditemukan"})
 		return
 	}
@@ -308,7 +308,7 @@ func (lc *LaporanController) DownloadLaporanRekapPenimbangan(c *gin.Context) {
 		Satuan     string  `gorm:"column:satuan"`
 	}
 	var sampahRows []sampahRow
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			s.nama_sampah,
 			kat.kategori,
@@ -337,7 +337,7 @@ func (lc *LaporanController) DownloadLaporanRekapPenimbangan(c *gin.Context) {
 		Satuan      string  `gorm:"column:satuan"`
 	}
 	var nasabahRows []nasabahDetailRow
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			n.nasabah_id,
 			u.nama            AS nama_nasabah,
@@ -580,7 +580,7 @@ func (lc *LaporanController) DownloadLaporanNasabah(c *gin.Context) {
 		NamaBank string `gorm:"column:nama_bank"`
 	}
 	var bank bankData
-	if err := lc.DB.Raw(`SELECT bank_id, nama_bank FROM bank_sampah WHERE bank_id = ?`, bankID).Scan(&bank).Error; err != nil || bank.BankID == "" {
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`SELECT bank_id, nama_bank FROM bank_sampah WHERE bank_id = ?`, bankID).Scan(&bank).Error; err != nil || bank.BankID == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Bank sampah tidak ditemukan"})
 		return
 	}
@@ -595,7 +595,7 @@ func (lc *LaporanController) DownloadLaporanNasabah(c *gin.Context) {
 		StatusNasabah string    `gorm:"column:status_nasabah"`
 	}
 	var rows []nasabahRow
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			n.nasabah_id,
 			n.user_id      AS nik,
@@ -821,7 +821,7 @@ func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 	}
 
 	var hdr headerData
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			ps.pengangkutan_id,
 			bsi.nama_bank AS nama_bsi,
@@ -862,7 +862,7 @@ func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 		Notes       string    `gorm:"column:notes"`
 	}
 	var riwayat []riwayatRow
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			rp.status_pengangkutan AS status,
 			rp.changed_at,
@@ -884,7 +884,7 @@ func (lc *LaporanController) DownloadLaporanPengangkutan(c *gin.Context) {
 		Qty        float64 `gorm:"column:qty"`
 	}
 	var details []detailRow
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT s.nama_sampah, sat.satuan, dp.qty
 		FROM detail_pengangkutan dp
 		JOIN katalog_sampah ks ON ks.sampah_id = dp.sampah_id
@@ -1134,7 +1134,7 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 	}
 
 	var hdr headerData
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			bh.bagi_hasil_id,
 			bs.nama_bank,
@@ -1166,7 +1166,7 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 	}
 
 	var nasabahList []nasabahRow
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			n.nasabah_id,
 			u.nama      AS nama_nasabah,
@@ -1193,7 +1193,7 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 
 	var ds distribusiHeader
 	hasDistribusiSisa := false
-	lc.DB.Raw(`
+	lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			ds.distribusi_id,
 			ds.created_at  AS tanggal_distribusi,
@@ -1220,7 +1220,7 @@ func (lc *LaporanController) DownloadLaporanBagiHasil(c *gin.Context) {
 
 	var penerimaSisaList []penerimaSisaRow
 	if hasDistribusiSisa {
-		if err := lc.DB.Raw(`
+		if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 			SELECT
 				bs.nama_bank,
 				pds.jenis_penerimaan,
@@ -1585,7 +1585,7 @@ func (lc *LaporanController) DownloadLaporanPenjualan(c *gin.Context) {
 	}
 
 	var hdr headerData
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			p.penjualan_id,
 			bs.nama_bank,
@@ -1619,7 +1619,7 @@ func (lc *LaporanController) DownloadLaporanPenjualan(c *gin.Context) {
 	}
 
 	var details []detailRow
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			s.nama_sampah,
 			sat.satuan,
@@ -1878,7 +1878,7 @@ func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 		NamaBank string `gorm:"column:nama_bank"`
 	}
 	var bank bankData
-	if err := lc.DB.Raw(`SELECT bank_id, nama_bank FROM bank_sampah WHERE bank_id = ?`, bankID).Scan(&bank).Error; err != nil || bank.BankID == "" {
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`SELECT bank_id, nama_bank FROM bank_sampah WHERE bank_id = ?`, bankID).Scan(&bank).Error; err != nil || bank.BankID == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Bank sampah tidak ditemukan"})
 		return
 	}
@@ -1893,7 +1893,7 @@ func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 		Subtotal     float64 `gorm:"column:subtotal"`
 	}
 	var sampahRows []sampahRow
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			s.nama_sampah,
 			kat.kategori,
@@ -1928,7 +1928,7 @@ func (lc *LaporanController) DownloadLaporanRekapPenjualan(c *gin.Context) {
 		Subtotal     float64   `gorm:"column:subtotal_penjualan"`
 	}
 	var transaksiRows []transaksiRow
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			p.penjualan_id,
 			p.created_at,
@@ -2288,7 +2288,7 @@ func (lc *LaporanController) DownloadLaporanRekapBagiHasil(c *gin.Context) {
 		NamaBank string `gorm:"column:nama_bank"`
 	}
 	var bank bankData
-	if err := lc.DB.Raw(`SELECT bank_id, nama_bank FROM bank_sampah WHERE bank_id = ?`, bankID).Scan(&bank).Error; err != nil || bank.BankID == "" {
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`SELECT bank_id, nama_bank FROM bank_sampah WHERE bank_id = ?`, bankID).Scan(&bank).Error; err != nil || bank.BankID == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Bank sampah tidak ditemukan"})
 		return
 	}
@@ -2300,7 +2300,7 @@ func (lc *LaporanController) DownloadLaporanRekapBagiHasil(c *gin.Context) {
 		TotalDiterima float64 `gorm:"column:total_diterima"`
 	}
 	var nasabahRows []nasabahRow
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			n.nasabah_id,
 			u.nama                    AS nama_nasabah,
@@ -2330,7 +2330,7 @@ func (lc *LaporanController) DownloadLaporanRekapBagiHasil(c *gin.Context) {
 		NominalDiterima float64   `gorm:"column:nominal_diterima"`
 	}
 	var transaksiRows []transaksiRow
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			bh.bagi_hasil_id,
 			bh.created_at,
@@ -2677,7 +2677,7 @@ func (lc *LaporanController) DownloadLaporanRekapPenarikan(c *gin.Context) {
 		NamaBank string `gorm:"column:nama_bank"`
 	}
 	var bank bankData
-	if err := lc.DB.Raw(`SELECT bank_id, nama_bank FROM bank_sampah WHERE bank_id = ?`, bankID).Scan(&bank).Error; err != nil || bank.BankID == "" {
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`SELECT bank_id, nama_bank FROM bank_sampah WHERE bank_id = ?`, bankID).Scan(&bank).Error; err != nil || bank.BankID == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Bank sampah tidak ditemukan"})
 		return
 	}
@@ -2689,7 +2689,7 @@ func (lc *LaporanController) DownloadLaporanRekapPenarikan(c *gin.Context) {
 		TotalDitarik float64 `gorm:"column:total_ditarik"`
 	}
 	var nasabahRows []nasabahRow
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			n.nasabah_id,
 			u.nama                       AS nama_nasabah,
@@ -2716,7 +2716,7 @@ func (lc *LaporanController) DownloadLaporanRekapPenarikan(c *gin.Context) {
 		Status      string    `gorm:"column:status"`
 	}
 	var transaksiRows []transaksiRow
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			rpc.created_at,
 			n.nasabah_id,
@@ -3074,7 +3074,7 @@ func (lc *LaporanController) DownloadLaporanBankSampah(c *gin.Context) {
 	}
 
 	var rows []bankRow
-	if err := lc.DB.Raw(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			bs.bank_id,
 			bs.nama_bank,
@@ -3286,7 +3286,7 @@ func (lc *LaporanController) DownloadLaporanKatalogSampah(c *gin.Context) {
 		ParentBankID *string `gorm:"column:parent_bank_id"`
 	}
 	var bank bankData
-	if err := lc.DB.Raw(`SELECT bank_id, nama_bank, jenis_bank, parent_bank_id FROM bank_sampah WHERE bank_id = ?`, bankID).Scan(&bank).Error; err != nil || bank.BankID == "" {
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`SELECT bank_id, nama_bank, jenis_bank, parent_bank_id FROM bank_sampah WHERE bank_id = ?`, bankID).Scan(&bank).Error; err != nil || bank.BankID == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Bank sampah tidak ditemukan"})
 		return
 	}
@@ -3317,7 +3317,7 @@ func (lc *LaporanController) DownloadLaporanKatalogSampah(c *gin.Context) {
 	} else {
 		queryArgs = append(queryArgs, catalogBankID)
 	}
-	if err := lc.DB.Raw(fmt.Sprintf(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(fmt.Sprintf(`
 		SELECT
 			s.nama_sampah,
 			k.kategori,
@@ -3526,7 +3526,7 @@ func (lc *LaporanController) DownloadLaporanKatalogBarang(c *gin.Context) {
 		ParentBankID *string `gorm:"column:parent_bank_id"`
 	}
 	var bank bankData
-	if err := lc.DB.Raw(`SELECT bank_id, nama_bank, jenis_bank, parent_bank_id FROM bank_sampah WHERE bank_id = ?`, bankID).Scan(&bank).Error; err != nil || bank.BankID == "" {
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(`SELECT bank_id, nama_bank, jenis_bank, parent_bank_id FROM bank_sampah WHERE bank_id = ?`, bankID).Scan(&bank).Error; err != nil || bank.BankID == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Bank sampah tidak ditemukan"})
 		return
 	}
@@ -3551,7 +3551,7 @@ func (lc *LaporanController) DownloadLaporanKatalogBarang(c *gin.Context) {
 	} else {
 		queryArgs = append(queryArgs, catalogBankID)
 	}
-	if err := lc.DB.Raw(fmt.Sprintf(`
+	if err := lc.DB.WithContext(c.Request.Context()).Raw(fmt.Sprintf(`
 		SELECT
 			s.nama_barang,
 			ks.nilai_poin,

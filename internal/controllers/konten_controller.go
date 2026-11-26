@@ -38,7 +38,7 @@ func (kc *KontenController) AddNewKonten(c *gin.Context) {
 	adminID := c.Param("admin_id")
 
 	var admin models.Admin
-	if err := kc.DB.Where("admin_id = ?", adminID).First(&admin).Error; err != nil {
+	if err := kc.DB.WithContext(c.Request.Context()).Where("admin_id = ?", adminID).First(&admin).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Admin tidak ditemukan"})
 		} else {
@@ -118,7 +118,7 @@ func (kc *KontenController) AddNewKonten(c *gin.Context) {
 		return
 	}
 
-	tx := kc.DB.Begin()
+	tx := kc.DB.WithContext(c.Request.Context()).Begin()
 	if tx.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memulai transaksi"})
 		return
@@ -185,7 +185,7 @@ func (kc *KontenController) GetAllKonten(c *gin.Context) {
 	bankID := c.Param("bank_id")
 
 	var bank models.BankSampah
-	if err := kc.DB.Where("bank_id = ?", bankID).First(&bank).Error; err != nil {
+	if err := kc.DB.WithContext(c.Request.Context()).Where("bank_id = ?", bankID).First(&bank).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Bank sampah tidak ditemukan"})
 		} else {
@@ -201,14 +201,14 @@ func (kc *KontenController) GetAllKonten(c *gin.Context) {
 		parentID := *bank.ParentBankID
 		switch publishedParam {
 		case "true":
-			query = kc.DB.Where(
+			query = kc.DB.WithContext(c.Request.Context()).Where(
 				"((konten.bank_id = ? OR konten.bank_id = ?) AND konten.is_uploaded = ?) OR (konten.bank_id IS NULL AND konten.is_uploaded = ?)",
 				parentID, bankID, true, true,
 			)
 		case "false":
-			query = kc.DB.Where("konten.bank_id = ? AND konten.is_uploaded = ?", bankID, false)
+			query = kc.DB.WithContext(c.Request.Context()).Where("konten.bank_id = ? AND konten.is_uploaded = ?", bankID, false)
 		default:
-			query = kc.DB.Where(
+			query = kc.DB.WithContext(c.Request.Context()).Where(
 				"(konten.bank_id = ? AND konten.is_uploaded = ?) OR konten.bank_id = ? OR (konten.bank_id IS NULL AND konten.is_uploaded = ?)",
 				parentID, true, bankID, true,
 			)
@@ -216,14 +216,14 @@ func (kc *KontenController) GetAllKonten(c *gin.Context) {
 	} else {
 		switch publishedParam {
 		case "true":
-			query = kc.DB.Where(
+			query = kc.DB.WithContext(c.Request.Context()).Where(
 				"(konten.bank_id = ? AND konten.is_uploaded = ?) OR (konten.bank_id IS NULL AND konten.is_uploaded = ?)",
 				bankID, true, true,
 			)
 		case "false":
-			query = kc.DB.Where("konten.bank_id = ? AND konten.is_uploaded = ?", bankID, false)
+			query = kc.DB.WithContext(c.Request.Context()).Where("konten.bank_id = ? AND konten.is_uploaded = ?", bankID, false)
 		default:
-			query = kc.DB.Where(
+			query = kc.DB.WithContext(c.Request.Context()).Where(
 				"konten.bank_id = ? OR (konten.bank_id IS NULL AND konten.is_uploaded = ?)",
 				bankID, true,
 			)
@@ -297,7 +297,7 @@ func (kc *KontenController) GetKontenByID(c *gin.Context) {
 	}
 
 	var konten KontenResponse
-	if err := kc.DB.Table("konten").
+	if err := kc.DB.WithContext(c.Request.Context()).Table("konten").
 		Select("konten.*, users.nama as nama_admin, bank_sampah.nama_bank as nama_instansi").
 		Joins("left join admin on konten.admin_id = admin.admin_id").
 		Joins("left join users on admin.user_id = users.user_id").
@@ -326,7 +326,7 @@ func (kc *KontenController) DeleteKonten(c *gin.Context) {
 	kontenID := c.Param("konten_id")
 
 	var konten models.Konten
-	if err := kc.DB.Where("konten_id = ?", kontenID).First(&konten).Error; err != nil {
+	if err := kc.DB.WithContext(c.Request.Context()).Where("konten_id = ?", kontenID).First(&konten).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Konten tidak ditemukan"})
 		} else {
@@ -335,12 +335,12 @@ func (kc *KontenController) DeleteKonten(c *gin.Context) {
 		return
 	}
 
-	if err := kc.DB.Where("konten_id = ?", kontenID).Delete(&models.Media{}).Error; err != nil {
+	if err := kc.DB.WithContext(c.Request.Context()).Where("konten_id = ?", kontenID).Delete(&models.Media{}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghapus media: " + err.Error()})
 		return
 	}
 
-	if err := kc.DB.Delete(&konten).Error; err != nil {
+	if err := kc.DB.WithContext(c.Request.Context()).Delete(&konten).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghapus konten: " + err.Error()})
 		return
 	}
@@ -354,7 +354,7 @@ func (kc *KontenController) EditKonten(c *gin.Context) {
 	kontenID := c.Param("konten_id")
 
 	var oldKonten models.Konten
-	if err := kc.DB.Where("konten_id = ?", kontenID).First(&oldKonten).Error; err != nil {
+	if err := kc.DB.WithContext(c.Request.Context()).Where("konten_id = ?", kontenID).First(&oldKonten).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Konten tidak ditemukan"})
 		} else {
@@ -431,7 +431,7 @@ func (kc *KontenController) EditKonten(c *gin.Context) {
 		return
 	}
 
-	tx := kc.DB.Begin()
+	tx := kc.DB.WithContext(c.Request.Context()).Begin()
 	if tx.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal memulai transaksi"})
 		return
@@ -516,7 +516,7 @@ func (kc *KontenController) GetAllKontenSuperadmin(c *gin.Context) {
 		NamaInstansi string `json:"nama_instansi" gorm:"column:nama_instansi"`
 	}
 
-	baseQuery := kc.DB.Table("konten").
+	baseQuery := kc.DB.WithContext(c.Request.Context()).Table("konten").
 		Select("konten.konten_id, konten.judul, konten.deskripsi, konten.thumbnail, " +
 			"COALESCE(bank_sampah.nama_bank, 'Dinas Lingkungan Hidup Kota Padang') as nama_instansi").
 		Joins("left join bank_sampah on bank_sampah.bank_id = konten.bank_id").

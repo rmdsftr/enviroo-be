@@ -100,7 +100,7 @@ func (s *notifikasiService) Kirim(ctx context.Context, req KirimNotifRequest) er
 		IsRead:       false,
 		CreatedAt:    time.Now(),
 	}
-	if err := s.repo.Create(notif); err != nil {
+	if err := s.repo.Create(ctx, notif); err != nil {
 		return fmt.Errorf("gagal simpan notifikasi: %w", err)
 	}
 
@@ -141,7 +141,7 @@ func (s *notifikasiService) GetByUser(ctx context.Context, userID, roleTarget st
 	}
 	offset := (page - 1) * limit
 
-	data, total, err := s.repo.FindByUserID(userID, roleTarget, limit, offset)
+	data, total, err := s.repo.FindByUserID(ctx, userID, roleTarget, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("gagal ambil notifikasi: %w", err)
 	}
@@ -161,19 +161,19 @@ func (s *notifikasiService) GetByUser(ctx context.Context, userID, roleTarget st
 }
 
 func (s *notifikasiService) BacaNotif(ctx context.Context, notifikasiID, userID string) error {
-	return s.repo.MarkAsRead(notifikasiID, userID)
+	return s.repo.MarkAsRead(ctx, notifikasiID, userID)
 }
 
 func (s *notifikasiService) BacaSemua(ctx context.Context, userID, roleTarget string) error {
-	return s.repo.MarkAllAsRead(userID, roleTarget)
+	return s.repo.MarkAllAsRead(ctx, userID, roleTarget)
 }
 
 func (s *notifikasiService) JumlahBelumDibaca(ctx context.Context, userID, roleTarget string) (int64, error) {
-	return s.repo.CountUnread(userID, roleTarget)
+	return s.repo.CountUnread(ctx, userID, roleTarget)
 }
 
 func (s *notifikasiService) Hapus(ctx context.Context, notifikasiID, userID string) error {
-	return s.repo.Delete(notifikasiID, userID)
+	return s.repo.Delete(ctx, notifikasiID, userID)
 }
 
 func ptr(s string) *string { return &s }

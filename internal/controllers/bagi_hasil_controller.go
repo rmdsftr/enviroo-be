@@ -58,7 +58,7 @@ func (bhc *BagiHasilController) SubmitBagiHasil(c *gin.Context) {
 
 	notifSvc := bhc.NotifSvc
 	notifs := result.NasabahNotifs
-	go func() {
+	services.JalankanLatar(func() {
 		for _, nd := range notifs {
 			pesanNilai, err := utils.FormatBagiHasilNilai(nd.Total, nd.Satuan)
 			if err != nil {
@@ -75,7 +75,7 @@ func (bhc *BagiHasilController) SubmitBagiHasil(c *gin.Context) {
 				fmt.Printf("[Notif] Gagal kirim bagi hasil nasabah ke user %s: %v\n", nd.UserID, err)
 			}
 		}
-	}()
+	})
 }
 
 func (bhc *BagiHasilController) GetDetailBagiHasil(c *gin.Context) {

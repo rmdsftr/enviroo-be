@@ -201,7 +201,11 @@ func (s *bankService) CreateBank(in CreateBankInput) (*models.BankSampah, error)
 		IsActive:      true,
 	}
 
+	var emailAktivasi []mailer.Params
+
 	txErr := s.db.Transaction(func(tx *gorm.DB) error {
+		emailAktivasi = nil
+
 		bankID, err := idgen.GenerateBankID(tx, in.JenisBank, in.IDKecamatan, in.IDKelurahan)
 		if err != nil {
 			return errInternal("Gagal generate Bank ID: " + err.Error())
@@ -217,9 +221,11 @@ func (s *bankService) CreateBank(in CreateBankInput) (*models.BankSampah, error)
 		}
 
 		for _, userID := range in.UserIDs {
-			if err := s.createAdminBank(tx, newBank, cfg, userID, in.ActorAdminID); err != nil {
+			params, err := s.createAdminBank(tx, newBank, cfg, userID, in.ActorAdminID)
+			if err != nil {
 				return err
 			}
+			emailAktivasi = append(emailAktivasi, params)
 		}
 
 		return nil
@@ -230,6 +236,10 @@ func (s *bankService) CreateBank(in CreateBankInput) (*models.BankSampah, error)
 			return nil, txErr
 		}
 		return nil, errInternal("Failed to commit transaction: " + txErr.Error())
+	}
+
+	for _, params := range emailAktivasi {
+		kirimEmailAsync(s.mailer, params.To, params.Subject, params.Body)
 	}
 
 	return newBank, nil
@@ -268,18 +278,18 @@ func (s *bankService) createRekeningBank(tx *gorm.DB, bankID string, rewards []m
 	return nil
 }
 
-func (s *bankService) createAdminBank(tx *gorm.DB, bank *models.BankSampah, cfg bankJenisConfig, userID, actorAdminID string) error {
+func (s *bankService) createAdminBank(tx *gorm.DB, bank *models.BankSampah, cfg bankJenisConfig, userID, actorAdminID string) (mailer.Params, error) {
 	countAdmin, err := s.repo.CountAdminAktifPending(tx, userID)
 	if err != nil {
-		return errInternal("Gagal memvalidasi data admin: " + err.Error())
+		return mailer.Params{}, errInternal("Gagal memvalidasi data admin: " + err.Error())
 	}
 	if countAdmin > 0 {
-		return errConflict("User sudah memiliki akun admin aktif. Nonaktifkan akun admin yang ada terlebih dahulu.", nil)
+		return mailer.Params{}, errConflict("User sudah memiliki akun admin aktif. Nonaktifkan akun admin yang ada terlebih dahulu.", nil)
 	}
 
 	adminID, err := idgen.GenerateAdminID(tx, cfg.adminRole, bank.BankID)
 	if err != nil {
-		return errInternal("Failed to generate admin ID: " + err.Error())
+		return mailer.Params{}, errInternal("Failed to generate admin ID: " + err.Error())
 	}
 
 	newAdmin := &models.Admin{
@@ -290,17 +300,17 @@ func (s *bankService) createAdminBank(tx *gorm.DB, bank *models.BankSampah, cfg 
 		StatusAdmin: models.Pending,
 	}
 	if err := s.repo.CreateAdmin(tx, newAdmin); err != nil {
-		return errInternal("Failed to add admin: " + err.Error())
+		return mailer.Params{}, errInternal("Failed to add admin: " + err.Error())
 	}
 
 	existingUser, err := s.repo.FindUserTx(tx, userID)
 	if err != nil {
-		return errInternal("Failed to get user data for activation")
+		return mailer.Params{}, errInternal("Failed to get user data for activation")
 	}
 
 	otp, expiredAt, err := createAktivasiToken(tx, userID, models.RoleUserAdmin, nil, &newAdmin.AdminID, actorAdminID)
 	if err != nil {
-		return errInternal("Failed to create aktivasi akun: " + err.Error())
+		return mailer.Params{}, errInternal("Failed to create aktivasi akun: " + err.Error())
 	}
 
 	emailBody := mailer.BuildAktivasiAdminEmail(existingUser.Nama, "Administrator", bank.NamaBank, otp, expiredAt, nil)
@@ -309,15 +319,11 @@ func (s *bankService) createAdminBank(tx *gorm.DB, bank *models.BankSampah, cfg 
 		subject = "Aktivasi Akun Administrator" + cfg.emailLabel + " Enviroo"
 	}
 
-	if err := s.mailer.SendEmail(mailer.Params{
+	return mailer.Params{
 		To:      existingUser.Email,
 		Subject: subject,
 		Body:    emailBody,
-	}); err != nil {
-		return errInternal("Failed to send email: " + err.Error())
-	}
-
-	return nil
+	}, nil
 }
 
 func (s *bankService) ListBankAktif() ([]BankPublicItem, error) {
@@ -853,7 +859,7 @@ func (s *bankService) AddAdminBank(in AddAdminBankInput) (*models.Admin, error) 
 	}
 
 	emailBody := mailer.BuildAktivasiAdminEmail(existingUser.Nama, roleTitle, bank.NamaBank, otp, expiredAt, install)
-	go func() {
+	JalankanLatar(func() {
 		if err := s.mailer.SendEmail(mailer.Params{
 			To:      existingUser.Email,
 			Subject: fmt.Sprintf("Aktivasi Akun %s Enviroo", roleTitle),
@@ -861,7 +867,7 @@ func (s *bankService) AddAdminBank(in AddAdminBankInput) (*models.Admin, error) 
 		}); err != nil {
 			log.Printf("[Email] Gagal kirim aktivasi ke %s: %v", existingUser.Email, err)
 		}
-	}()
+	})
 
 	return newAdmin, nil
 }
@@ -998,13 +1004,13 @@ func (s *bankService) DeleteStaffBank(adminID, actorUserID string) (*DeleteStaff
 					<p style="font-size: 12px; color: #999; text-align: center; margin: 0;">&copy; Enviroo APP</p>
 				</div>
 			`, staffName, admin.Role, bankName)
-			go func() {
+			JalankanLatar(func() {
 				_ = s.mailer.SendEmail(mailer.Params{
 					To:      staffEmail,
 					Subject: "Notifikasi Penonaktifan Akun Staff Enviroo",
 					Body:    emailBody,
 				})
-			}()
+			})
 		}
 	}
 

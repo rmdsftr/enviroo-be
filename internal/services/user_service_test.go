@@ -1004,21 +1004,32 @@ func TestTambahSuperadmin_AktivasiGagal(t *testing.T) {
 	assert.Contains(t, err.Error(), "aktivasi akun")
 }
 
-func TestTambahSuperadmin_EmailGagalMembatalkanTransaksi(t *testing.T) {
+func TestTambahSuperadmin_EmailGagalTidakMembatalkanTransaksi(t *testing.T) {
 	dbMock, repo, mailerMock, svc := newUsrSvc(t)
 	repo.On("CountUserByID", "1371010101010001").Return(int64(0), nil)
 	repo.On("CountUserByEmail", "budi@mail.com").Return(int64(0), nil)
 	repo.On("CreateUser", mock.Anything, mock.Anything).Return(nil)
 	repo.On("CreateAdmin", mock.Anything, mock.Anything).Return(nil)
-	mailerMock.On("SendEmail", mock.Anything).Return(errors.New("smtp down"))
-	expectTxSuperadmin(dbMock, false)
+
+	dicoba := make(chan struct{})
+	mailerMock.On("SendEmail", mock.Anything).
+		Run(func(mock.Arguments) { close(dicoba) }).
+		Return(errors.New("smtp down"))
+	expectTxSuperadmin(dbMock, true)
 
 	hasil, err := svc.TambahSuperadmin(usrSuperadminInput())
 
-	assert.Nil(t, hasil)
-	assert.Equal(t, http.StatusInternalServerError, usrKode(t, err))
-	assert.Contains(t, err.Error(), "mengirim email")
+	assert.NoError(t, err, "SMTP mati tidak boleh membatalkan pembuatan superadmin")
+	if assert.NotNil(t, hasil) {
+		assert.Equal(t, models.SuperAdmin, hasil.Role)
+	}
 	assert.NoError(t, dbMock.ExpectationsWereMet())
+
+	select {
+	case <-dicoba:
+	case <-time.After(3 * time.Second):
+		t.Fatal("email aktivasi tidak pernah dicoba kirim setelah commit")
+	}
 }
 
 func TestTambahSuperadmin_Sukses(t *testing.T) {

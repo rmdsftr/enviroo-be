@@ -427,7 +427,7 @@ func (s *pengangkutanService) RequestByBSU(bsuID, adminBSUID string, req Request
 		return nil, txErr
 	}
 
-	go func() {
+	JalankanLatar(func() {
 		admins, err := s.repo.FindAdminsByBank(bsiID)
 		if err != nil {
 			log.Printf("[Notif] Gagal ambil admin BSI %s: %v", bsiID, err)
@@ -436,7 +436,7 @@ func (s *pengangkutanService) RequestByBSU(bsuID, adminBSUID string, req Request
 		for _, a := range admins {
 			_ = s.notifSvc.NotifRequestPengangkutan(context.Background(), a.UserID, a.FCMToken, bsu.NamaBank, pengangkutanID)
 		}
-	}()
+	})
 
 	return pgk, nil
 }
@@ -589,7 +589,7 @@ func (s *pengangkutanService) Input(pengangkutanID, adminBSIID, adminBSUID strin
 		return txErr
 	}
 
-	go func() {
+	JalankanLatar(func() {
 		pgk, err := s.repo.FindPengangkutan(nil, pengangkutanID)
 		if err != nil {
 			log.Printf("[Notif] Gagal ambil pengangkutan %s: %v", pengangkutanID, err)
@@ -610,7 +610,7 @@ func (s *pengangkutanService) Input(pengangkutanID, adminBSIID, adminBSUID strin
 				log.Printf("[Notif] Gagal kirim notif pengangkutan ke %s: %v", a.UserID, err)
 			}
 		}
-	}()
+	})
 
 	return nil
 }

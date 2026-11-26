@@ -30,7 +30,7 @@ func (mc *MasterDataController) GetAllMasterSampah(c *gin.Context) {
 	}
 	offset := (page - 1) * limit
 
-	db := mc.DB.Model(&models.Sampah{})
+	db := mc.DB.WithContext(c.Request.Context()).Model(&models.Sampah{})
 	if q != "" {
 		db = db.Where("nama_sampah ILIKE ?", "%"+q+"%")
 	}
@@ -63,7 +63,7 @@ func (mc *MasterDataController) CreateMasterSampah(c *gin.Context) {
 	}
 
 	var satuan models.Satuan
-	if err := mc.DB.First(&satuan, req.SatuanID).Error; err != nil {
+	if err := mc.DB.WithContext(c.Request.Context()).First(&satuan, req.SatuanID).Error; err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "satuan_id tidak valid"})
 		return
 	}
@@ -72,7 +72,7 @@ func (mc *MasterDataController) CreateMasterSampah(c *gin.Context) {
 		NamaSampah: req.NamaSampah,
 		SatuanID:   req.SatuanID,
 	}
-	if err := mc.DB.Create(&sampah).Error; err != nil {
+	if err := mc.DB.WithContext(c.Request.Context()).Create(&sampah).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat data sampah"})
 		return
 	}
@@ -92,7 +92,7 @@ func (mc *MasterDataController) UpdateMasterSampah(c *gin.Context) {
 	}
 
 	var sampah models.Sampah
-	if err := mc.DB.First(&sampah, sarokID).Error; err != nil {
+	if err := mc.DB.WithContext(c.Request.Context()).First(&sampah, sarokID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Data sampah tidak ditemukan"})
 		return
 	}
@@ -110,18 +110,18 @@ func (mc *MasterDataController) UpdateMasterSampah(c *gin.Context) {
 		sampah.NamaSampah = req.NamaSampah
 	}
 	if req.SatuanID != 0 {
-		if err := mc.DB.First(&models.Satuan{}, req.SatuanID).Error; err != nil {
+		if err := mc.DB.WithContext(c.Request.Context()).First(&models.Satuan{}, req.SatuanID).Error; err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "satuan_id tidak valid"})
 			return
 		}
 		sampah.SatuanID = req.SatuanID
 	}
 
-	if err := mc.DB.Save(&sampah).Error; err != nil {
+	if err := mc.DB.WithContext(c.Request.Context()).Save(&sampah).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengupdate data sampah"})
 		return
 	}
-	mc.DB.First(&sampah.Satuan, sampah.SatuanID)
+	mc.DB.WithContext(c.Request.Context()).First(&sampah.Satuan, sampah.SatuanID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Data sampah berhasil diupdate",
@@ -137,19 +137,19 @@ func (mc *MasterDataController) DeleteMasterSampah(c *gin.Context) {
 	}
 
 	var sampah models.Sampah
-	if err := mc.DB.First(&sampah, sarokID).Error; err != nil {
+	if err := mc.DB.WithContext(c.Request.Context()).First(&sampah, sarokID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Data sampah tidak ditemukan"})
 		return
 	}
 
 	var usedCount int64
-	mc.DB.Model(&models.KatalogSampah{}).Where("sarok_id = ?", sarokID).Count(&usedCount)
+	mc.DB.WithContext(c.Request.Context()).Model(&models.KatalogSampah{}).Where("sarok_id = ?", sarokID).Count(&usedCount)
 	if usedCount > 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "Data sampah tidak dapat dihapus karena sudah digunakan dalam katalog"})
 		return
 	}
 
-	if err := mc.DB.Delete(&sampah).Error; err != nil {
+	if err := mc.DB.WithContext(c.Request.Context()).Delete(&sampah).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghapus data sampah"})
 		return
 	}
@@ -222,7 +222,7 @@ func (mc *MasterDataController) GetStatistikSampah(c *gin.Context) {
 	`
 
 	var results []StatistikSampahItem
-	if err := mc.DB.Raw(query, args...).Scan(&results).Error; err != nil {
+	if err := mc.DB.WithContext(c.Request.Context()).Raw(query, args...).Scan(&results).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil statistik sampah: " + err.Error()})
 		return
 	}
@@ -302,7 +302,7 @@ func (mc *MasterDataController) GetFavoritSampah(c *gin.Context) {
 	`
 
 	var results []FavoritItem
-	if err := mc.DB.Raw(query, args...).Scan(&results).Error; err != nil {
+	if err := mc.DB.WithContext(c.Request.Context()).Raw(query, args...).Scan(&results).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data favorit sampah: " + err.Error()})
 		return
 	}
@@ -323,7 +323,7 @@ func (mc *MasterDataController) GetSampahPerKategori(c *gin.Context) {
 	}
 
 	var rows []SampahRow
-	if err := mc.DB.Raw(`
+	if err := mc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			k.kategori_id,
 			k.kategori,
@@ -395,7 +395,7 @@ func (mc *MasterDataController) GetAllMasterBarang(c *gin.Context) {
 	}
 	offset := (page - 1) * limit
 
-	db := mc.DB.Model(&models.Barang{})
+	db := mc.DB.WithContext(c.Request.Context()).Model(&models.Barang{})
 	if q != "" {
 		db = db.Where("nama_barang ILIKE ?", "%"+q+"%")
 	}
@@ -429,7 +429,7 @@ func (mc *MasterDataController) CreateMasterBarang(c *gin.Context) {
 	barang := models.Barang{
 		NamaBarang: req.NamaBarang,
 	}
-	if err := mc.DB.Create(&barang).Error; err != nil {
+	if err := mc.DB.WithContext(c.Request.Context()).Create(&barang).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal membuat data barang"})
 		return
 	}
@@ -448,7 +448,7 @@ func (mc *MasterDataController) UpdateMasterBarang(c *gin.Context) {
 	}
 
 	var barang models.Barang
-	if err := mc.DB.First(&barang, barangID).Error; err != nil {
+	if err := mc.DB.WithContext(c.Request.Context()).First(&barang, barangID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Data barang tidak ditemukan"})
 		return
 	}
@@ -467,7 +467,7 @@ func (mc *MasterDataController) UpdateMasterBarang(c *gin.Context) {
 	}
 
 	barang.NamaBarang = req.NamaBarang
-	if err := mc.DB.Save(&barang).Error; err != nil {
+	if err := mc.DB.WithContext(c.Request.Context()).Save(&barang).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengupdate data barang"})
 		return
 	}
@@ -486,19 +486,19 @@ func (mc *MasterDataController) DeleteMasterBarang(c *gin.Context) {
 	}
 
 	var barang models.Barang
-	if err := mc.DB.First(&barang, barangID).Error; err != nil {
+	if err := mc.DB.WithContext(c.Request.Context()).First(&barang, barangID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Data barang tidak ditemukan"})
 		return
 	}
 
 	var usedCount int64
-	mc.DB.Model(&models.KatalogBarang{}).Where("barang_id = ?", barangID).Count(&usedCount)
+	mc.DB.WithContext(c.Request.Context()).Model(&models.KatalogBarang{}).Where("barang_id = ?", barangID).Count(&usedCount)
 	if usedCount > 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "Data barang tidak dapat dihapus karena sudah digunakan dalam katalog"})
 		return
 	}
 
-	if err := mc.DB.Delete(&barang).Error; err != nil {
+	if err := mc.DB.WithContext(c.Request.Context()).Delete(&barang).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menghapus data barang"})
 		return
 	}
@@ -576,7 +576,7 @@ func (mc *MasterDataController) GetFavoritBarang(c *gin.Context) {
 	`
 
 	var results []FavoritBarangItem
-	if err := mc.DB.Raw(query, args...).Scan(&results).Error; err != nil {
+	if err := mc.DB.WithContext(c.Request.Context()).Raw(query, args...).Scan(&results).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data favorit barang: " + err.Error()})
 		return
 	}
@@ -596,7 +596,7 @@ func (mc *MasterDataController) GetStatistikBarang(c *gin.Context) {
 	}
 
 	var results []StatistikBarangItem
-	if err := mc.DB.Raw(`
+	if err := mc.DB.WithContext(c.Request.Context()).Raw(`
 		SELECT
 			s.barang_id,
 			s.nama_barang,

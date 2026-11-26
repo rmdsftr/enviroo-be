@@ -525,7 +525,7 @@ func (s *penimbanganService) buatSesiPenimbangan(tx *gorm.DB, jadwal models.Jadw
 }
 
 func (s *penimbanganService) kirimNotifKeBank(bankID, konteks string, kirimNasabah, kirimAdmin func(ctx context.Context, t repositories.NotifTarget) error) {
-	go func() {
+	JalankanLatar(func() {
 		ctx := context.Background()
 
 		if kirimNasabah != nil {
@@ -553,7 +553,7 @@ func (s *penimbanganService) kirimNotifKeBank(bankID, konteks string, kirimNasab
 				}
 			}
 		}
-	}()
+	})
 }
 
 func (s *penimbanganService) kirimNotifSesiDibukaDitutup(bankID, penimbanganID string, dibuka bool) {

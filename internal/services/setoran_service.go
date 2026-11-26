@@ -272,7 +272,7 @@ func (s *setoranService) Input(penimbanganID, nasabahID, adminID, via, buktiURL 
 		return nil, txErr
 	}
 
-	go func() {
+	JalankanLatar(func() {
 		bank, err := s.repo.FindBankSampah(bankID)
 		if err != nil {
 			log.Printf("[Notif] Gagal ambil bank %s: %v", bankID, err)
@@ -293,7 +293,7 @@ func (s *setoranService) Input(penimbanganID, nasabahID, adminID, via, buktiURL 
 		); err != nil {
 			log.Printf("[Notif] Gagal kirim notif setoran %s: %v", setoranID, err)
 		}
-	}()
+	})
 
 	return &InputSetoranResult{SetoranID: setoranID, TotalItem: totalItem}, nil
 }

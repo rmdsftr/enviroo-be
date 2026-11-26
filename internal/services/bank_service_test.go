@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	"enviroo-be/internal/models"
 	"enviroo-be/internal/repositories"
@@ -218,25 +219,34 @@ func TestCreateBank_SudahPunyaAdminAktif(t *testing.T) {
 	repo.AssertNotCalled(t, "CreateAdmin", mock.Anything, mock.Anything)
 }
 
-func TestCreateBank_EmailGagalMembatalkanTransaksi(t *testing.T) {
+func TestCreateBank_EmailGagalTidakMembatalkanTransaksi(t *testing.T) {
 	dbMock, repo, mailerMock, svc := newBnkSvc(t)
 	repo.On("CreateBank", mock.Anything, mock.Anything).Return(nil)
 	bnkStubReward(repo)
 	bnkStubAdminBaru(repo)
-	mailerMock.On("SendEmail", mock.Anything).Return(errors.New("smtp down"))
+
+	dicoba := make(chan struct{})
+	mailerMock.On("SendEmail", mock.Anything).
+		Run(func(mock.Arguments) { close(dicoba) }).
+		Return(errors.New("smtp down"))
 	dbMock.ExpectBegin()
 	expectQueries(dbMock, 3)
 	dbMock.ExpectExec("INSERT").WillReturnResult(sqlmock.NewResult(1, 1))
-	dbMock.ExpectRollback()
+	dbMock.ExpectCommit()
 
 	in := bnkCreateInput(models.BSI)
 	in.UserIDs = []string{bnkUser}
 	hasil, err := svc.CreateBank(in)
 
-	assert.Nil(t, hasil)
-	assert.Equal(t, http.StatusInternalServerError, bnkKode(t, err))
-	assert.Contains(t, err.Error(), "send email")
+	assert.NoError(t, err, "SMTP mati tidak boleh membatalkan pembuatan bank")
+	assert.NotNil(t, hasil)
 	assert.NoError(t, dbMock.ExpectationsWereMet())
+
+	select {
+	case <-dicoba:
+	case <-time.After(3 * time.Second):
+		t.Fatal("email aktivasi tidak pernah dicoba kirim setelah commit")
+	}
 }
 
 func TestCreateBank_DenganAdminSukses(t *testing.T) {

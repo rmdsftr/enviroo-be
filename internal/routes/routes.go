@@ -17,7 +17,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorage, mailer *mailer.Mailer, fcmClient *fcm.Client, apiPublicURL string, rateStore middleware.Penyimpanan) {
+func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorage, mailer *mailer.Mailer, fcmClient *fcm.Client, apiPublicURL string, rateStore middleware.Penyimpanan, uploadDeadline time.Duration) {
 	notifRepo := repositories.NewNotifikasiRepository(db)
 	notifSvc := services.NewNotifikasiService(notifRepo, fcmClient)
 
@@ -74,7 +74,7 @@ func SetupRoutes(r *gin.Engine, db *gorm.DB, cfStorage *storage.CloudflareStorag
 
 	appReleaseRepo := repositories.NewAppReleaseRepo(db)
 	appReleaseSvc := services.NewAppReleaseService(appReleaseRepo, cfStorage, apiPublicURL)
-	appReleaseController := controllers.NewAppReleaseController(appReleaseSvc)
+	appReleaseController := controllers.NewAppReleaseController(appReleaseSvc, uploadDeadline)
 
 	appVersion := r.Group("/app-version")
 	{

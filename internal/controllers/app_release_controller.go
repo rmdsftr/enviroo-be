@@ -2,9 +2,11 @@ package controllers
 
 import (
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"enviroo-be/internal/middleware"
 	"enviroo-be/internal/services"
@@ -15,11 +17,12 @@ import (
 const maxBodyUploadAPK = services.MaxUkuranAPK + 10*1024*1024
 
 type AppReleaseController struct {
-	Svc services.AppReleaseService
+	Svc            services.AppReleaseService
+	UploadDeadline time.Duration
 }
 
-func NewAppReleaseController(svc services.AppReleaseService) *AppReleaseController {
-	return &AppReleaseController{Svc: svc}
+func NewAppReleaseController(svc services.AppReleaseService, uploadDeadline time.Duration) *AppReleaseController {
+	return &AppReleaseController{Svc: svc, UploadDeadline: uploadDeadline}
 }
 
 func (ac *AppReleaseController) CekVersi(c *gin.Context) {
@@ -59,6 +62,17 @@ func (ac *AppReleaseController) TambahRilis(c *gin.Context) {
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Tidak terautentikasi"})
 		return
+	}
+
+	if ac.UploadDeadline > 0 {
+		rc := http.NewResponseController(c.Writer)
+		batasUpload := time.Now().Add(ac.UploadDeadline)
+		if err := rc.SetReadDeadline(batasUpload); err != nil {
+			log.Printf("[AppRelease] gagal melonggarkan read deadline upload: %v", err)
+		}
+		if err := rc.SetWriteDeadline(batasUpload); err != nil {
+			log.Printf("[AppRelease] gagal melonggarkan write deadline upload: %v", err)
+		}
 	}
 
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBodyUploadAPK)

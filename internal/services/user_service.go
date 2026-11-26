@@ -439,6 +439,7 @@ func (s *userService) TambahSuperadmin(in TambahSuperadminInput) (*SuperadminBar
 		NoWhatsapp: in.NoWhatsapp,
 	}
 	var admin *models.Admin
+	var emailAktivasi mailer.Params
 
 	txErr := s.db.Transaction(func(tx *gorm.DB) error {
 		if err := s.repo.CreateUser(tx, user); err != nil {
@@ -470,18 +471,18 @@ func (s *userService) TambahSuperadmin(in TambahSuperadminInput) (*SuperadminBar
 			"Anda telah ditunjuk sebagai <b>Superadmin</b> dalam aplikasi Enviroo. Untuk menyelesaikan proses aktivasi akun, gunakan kode OTP berikut:",
 			otp, "24 jam", "Mohon untuk tidak membagikan kode OTP ini ke siapapun.", expiredAt, nil)
 
-		if err := s.mailer.SendEmail(mailer.Params{
+		emailAktivasi = mailer.Params{
 			To:      user.Email,
 			Subject: "Aktivasi Akun Superadmin Enviroo",
 			Body:    body,
-		}); err != nil {
-			return errInternal("Gagal mengirim email: " + err.Error())
 		}
 		return nil
 	})
 	if txErr != nil {
 		return nil, bungkusTxError(txErr, "Gagal menyimpan data")
 	}
+
+	kirimEmailAsync(s.mailer, emailAktivasi.To, emailAktivasi.Subject, emailAktivasi.Body)
 
 	return &SuperadminBaruResult{
 		UserID:  user.UserID,
